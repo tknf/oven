@@ -11,7 +11,9 @@
  * `:root`, so light and dark mode only differ by which values those
  * properties resolve to. Dark mode is applied automatically through
  * `prefers-color-scheme` and can also be forced with `html[data-theme="dark"]`
- * for a future manual toggle (no toggle UI/script ships yet).
+ * for a future manual toggle (no toggle UI/script ships yet). Values are
+ * chosen to meet WCAG 2.1 AAA text contrast (7:1) against the backgrounds
+ * they pair with in both light and dark mode.
  *
  * Rules are a mix of element selectors (so unstyled markup still looks
  * reasonable) and the small set of view-side classes/ids assigned in
@@ -27,13 +29,14 @@
  */
 export const ADMIN_CSS = `:root {
 	--primary: #79aec8;
-	--secondary: #417690;
+	--secondary: #31596d;
 	--accent: #f5dd5d;
 	--primary-fg: #fff;
+	--focus-ring: #ffbf47;
 
 	--body-fg: #333;
 	--body-bg: #fff;
-	--body-quiet-color: #666;
+	--body-quiet-color: #494949;
 	--body-medium-color: #444;
 	--body-loud-color: #000;
 
@@ -42,17 +45,17 @@ export const ADMIN_CSS = `:root {
 	--header-bg: var(--secondary);
 	--header-link-color: var(--primary-fg);
 
-	--breadcrumbs-fg: #c4dce8;
+	--breadcrumbs-fg: #cbe3ef;
 	--breadcrumbs-link-fg: var(--body-bg);
 	--breadcrumbs-bg: #264b5d;
 
-	--link-fg: #417893;
+	--link-fg: #335e74;
 	--link-hover-color: #036;
 	--link-selected-fg: var(--secondary);
 
 	--hairline-color: #e8e8e8;
 	--border-color: #ccc;
-	--error-fg: #ba2121;
+	--error-fg: #a01c1c;
 
 	--message-info-bg: #ccefff;
 	--message-success-bg: #dfd;
@@ -69,9 +72,9 @@ export const ADMIN_CSS = `:root {
 	--button-hover-bg: #205067;
 	--default-button-bg: #205067;
 	--default-button-hover-bg: var(--secondary);
-	--close-button-bg: #747474;
+	--close-button-bg: #595959;
 	--close-button-hover-bg: #333;
-	--delete-button-bg: #ba2121;
+	--delete-button-bg: #ad1f1f;
 	--delete-button-hover-bg: #a41515;
 
 	--object-tools-fg: var(--button-fg);
@@ -101,10 +104,10 @@ export const ADMIN_CSS = `:root {
 
 		--hairline-color: #272727;
 		--border-color: #353535;
-		--error-fg: #e35f5f;
+		--error-fg: #ff9797;
 
-		--message-info-bg: #265895;
-		--message-success-bg: #006b1b;
+		--message-info-bg: #235088;
+		--message-success-bg: #005d18;
 		--message-warning-bg: #583305;
 		--message-error-bg: #570808;
 		--message-debug-bg: #4e4e4e;
@@ -282,6 +285,17 @@ body {
 
 #breadcrumbs a:hover {
 	color: var(--breadcrumbs-fg);
+}
+
+#breadcrumbs ol {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+	display: inline;
+}
+
+#breadcrumbs li {
+	display: inline;
 }
 
 #content {
@@ -702,6 +716,21 @@ table.tabular-inline td {
 	border-bottom: 1px solid var(--hairline-color);
 }
 
+/* The column header already carries each field's visible label, so a field's
+   own inline <label> (rendered by FormField) would duplicate it; hide it
+   without removing it from the accessibility tree. */
+table.tabular-inline label {
+	position: absolute !important;
+	width: 1px;
+	height: 1px;
+	padding: 0;
+	margin: -1px;
+	overflow: hidden;
+	clip: rect(0, 0, 0, 0);
+	white-space: nowrap;
+	border: 0;
+}
+
 body.login {
 	background: var(--darkened-bg);
 }
@@ -756,5 +785,91 @@ body.login {
 	background: var(--message-error-bg);
 	color: var(--error-fg);
 	font-size: 13px;
+}
+
+/* Visible focus indicator (WCAG 2.4.7) for all interactive elements,
+   layered on top of any outline the user agent already draws. */
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[tabindex]:focus-visible,
+summary:focus-visible {
+	outline: 3px solid var(--focus-ring);
+	outline-offset: 2px;
+}
+
+/* Screen-reader-only content, hidden visually but kept in the accessibility
+   tree. The focusable variant reveals itself when it (or a descendant)
+   receives focus, for use in skip links. */
+.visually-hidden {
+	position: absolute !important;
+	width: 1px;
+	height: 1px;
+	padding: 0;
+	margin: -1px;
+	overflow: hidden;
+	clip: rect(0, 0, 0, 0);
+	white-space: nowrap;
+	border: 0;
+}
+
+.visually-hidden-focusable:not(:focus):not(:focus-within) {
+	position: absolute !important;
+	width: 1px;
+	height: 1px;
+	padding: 0;
+	margin: -1px;
+	overflow: hidden;
+	clip: rect(0, 0, 0, 0);
+	white-space: nowrap;
+	border: 0;
+}
+
+.visually-hidden-focusable:focus {
+	position: static;
+	width: auto;
+	height: auto;
+	margin: 0;
+	padding: 8px 12px;
+	clip: auto;
+	white-space: normal;
+	background: var(--body-bg);
+	color: var(--body-fg);
+	z-index: 1000;
+}
+
+/* Cap the measure of running text blocks for readability (WCAG 1.4.8);
+   tables, forms, and layout containers are left full-width. */
+.module > p,
+.module > dl,
+.messagelist li,
+#content > form p.help {
+	max-width: 80ch;
+}
+
+/* Stack the fixed-width sidebars at narrow viewports / high zoom so content
+   reflows instead of requiring horizontal scrolling (WCAG 1.4.10). */
+@media (max-width: 800px) {
+	.main {
+		flex-wrap: wrap;
+	}
+
+	#nav-sidebar {
+		flex-basis: 100%;
+		border-right: 0;
+		border-bottom: 1px solid var(--hairline-color);
+	}
+
+	.change-list {
+		flex-wrap: wrap;
+	}
+
+	#changelist-filter {
+		flex-basis: 100%;
+		width: auto;
+		margin: 0 0 20px;
+	}
 }
 `;

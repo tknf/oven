@@ -57,7 +57,7 @@ export const AdminResourceDeleteView = ({
 
 	return (
 		<>
-			<p>{t("delete.confirm", { label })}</p>
+			<h2>{t("delete.confirm", { label })}</h2>
 			<div class="module">
 				<dl>
 					{columns.map((name) => (

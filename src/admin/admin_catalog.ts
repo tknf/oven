@@ -93,6 +93,19 @@ const en = {
 	"auth.username": "Username",
 	"auth.password": "Password",
 	"auth.invalid": "Please enter a correct username and password.",
+	"a11y.skipToContent": "Skip to main content",
+	"a11y.breadcrumb": "Breadcrumb",
+	"a11y.dateDrilldown": "Date drilldown",
+	"a11y.select": "Select",
+	"a11y.selectRow": "Select {name}",
+	"a11y.sortBy": "Sort by {column}",
+	"a11y.page": "Page {n}",
+	"a11y.viewItem": "View {name}",
+	"a11y.editItem": "Edit {name}",
+	"a11y.deleteItem": "Delete {name}",
+	"a11y.addItem": "Add {label}",
+	"a11y.changeItem": "Change {label}",
+	"a11y.deleteInlineRow": "Delete this row",
 } satisfies Catalog;
 
 /** Japanese catalog. Values mirror the literals previously hard-coded in each `.tsx` view. */
@@ -168,6 +181,19 @@ const ja = {
 	"auth.username": "ユーザー名",
 	"auth.password": "パスワード",
 	"auth.invalid": "正しいユーザー名とパスワードを入力してください。",
+	"a11y.skipToContent": "本文へスキップ",
+	"a11y.breadcrumb": "パンくず",
+	"a11y.dateDrilldown": "日付ドリルダウン",
+	"a11y.select": "選択",
+	"a11y.selectRow": "{name} を選択",
+	"a11y.sortBy": "{column} で並べ替え",
+	"a11y.page": "{n} ページ目",
+	"a11y.viewItem": "{name} を表示",
+	"a11y.editItem": "{name} を編集",
+	"a11y.deleteItem": "{name} を削除",
+	"a11y.addItem": "{label} を追加",
+	"a11y.changeItem": "{label} を変更",
+	"a11y.deleteInlineRow": "この行を削除",
 } satisfies Catalog;
 
 /** The key set of the admin panel's own catalog (`en` is authoritative; every other catalog mirrors the same keys). */
@@ -246,6 +272,19 @@ const zh = {
 	"auth.username": "用户名",
 	"auth.password": "密码",
 	"auth.invalid": "请输入正确的用户名和密码。",
+	"a11y.skipToContent": "跳至主要内容",
+	"a11y.breadcrumb": "面包屑导航",
+	"a11y.dateDrilldown": "日期下钻导航",
+	"a11y.select": "选择",
+	"a11y.selectRow": "选择 {name}",
+	"a11y.sortBy": "按 {column} 排序",
+	"a11y.page": "第 {n} 页",
+	"a11y.viewItem": "查看 {name}",
+	"a11y.editItem": "编辑 {name}",
+	"a11y.deleteItem": "删除 {name}",
+	"a11y.addItem": "添加 {label}",
+	"a11y.changeItem": "修改 {label}",
+	"a11y.deleteInlineRow": "删除此行",
 } satisfies AdminCatalog;
 
 /** Spanish catalog. */
@@ -321,6 +360,19 @@ const es = {
 	"auth.username": "Usuario",
 	"auth.password": "Contraseña",
 	"auth.invalid": "Introduzca un nombre de usuario y una contraseña correctos.",
+	"a11y.skipToContent": "Saltar al contenido principal",
+	"a11y.breadcrumb": "Ruta de navegación",
+	"a11y.dateDrilldown": "Navegación por fecha",
+	"a11y.select": "Seleccionar",
+	"a11y.selectRow": "Seleccionar {name}",
+	"a11y.sortBy": "Ordenar por {column}",
+	"a11y.page": "Página {n}",
+	"a11y.viewItem": "Ver {name}",
+	"a11y.editItem": "Editar {name}",
+	"a11y.deleteItem": "Eliminar {name}",
+	"a11y.addItem": "Añadir {label}",
+	"a11y.changeItem": "Editar {label}",
+	"a11y.deleteInlineRow": "Eliminar esta fila",
 } satisfies AdminCatalog;
 
 /** French catalog. */
@@ -396,6 +448,19 @@ const fr = {
 	"auth.username": "Nom d'utilisateur",
 	"auth.password": "Mot de passe",
 	"auth.invalid": "Veuillez saisir un nom d'utilisateur et un mot de passe corrects.",
+	"a11y.skipToContent": "Passer au contenu principal",
+	"a11y.breadcrumb": "Fil d'Ariane",
+	"a11y.dateDrilldown": "Navigation par date",
+	"a11y.select": "Sélectionner",
+	"a11y.selectRow": "Sélectionner {name}",
+	"a11y.sortBy": "Trier par {column}",
+	"a11y.page": "Page {n}",
+	"a11y.viewItem": "Voir {name}",
+	"a11y.editItem": "Modifier {name}",
+	"a11y.deleteItem": "Supprimer {name}",
+	"a11y.addItem": "Ajouter {label}",
+	"a11y.changeItem": "Modifier {label}",
+	"a11y.deleteInlineRow": "Supprimer cette ligne",
 } satisfies AdminCatalog;
 
 /** German catalog. */
@@ -471,6 +536,19 @@ const de = {
 	"auth.username": "Benutzername",
 	"auth.password": "Passwort",
 	"auth.invalid": "Bitte geben Sie einen korrekten Benutzernamen und ein korrektes Passwort ein.",
+	"a11y.skipToContent": "Zum Hauptinhalt springen",
+	"a11y.breadcrumb": "Brotkrümelnavigation",
+	"a11y.dateDrilldown": "Datums-Drilldown",
+	"a11y.select": "Auswählen",
+	"a11y.selectRow": "{name} auswählen",
+	"a11y.sortBy": "Nach {column} sortieren",
+	"a11y.page": "Seite {n}",
+	"a11y.viewItem": "{name} anzeigen",
+	"a11y.editItem": "{name} bearbeiten",
+	"a11y.deleteItem": "{name} löschen",
+	"a11y.addItem": "{label} hinzufügen",
+	"a11y.changeItem": "{label} ändern",
+	"a11y.deleteInlineRow": "Diese Zeile löschen",
 } satisfies AdminCatalog;
 
 /** Brazilian Portuguese catalog. */
@@ -546,6 +624,19 @@ const pt = {
 	"auth.username": "Nome de usuário",
 	"auth.password": "Senha",
 	"auth.invalid": "Digite um nome de usuário e uma senha corretos.",
+	"a11y.skipToContent": "Pular para o conteúdo principal",
+	"a11y.breadcrumb": "Trilha de navegação",
+	"a11y.dateDrilldown": "Navegação por data",
+	"a11y.select": "Selecionar",
+	"a11y.selectRow": "Selecionar {name}",
+	"a11y.sortBy": "Ordenar por {column}",
+	"a11y.page": "Página {n}",
+	"a11y.viewItem": "Ver {name}",
+	"a11y.editItem": "Editar {name}",
+	"a11y.deleteItem": "Excluir {name}",
+	"a11y.addItem": "Adicionar {label}",
+	"a11y.changeItem": "Alterar {label}",
+	"a11y.deleteInlineRow": "Excluir esta linha",
 } satisfies AdminCatalog;
 
 /** Russian catalog. */
@@ -621,6 +712,19 @@ const ru = {
 	"auth.username": "Имя пользователя",
 	"auth.password": "Пароль",
 	"auth.invalid": "Пожалуйста, введите правильные имя пользователя и пароль.",
+	"a11y.skipToContent": "Перейти к основному содержимому",
+	"a11y.breadcrumb": "Хлебные крошки",
+	"a11y.dateDrilldown": "Навигация по дате",
+	"a11y.select": "Выбрать",
+	"a11y.selectRow": "Выбрать {name}",
+	"a11y.sortBy": "Сортировать по {column}",
+	"a11y.page": "Страница {n}",
+	"a11y.viewItem": "Просмотреть {name}",
+	"a11y.editItem": "Изменить {name}",
+	"a11y.deleteItem": "Удалить {name}",
+	"a11y.addItem": "Добавить {label}",
+	"a11y.changeItem": "Изменить {label}",
+	"a11y.deleteInlineRow": "Удалить эту строку",
 } satisfies AdminCatalog;
 
 /** Korean catalog. */
@@ -696,6 +800,19 @@ const ko = {
 	"auth.username": "사용자 이름",
 	"auth.password": "비밀번호",
 	"auth.invalid": "올바른 사용자 이름과 비밀번호를 입력하세요.",
+	"a11y.skipToContent": "본문으로 건너뛰기",
+	"a11y.breadcrumb": "이동 경로",
+	"a11y.dateDrilldown": "날짜별 탐색",
+	"a11y.select": "선택",
+	"a11y.selectRow": "{name} 선택",
+	"a11y.sortBy": "{column} 기준 정렬",
+	"a11y.page": "{n} 페이지",
+	"a11y.viewItem": "{name} 보기",
+	"a11y.editItem": "{name} 편집",
+	"a11y.deleteItem": "{name} 삭제",
+	"a11y.addItem": "{label} 추가",
+	"a11y.changeItem": "{label} 변경",
+	"a11y.deleteInlineRow": "이 행 삭제",
 } satisfies AdminCatalog;
 
 /** Arabic catalog (right-to-left). */
@@ -771,6 +888,19 @@ const ar = {
 	"auth.username": "اسم المستخدم",
 	"auth.password": "كلمة المرور",
 	"auth.invalid": "يرجى إدخال اسم مستخدم وكلمة مرور صحيحين.",
+	"a11y.skipToContent": "تخطَّ إلى المحتوى الرئيسي",
+	"a11y.breadcrumb": "مسار التنقل",
+	"a11y.dateDrilldown": "التنقل حسب التاريخ",
+	"a11y.select": "تحديد",
+	"a11y.selectRow": "تحديد {name}",
+	"a11y.sortBy": "الترتيب حسب {column}",
+	"a11y.page": "الصفحة {n}",
+	"a11y.viewItem": "عرض {name}",
+	"a11y.editItem": "تعديل {name}",
+	"a11y.deleteItem": "حذف {name}",
+	"a11y.addItem": "إضافة {label}",
+	"a11y.changeItem": "تعديل {label}",
+	"a11y.deleteInlineRow": "حذف هذا الصف",
 } satisfies AdminCatalog;
 
 /**

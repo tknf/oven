@@ -24,7 +24,7 @@ const AuditFilterForm = ({
 	t: AdminT;
 }) => (
 	<div id="toolbar">
-		<form method="get" action={`${basePath}/audit`}>
+		<form role="search" method="get" action={`${basePath}/audit`}>
 			<label>
 				actor
 				<input type="text" name="actor" value={filter.actor ?? ""} />
@@ -49,19 +49,20 @@ const AuditRowsTable = ({ rows, t }: { rows: AdminAuditRow[]; t: AdminT }) => {
 	return (
 		<div class="module">
 			<table>
+				<caption class="visually-hidden">{t("nav.audit")}</caption>
 				<thead>
 					<tr>
-						<th>{t("audit.col.time")}</th>
-						<th>actor</th>
-						<th>action</th>
-						<th>target</th>
-						<th>{t("audit.col.changes")}</th>
+						<th scope="col">{t("audit.col.time")}</th>
+						<th scope="col">actor</th>
+						<th scope="col">action</th>
+						<th scope="col">target</th>
+						<th scope="col">{t("audit.col.changes")}</th>
 					</tr>
 				</thead>
 				<tbody>
 					{rows.map((row) => (
 						<tr>
-							<td>{new Date(row.createdAt).toISOString()}</td>
+							<th scope="row">{new Date(row.createdAt).toISOString()}</th>
 							<td>{row.actor}</td>
 							<td>{row.action}</td>
 							<td>{row.target}</td>

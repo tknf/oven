@@ -66,10 +66,18 @@ export const AdminResourceShowView = ({
 			</div>
 			{canWrite && (
 				<>
-					<a class="button" href={`${detailHref}/edit`}>
+					<a
+						class="button"
+						href={`${detailHref}/edit`}
+						aria-label={t("a11y.editItem", { name: label })}
+					>
 						{t("action.edit")}
 					</a>
-					<a class="deletelink" href={`${detailHref}/delete`}>
+					<a
+						class="deletelink"
+						href={`${detailHref}/delete`}
+						aria-label={t("a11y.deleteItem", { name: label })}
+					>
 						{t("action.delete")}
 					</a>
 				</>

@@ -47,20 +47,21 @@ const PendingJobsTable = ({
 	return (
 		<div class="module">
 			<table>
+				<caption class="visually-hidden">{t("jobs.pending")}</caption>
 				<thead>
 					<tr>
-						<th>ID</th>
-						<th>{t("col.name")}</th>
-						<th>{t("jobs.col.priority")}</th>
-						<th>{t("jobs.col.runAt")}</th>
-						<th>{t("jobs.col.attempts")}</th>
-						<th />
+						<th scope="col">ID</th>
+						<th scope="col">{t("col.name")}</th>
+						<th scope="col">{t("jobs.col.priority")}</th>
+						<th scope="col">{t("jobs.col.runAt")}</th>
+						<th scope="col">{t("jobs.col.attempts")}</th>
+						<th scope="col" />
 					</tr>
 				</thead>
 				<tbody>
 					{pending.map((row) => (
 						<tr>
-							<td>{row.id}</td>
+							<th scope="row">{row.id}</th>
 							<td>{row.name}</td>
 							<td>{row.priority}</td>
 							<td>{formatTime(row.runAt)}</td>
@@ -71,7 +72,9 @@ const PendingJobsTable = ({
 									action={`${basePath}/jobs/${encodeURIComponent(row.id)}/delete`}
 								>
 									<CsrfHiddenInput csrfToken={csrfToken} />
-									<button type="submit">{t("action.delete")}</button>
+									<button type="submit" aria-label={t("a11y.deleteItem", { name: row.id })}>
+										{t("action.delete")}
+									</button>
 								</form>
 							</td>
 						</tr>
@@ -99,20 +102,21 @@ const FailedJobsTable = ({
 	return (
 		<div class="module">
 			<table>
+				<caption class="visually-hidden">{t("jobs.failed")}</caption>
 				<thead>
 					<tr>
-						<th>ID</th>
-						<th>{t("col.name")}</th>
-						<th>{t("jobs.col.attempts")}</th>
-						<th>{t("jobs.col.failedAt")}</th>
-						<th>{t("jobs.col.error")}</th>
-						<th />
+						<th scope="col">ID</th>
+						<th scope="col">{t("col.name")}</th>
+						<th scope="col">{t("jobs.col.attempts")}</th>
+						<th scope="col">{t("jobs.col.failedAt")}</th>
+						<th scope="col">{t("jobs.col.error")}</th>
+						<th scope="col" />
 					</tr>
 				</thead>
 				<tbody>
 					{failed.map((row) => (
 						<tr>
-							<td>{row.id}</td>
+							<th scope="row">{row.id}</th>
 							<td>{row.name}</td>
 							<td>{row.attempts}</td>
 							<td>{formatTime(row.failedAt)}</td>
@@ -120,14 +124,18 @@ const FailedJobsTable = ({
 							<td>
 								<form method="post" action={`${basePath}/jobs/${encodeURIComponent(row.id)}/retry`}>
 									<CsrfHiddenInput csrfToken={csrfToken} />
-									<button type="submit">{t("action.retry")}</button>
+									<button type="submit" aria-label={`${t("action.retry")} ${row.id}`}>
+										{t("action.retry")}
+									</button>
 								</form>
 								<form
 									method="post"
 									action={`${basePath}/jobs/${encodeURIComponent(row.id)}/delete`}
 								>
 									<CsrfHiddenInput csrfToken={csrfToken} />
-									<button type="submit">{t("action.delete")}</button>
+									<button type="submit" aria-label={t("a11y.deleteItem", { name: row.id })}>
+										{t("action.delete")}
+									</button>
 								</form>
 							</td>
 						</tr>

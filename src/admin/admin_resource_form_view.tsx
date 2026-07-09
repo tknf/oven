@@ -67,33 +67,44 @@ const DeleteLink = ({
 	basePath,
 	resourceKey,
 	id,
+	label,
 	t,
 }: {
 	basePath: string;
 	resourceKey: string;
 	id: string;
+	label: string;
 	t: AdminT;
 }) => (
 	<a
 		class="deletelink"
 		href={`${basePath}/resources/${resourceKey}/${encodeURIComponent(id)}/delete`}
+		aria-label={t("a11y.deleteItem", { name: label })}
 	>
 		{t("action.delete")}
 	</a>
 );
 
-/** One inline group's fixed-row table (see the module JSDoc "Inline child relations"). */
+/**
+ * One inline group's fixed-row table (see the module JSDoc "Inline child
+ * relations"). Gets a `.visually-hidden` `<caption>` (the group's label) and
+ * `scope="col"` headers, same accessible-table shape as the resource list's
+ * `ResourceTable`. Each row's delete checkbox is given an `id` + `aria-label`
+ * since it has no adjacent visible text of its own (the column header alone
+ * conveys its purpose visually).
+ */
 const InlineGroupView = ({ group, t }: { group: AdminInlineGroup; t: AdminT }) => (
 	<div class="inline-group">
 		<h2>{group.label}</h2>
 		<input type="hidden" name={`${group.key}-__total`} value={String(group.total)} />
 		<table class="tabular-inline">
+			<caption class="visually-hidden">{group.label}</caption>
 			<thead>
 				<tr>
 					{group.headers.map((header) => (
-						<th>{header}</th>
+						<th scope="col">{header}</th>
 					))}
-					<th>{t("action.delete")}</th>
+					<th scope="col">{t("action.delete")}</th>
 				</tr>
 			</thead>
 			<tbody>
@@ -111,7 +122,12 @@ const InlineGroupView = ({ group, t }: { group: AdminInlineGroup; t: AdminT }) =
 							{row.pk !== undefined && (
 								<>
 									<input type="hidden" name={`${group.key}-${row.index}-__pk`} value={row.pk} />
-									<input type="checkbox" name={`${group.key}-${row.index}-__delete`} />
+									<input
+										type="checkbox"
+										id={`${group.key}-${row.index}-__delete`}
+										name={`${group.key}-${row.index}-__delete`}
+										aria-label={t("a11y.deleteInlineRow")}
+									/>
 								</>
 							)}
 						</td>
@@ -156,7 +172,7 @@ export const AdminResourceFormView = ({
 			</div>
 		</FormView>
 		{mode === "edit" && id !== undefined && (
-			<DeleteLink basePath={basePath} resourceKey={resourceKey} id={id} t={t} />
+			<DeleteLink basePath={basePath} resourceKey={resourceKey} id={id} label={label} t={t} />
 		)}
 		<a href={`${basePath}/resources/${resourceKey}`}>{t("action.backToList")}</a>
 	</>

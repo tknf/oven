@@ -39,7 +39,7 @@ export const AdminResourceBulkDeleteView = ({
 
 	return (
 		<>
-			<p>{t("delete.confirmSelected", { label })}</p>
+			<h2>{t("delete.confirmSelected", { label })}</h2>
 			<div class="module">
 				<ul>
 					{selected.map((id) => (

@@ -188,8 +188,14 @@ export type AdminResourceListViewProps = {
  * (`current`). Links are pre-built by `AdminPanel`, so this component only
  * renders the given `label`/`href` pairs.
  */
-const DateHierarchyNav = ({ dateHierarchy }: { dateHierarchy: AdminDateHierarchyNav }) => (
-	<nav class="date-hierarchy">
+const DateHierarchyNav = ({
+	dateHierarchy,
+	t,
+}: {
+	dateHierarchy: AdminDateHierarchyNav;
+	t: AdminT;
+}) => (
+	<nav class="date-hierarchy" aria-label={t("a11y.dateDrilldown")}>
 		<ul>
 			{dateHierarchy.back && (
 				<li>
@@ -214,7 +220,9 @@ const DateHierarchyNav = ({ dateHierarchy }: { dateHierarchy: AdminDateHierarchy
  * only submits its own named fields, the current sort and active filters are
  * carried through as hidden inputs (dropping `p`, so a new search always lands
  * on page 0 — the same "changing the query resets pagination" convention as
- * the sort/filter links).
+ * the sort/filter links). `role="search"` marks the form as a search landmark;
+ * the `q` input's visible label is `.visually-hidden` since the submit button
+ * text ("Search") already conveys its purpose visually.
  */
 const SearchForm = ({
 	basePath,
@@ -234,8 +242,11 @@ const SearchForm = ({
 	t: AdminT;
 }) => (
 	<div id="toolbar">
-		<form method="get" action={`${basePath}/resources/${resourceKey}`}>
-			<input type="search" name="q" value={query} />
+		<form role="search" method="get" action={`${basePath}/resources/${resourceKey}`}>
+			<label class="visually-hidden" for="admin-search">
+				{t("action.search")}
+			</label>
+			<input type="search" id="admin-search" name="q" value={query} />
 			{sort !== null && (
 				<input
 					type="hidden"
@@ -253,17 +264,40 @@ const SearchForm = ({
 );
 
 /**
+ * A row's display name for `aria-label`s (row-selection checkbox, per-row
+ * action links): the first display column's stringified value, falling back
+ * to the primary key `id` when that column is empty (e.g. `null`).
+ */
+const rowDisplayName = (row: Record<string, unknown>, columns: string[], id: string): string => {
+	const first = columns[0];
+	const value = first !== undefined ? stringify(row[first]) : "";
+	return value !== "" ? value : id;
+};
+
+/**
  * List table body. Renders only the "no matches" message when there are 0
  * rows. Every display column's header is a sort link (`class="sortable
  * column-{name}"`; the active column additionally gets `sorted
- * ascending`/`sorted descending`) built from `state`/`buildListUrl`: clicking an
- * inactive column sorts it ascending, clicking the active column toggles its
- * direction — a single-column sort, matching a familiar admin-console
- * convention (multi-column sort is out of scope here).
+ * ascending`/`sorted descending"` and `aria-sort`) built from
+ * `state`/`buildListUrl`: clicking an inactive column sorts it ascending,
+ * clicking the active column toggles its direction — a single-column sort,
+ * matching a familiar admin-console convention (multi-column sort is out of
+ * scope here).
+ *
+ * The table gets a visually-hidden `<caption>` (its accessible name, since
+ * there is no visible heading directly above it) and every header cell a
+ * `scope="col"`; the first display column of each row is additionally
+ * rendered as `<th scope="row">` rather than `<td>`, since it is that row's
+ * identifying label. There is no "select all" checkbox — a JS-free page
+ * cannot make it do anything, and an inert control mostly confuses assistive
+ * technology — so the header's row-selection column is a `.visually-hidden`
+ * label instead, keeping the column non-empty for screen readers without
+ * implying it's interactive.
  */
 const ResourceTable = ({
 	basePath,
 	resourceKey,
+	label,
 	columns,
 	rows,
 	primaryKey,
@@ -273,6 +307,7 @@ const ResourceTable = ({
 }: {
 	basePath: string;
 	resourceKey: string;
+	label: string;
 	columns: string[];
 	rows: Record<string, unknown>[];
 	primaryKey: string;
@@ -285,11 +320,12 @@ const ResourceTable = ({
 	return (
 		<div class="module">
 			<table>
+				<caption class="visually-hidden">{label}</caption>
 				<thead>
 					<tr>
 						{canWrite && (
-							<th class="action-checkbox-column">
-								<input type="checkbox" id="action-toggle" />
+							<th class="action-checkbox-column" scope="col">
+								<span class="visually-hidden">{t("a11y.select")}</span>
 							</th>
 						)}
 						{columns.map((name, index) => {
@@ -303,22 +339,32 @@ const ResourceTable = ({
 								sortIndex: index,
 								sortDirection: nextDirection,
 							});
+							const ariaSort = !isActive
+								? "none"
+								: direction === "asc"
+									? "ascending"
+									: "descending";
 							return (
-								<th class={classNames.join(" ")}>
-									<a href={href}>
+								<th class={classNames.join(" ")} scope="col" aria-sort={ariaSort}>
+									<a href={href} aria-label={t("a11y.sortBy", { column: name })}>
 										{name}
-										{direction === "asc" ? " ▲" : direction === "desc" ? " ▼" : ""}
+										{direction === "asc" ? (
+											<span aria-hidden="true"> ▲</span>
+										) : direction === "desc" ? (
+											<span aria-hidden="true"> ▼</span>
+										) : null}
 									</a>
 								</th>
 							);
 						})}
-						<th />
+						<th scope="col" />
 					</tr>
 				</thead>
 				<tbody>
 					{rows.map((row) => {
 						const id = stringify(row[primaryKey]);
 						const detailHref = `${basePath}/resources/${resourceKey}/${encodeURIComponent(id)}`;
+						const name = rowDisplayName(row, columns, id);
 						return (
 							<tr>
 								{canWrite && (
@@ -328,18 +374,31 @@ const ResourceTable = ({
 											class="action-select"
 											name="_selected_action"
 											value={id}
+											aria-label={t("a11y.selectRow", { name })}
 										/>
 									</td>
 								)}
-								{columns.map((name) => (
-									<td>{stringify(row[name])}</td>
-								))}
+								{columns.map((columnName, index) =>
+									index === 0 ? (
+										<th scope="row">{stringify(row[columnName])}</th>
+									) : (
+										<td>{stringify(row[columnName])}</td>
+									),
+								)}
 								<td>
-									<a href={detailHref}>{t("action.detail")}</a>
+									<a href={detailHref} aria-label={t("a11y.viewItem", { name })}>
+										{t("action.detail")}
+									</a>
 									{canWrite && (
 										<>
-											<a href={`${detailHref}/edit`}>{t("action.edit")}</a>
-											<a class="deletelink" href={`${detailHref}/delete`}>
+											<a href={`${detailHref}/edit`} aria-label={t("a11y.editItem", { name })}>
+												{t("action.edit")}
+											</a>
+											<a
+												class="deletelink"
+												href={`${detailHref}/delete`}
+												aria-label={t("a11y.deleteItem", { name })}
+											>
 												{t("action.delete")}
 											</a>
 										</>
@@ -451,6 +510,7 @@ const Paginator = ({
 	pageCount,
 	total,
 	label,
+	t,
 }: {
 	basePath: string;
 	resourceKey: string;
@@ -459,6 +519,7 @@ const Paginator = ({
 	pageCount: number;
 	total: number;
 	label: string;
+	t: AdminT;
 }) => (
 	<nav class="paginator" aria-label="pagination">
 		{pageCount > 1 &&
@@ -473,7 +534,14 @@ const Paginator = ({
 						</span>
 					);
 				}
-				return <a href={buildListUrl(basePath, resourceKey, state, entry)}>{entry + 1}</a>;
+				return (
+					<a
+						href={buildListUrl(basePath, resourceKey, state, entry)}
+						aria-label={t("a11y.page", { n: entry + 1 })}
+					>
+						{entry + 1}
+					</a>
+				);
 			})}
 		<span class="result-count">
 			{total} {label}
@@ -508,6 +576,7 @@ export const AdminResourceListView = ({
 		<ResourceTable
 			basePath={basePath}
 			resourceKey={resourceKey}
+			label={label}
 			columns={columns}
 			rows={rows}
 			primaryKey={primaryKey}
@@ -521,12 +590,12 @@ export const AdminResourceListView = ({
 		<>
 			{canWrite && (
 				<div class="object-tools">
-					<a class="addlink" href={`${listUrl}/new`}>
+					<a class="addlink" href={`${listUrl}/new`} aria-label={t("a11y.addItem", { label })}>
 						{t("action.create")}
 					</a>
 				</div>
 			)}
-			{dateHierarchy && <DateHierarchyNav dateHierarchy={dateHierarchy} />}
+			{dateHierarchy && <DateHierarchyNav dateHierarchy={dateHierarchy} t={t} />}
 			{searchEnabled && (
 				<SearchForm
 					basePath={basePath}
@@ -557,6 +626,7 @@ export const AdminResourceListView = ({
 				pageCount={pageCount}
 				total={total}
 				label={label}
+				t={t}
 			/>
 		</>
 	);

@@ -894,26 +894,38 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 					messages={this.consumeMessages(c)}
 					userTools={this.resolveUserTools(c)}
 					csrfToken={this.csrfToken(c)}
+					currentPath={c.req.path}
+					t={t}
 				>
 					{resources.length > 0 ? (
 						<div class="module">
 							<h2>{t("index.resources")}</h2>
 							<table>
+								<caption class="visually-hidden">{t("index.resources")}</caption>
 								<tbody>
 									{resources.map((resource) => (
 										<tr>
-											<th>
+											<th scope="row">
 												<a href={`${basePath}/resources/${resource.key}`}>{resource.label}</a>
 											</th>
 											<td>
 												{resource.canWrite() ? (
-													<a class="addlink" href={`${basePath}/resources/${resource.key}/new`}>
+													<a
+														class="addlink"
+														href={`${basePath}/resources/${resource.key}/new`}
+														aria-label={t("a11y.addItem", { label: resource.label })}
+													>
 														{t("action.add")}
 													</a>
 												) : null}
 											</td>
 											<td>
-												<a href={`${basePath}/resources/${resource.key}`}>{t("action.change")}</a>
+												<a
+													href={`${basePath}/resources/${resource.key}`}
+													aria-label={t("a11y.changeItem", { label: resource.label })}
+												>
+													{t("action.change")}
+												</a>
 											</td>
 										</tr>
 									))}
@@ -1102,6 +1114,8 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 					messages={this.consumeMessages(c)}
 					userTools={this.resolveUserTools(c)}
 					csrfToken={this.csrfToken(c)}
+					currentPath={c.req.path}
+					t={t}
 				>
 					<AdminResourceBulkDeleteView
 						basePath={basePath}
@@ -1244,6 +1258,8 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 					messages={this.consumeMessages(c)}
 					userTools={this.resolveUserTools(c)}
 					csrfToken={this.csrfToken(c)}
+					currentPath={c.req.path}
+					t={t}
 				>
 					<AdminJobsView
 						basePath={this.resolveBasePath()}
@@ -1305,6 +1321,8 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 					messages={this.consumeMessages(c)}
 					userTools={this.resolveUserTools(c)}
 					csrfToken={this.csrfToken(c)}
+					currentPath={c.req.path}
+					t={t}
 				>
 					<AdminSettingsView
 						basePath={this.resolveBasePath()}
@@ -1371,6 +1389,8 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 					messages={this.consumeMessages(c)}
 					userTools={this.resolveUserTools(c)}
 					csrfToken={this.csrfToken(c)}
+					currentPath={c.req.path}
+					t={t}
 				>
 					<AdminAuditView
 						basePath={this.resolveBasePath()}
@@ -1474,6 +1494,8 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 						messages={this.consumeMessages(c)}
 						userTools={this.resolveUserTools(c)}
 						csrfToken={this.csrfToken(c)}
+						currentPath={c.req.path}
+						t={t}
 					>
 						<AdminResourceListView
 							basePath={this.resolveBasePath()}
@@ -1524,6 +1546,8 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 							messages={this.consumeMessages(c)}
 							userTools={this.resolveUserTools(c)}
 							csrfToken={this.csrfToken(c)}
+							currentPath={c.req.path}
+							t={t}
 						>
 							<AdminResourceFormView
 								basePath={this.resolveBasePath()}
@@ -1564,6 +1588,8 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 						messages={this.consumeMessages(c)}
 						userTools={this.resolveUserTools(c)}
 						csrfToken={this.csrfToken(c)}
+						currentPath={c.req.path}
+						t={t}
 					>
 						<AdminResourceShowView
 							basePath={this.resolveBasePath()}
@@ -1629,6 +1655,8 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 								]}
 								userTools={this.resolveUserTools(c)}
 								csrfToken={this.csrfToken(c)}
+								currentPath={c.req.path}
+								t={t}
 							>
 								<AdminResourceFormView
 									basePath={this.resolveBasePath()}
@@ -1684,6 +1712,8 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 							messages={this.consumeMessages(c)}
 							userTools={this.resolveUserTools(c)}
 							csrfToken={this.csrfToken(c)}
+							currentPath={c.req.path}
+							t={t}
 						>
 							<AdminResourceFormView
 								basePath={this.resolveBasePath()}
@@ -1749,6 +1779,8 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 								]}
 								userTools={this.resolveUserTools(c)}
 								csrfToken={this.csrfToken(c)}
+								currentPath={c.req.path}
+								t={t}
 							>
 								<AdminResourceFormView
 									basePath={this.resolveBasePath()}
@@ -1813,6 +1845,8 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 							messages={this.consumeMessages(c)}
 							userTools={this.resolveUserTools(c)}
 							csrfToken={this.csrfToken(c)}
+							currentPath={c.req.path}
+							t={t}
 						>
 							<AdminResourceDeleteView
 								basePath={basePath}

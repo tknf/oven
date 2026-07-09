@@ -671,7 +671,8 @@ describe("AdminPanel resource CRUD", () => {
 		const body = await res.text();
 
 		expect(body).toContain('id="nav-sidebar"');
-		const sidebar = body.slice(body.indexOf('id="nav-sidebar"'), body.indexOf("</nav>"));
+		const sidebarStart = body.indexOf('id="nav-sidebar"');
+		const sidebar = body.slice(sidebarStart, body.indexOf("</nav>", sidebarStart));
 		expect(sidebar).toContain('href="/admin/resources/publishers"');
 		expect(sidebar).toContain("Publisher");
 	});
@@ -1210,7 +1211,14 @@ describe("AdminPanel resource CRUD list: sorting and numbered pagination", () =>
 		const res = await app.request("/admin/resources/publishers");
 		const body = await res.text();
 
-		expect(body).not.toContain("aria-current");
+		/**
+		 * `aria-current="page"` can legitimately appear elsewhere on this screen (the
+		 * sidebar marks the currently active resource), so the assertion is scoped to
+		 * the paginator landmark specifically.
+		 */
+		const paginatorStart = body.indexOf('class="paginator"');
+		const paginator = body.slice(paginatorStart, body.indexOf("</nav>", paginatorStart));
+		expect(paginator).not.toContain("aria-current");
 		expect(body).toContain("1 Publisher");
 	});
 

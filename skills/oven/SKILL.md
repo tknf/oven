@@ -252,6 +252,12 @@ username, password }) => Promise<AdminIdentity | null>` (verify however
   write and the child writes are separate sequential calls, not one
   transaction. The child `Form#fields()` must omit the foreign key column
   (`AdminPanel` sets it itself on create).
+- **`AdminPanel`'s markup targets WCAG 2.1 AAA** — a skip link to `#content`,
+  a `<nav>`/`<ol>` breadcrumb trail, sortable/labeled table headers
+  (`scope`, `aria-sort`, per-link `aria-label`), no inert "select all"
+  checkbox, and `aria-current="page"` on both the active sidebar item and
+  the current breadcrumb; every added string lives under the `a11y.*`
+  catalog keys in `admin_catalog.ts`.
 - **`BroadcastWebSocket` needs an Origin check + connection authorization** in
   the `authorize` hook / `channels` callback (prevents Cross-Site WebSocket
   Hijacking).
