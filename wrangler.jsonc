@@ -1,0 +1,23 @@
+{
+	"$schema": "./node_modules/wrangler/config-schema.json",
+	"name": "oven-test",
+	"compatibility_date": "2026-07-02",
+	"main": "src/index.ts",
+	/**
+	 * Only define the bindings actually used by `test/workers/**` (the workerd project).
+	 * KV: `cloudflare_kv_store.test.ts` / `rate_limiter.test.ts`. R2: `r2_storage.test.ts`.
+	 * App-specific bindings such as TURSO are not defined since this library's tests don't use them.
+	 */
+	"kv_namespaces": [
+		{
+			"binding": "KV",
+			"id": "test-kv-namespace",
+		},
+	],
+	"r2_buckets": [
+		{
+			"binding": "TEST_BUCKET",
+			"bucket_name": "oven-test-bucket",
+		},
+	],
+}

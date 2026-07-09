@@ -1,0 +1,1 @@
+ALTER TABLE `jobs` ADD `priority` integer NOT NULL;

@@ -1,0 +1,403 @@
+{
+	"id": "025b1e93-e318-4f49-8fb6-08cc4929a640",
+	"prevId": "34a32c58-7264-4beb-95ce-812f350a1abf",
+	"version": "7",
+	"dialect": "postgresql",
+	"tables": {
+		"public.audits": {
+			"name": "audits",
+			"schema": "",
+			"columns": {
+				"id": {
+					"name": "id",
+					"type": "text",
+					"primaryKey": true,
+					"notNull": true
+				},
+				"actor": {
+					"name": "actor",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true
+				},
+				"action": {
+					"name": "action",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true
+				},
+				"target": {
+					"name": "target",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true
+				},
+				"changes": {
+					"name": "changes",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false
+				},
+				"created_at": {
+					"name": "created_at",
+					"type": "bigint",
+					"primaryKey": false,
+					"notNull": true
+				}
+			},
+			"indexes": {
+				"audits_created_at_idx": {
+					"name": "audits_created_at_idx",
+					"columns": [
+						{
+							"expression": "created_at",
+							"isExpression": false,
+							"asc": true,
+							"nulls": "last"
+						}
+					],
+					"isUnique": false,
+					"concurrently": false,
+					"method": "btree",
+					"with": {}
+				}
+			},
+			"foreignKeys": {},
+			"compositePrimaryKeys": {},
+			"uniqueConstraints": {},
+			"policies": {},
+			"checkConstraints": {},
+			"isRLSEnabled": false
+		},
+		"public.broadcasts": {
+			"name": "broadcasts",
+			"schema": "",
+			"columns": {
+				"id": {
+					"name": "id",
+					"type": "bigserial",
+					"primaryKey": true,
+					"notNull": true
+				},
+				"channel": {
+					"name": "channel",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true
+				},
+				"data": {
+					"name": "data",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true
+				},
+				"event": {
+					"name": "event",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false
+				},
+				"created_at": {
+					"name": "created_at",
+					"type": "bigint",
+					"primaryKey": false,
+					"notNull": true
+				}
+			},
+			"indexes": {
+				"broadcasts_created_at_idx": {
+					"name": "broadcasts_created_at_idx",
+					"columns": [
+						{
+							"expression": "created_at",
+							"isExpression": false,
+							"asc": true,
+							"nulls": "last"
+						}
+					],
+					"isUnique": false,
+					"concurrently": false,
+					"method": "btree",
+					"with": {}
+				},
+				"broadcasts_channel_id_idx": {
+					"name": "broadcasts_channel_id_idx",
+					"columns": [
+						{
+							"expression": "channel",
+							"isExpression": false,
+							"asc": true,
+							"nulls": "last"
+						},
+						{
+							"expression": "id",
+							"isExpression": false,
+							"asc": true,
+							"nulls": "last"
+						}
+					],
+					"isUnique": false,
+					"concurrently": false,
+					"method": "btree",
+					"with": {}
+				}
+			},
+			"foreignKeys": {},
+			"compositePrimaryKeys": {},
+			"uniqueConstraints": {},
+			"policies": {},
+			"checkConstraints": {},
+			"isRLSEnabled": false
+		},
+		"public.jobs": {
+			"name": "jobs",
+			"schema": "",
+			"columns": {
+				"id": {
+					"name": "id",
+					"type": "text",
+					"primaryKey": true,
+					"notNull": true
+				},
+				"name": {
+					"name": "name",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true
+				},
+				"payload": {
+					"name": "payload",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true
+				},
+				"run_at": {
+					"name": "run_at",
+					"type": "bigint",
+					"primaryKey": false,
+					"notNull": true
+				},
+				"priority": {
+					"name": "priority",
+					"type": "integer",
+					"primaryKey": false,
+					"notNull": true
+				},
+				"attempts": {
+					"name": "attempts",
+					"type": "integer",
+					"primaryKey": false,
+					"notNull": true
+				},
+				"locked_at": {
+					"name": "locked_at",
+					"type": "bigint",
+					"primaryKey": false,
+					"notNull": false
+				},
+				"failed_at": {
+					"name": "failed_at",
+					"type": "bigint",
+					"primaryKey": false,
+					"notNull": false
+				},
+				"last_error": {
+					"name": "last_error",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false
+				},
+				"created_at": {
+					"name": "created_at",
+					"type": "bigint",
+					"primaryKey": false,
+					"notNull": true
+				}
+			},
+			"indexes": {
+				"jobs_priority_run_at_idx": {
+					"name": "jobs_priority_run_at_idx",
+					"columns": [
+						{
+							"expression": "priority",
+							"isExpression": false,
+							"asc": true,
+							"nulls": "last"
+						},
+						{
+							"expression": "run_at",
+							"isExpression": false,
+							"asc": true,
+							"nulls": "last"
+						}
+					],
+					"isUnique": false,
+					"concurrently": false,
+					"method": "btree",
+					"with": {}
+				}
+			},
+			"foreignKeys": {},
+			"compositePrimaryKeys": {},
+			"uniqueConstraints": {},
+			"policies": {},
+			"checkConstraints": {},
+			"isRLSEnabled": false
+		},
+		"public.kv_entries": {
+			"name": "kv_entries",
+			"schema": "",
+			"columns": {
+				"key": {
+					"name": "key",
+					"type": "text",
+					"primaryKey": true,
+					"notNull": true
+				},
+				"value": {
+					"name": "value",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true
+				},
+				"expires_at": {
+					"name": "expires_at",
+					"type": "bigint",
+					"primaryKey": false,
+					"notNull": false
+				}
+			},
+			"indexes": {
+				"kv_entries_expires_at_idx": {
+					"name": "kv_entries_expires_at_idx",
+					"columns": [
+						{
+							"expression": "expires_at",
+							"isExpression": false,
+							"asc": true,
+							"nulls": "last"
+						}
+					],
+					"isUnique": false,
+					"concurrently": false,
+					"method": "btree",
+					"with": {}
+				}
+			},
+			"foreignKeys": {},
+			"compositePrimaryKeys": {},
+			"uniqueConstraints": {},
+			"policies": {},
+			"checkConstraints": {},
+			"isRLSEnabled": false
+		},
+		"public.publishers": {
+			"name": "publishers",
+			"schema": "",
+			"columns": {
+				"id": {
+					"name": "id",
+					"type": "text",
+					"primaryKey": true,
+					"notNull": true
+				},
+				"name": {
+					"name": "name",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true
+				},
+				"contact_email": {
+					"name": "contact_email",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true
+				},
+				"status": {
+					"name": "status",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true,
+					"default": "'active'"
+				},
+				"created_at": {
+					"name": "created_at",
+					"type": "bigint",
+					"primaryKey": false,
+					"notNull": true
+				},
+				"updated_at": {
+					"name": "updated_at",
+					"type": "bigint",
+					"primaryKey": false,
+					"notNull": true
+				}
+			},
+			"indexes": {},
+			"foreignKeys": {},
+			"compositePrimaryKeys": {},
+			"uniqueConstraints": {},
+			"policies": {},
+			"checkConstraints": {},
+			"isRLSEnabled": false
+		},
+		"public.sessions": {
+			"name": "sessions",
+			"schema": "",
+			"columns": {
+				"id": {
+					"name": "id",
+					"type": "text",
+					"primaryKey": true,
+					"notNull": true
+				},
+				"data": {
+					"name": "data",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true
+				},
+				"expires_at": {
+					"name": "expires_at",
+					"type": "bigint",
+					"primaryKey": false,
+					"notNull": true
+				}
+			},
+			"indexes": {
+				"sessions_expires_at_idx": {
+					"name": "sessions_expires_at_idx",
+					"columns": [
+						{
+							"expression": "expires_at",
+							"isExpression": false,
+							"asc": true,
+							"nulls": "last"
+						}
+					],
+					"isUnique": false,
+					"concurrently": false,
+					"method": "btree",
+					"with": {}
+				}
+			},
+			"foreignKeys": {},
+			"compositePrimaryKeys": {},
+			"uniqueConstraints": {},
+			"policies": {},
+			"checkConstraints": {},
+			"isRLSEnabled": false
+		}
+	},
+	"enums": {},
+	"schemas": {},
+	"sequences": {},
+	"roles": {},
+	"policies": {},
+	"views": {},
+	"_meta": {
+		"columns": {},
+		"schemas": {},
+		"tables": {}
+	}
+}

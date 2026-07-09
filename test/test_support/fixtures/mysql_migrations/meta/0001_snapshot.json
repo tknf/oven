@@ -1,0 +1,154 @@
+{
+	"version": "5",
+	"dialect": "mysql",
+	"id": "18dd6df5-cb2d-4ba9-9a78-2995f064329a",
+	"prevId": "f6cc3439-6fb2-4db9-b0c2-05d9b1cf4ccf",
+	"tables": {
+		"jobs": {
+			"name": "jobs",
+			"columns": {
+				"id": {
+					"name": "id",
+					"type": "varchar(255)",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"name": {
+					"name": "name",
+					"type": "varchar(255)",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"payload": {
+					"name": "payload",
+					"type": "varchar(4096)",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"run_at": {
+					"name": "run_at",
+					"type": "bigint",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"attempts": {
+					"name": "attempts",
+					"type": "int",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"locked_at": {
+					"name": "locked_at",
+					"type": "bigint",
+					"primaryKey": false,
+					"notNull": false,
+					"autoincrement": false
+				},
+				"failed_at": {
+					"name": "failed_at",
+					"type": "bigint",
+					"primaryKey": false,
+					"notNull": false,
+					"autoincrement": false
+				},
+				"last_error": {
+					"name": "last_error",
+					"type": "varchar(2048)",
+					"primaryKey": false,
+					"notNull": false,
+					"autoincrement": false
+				},
+				"created_at": {
+					"name": "created_at",
+					"type": "bigint",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				}
+			},
+			"indexes": {},
+			"foreignKeys": {},
+			"compositePrimaryKeys": {
+				"jobs_id": {
+					"name": "jobs_id",
+					"columns": ["id"]
+				}
+			},
+			"uniqueConstraints": {},
+			"checkConstraint": {}
+		},
+		"publishers": {
+			"name": "publishers",
+			"columns": {
+				"id": {
+					"name": "id",
+					"type": "varchar(255)",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"name": {
+					"name": "name",
+					"type": "varchar(255)",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"contact_email": {
+					"name": "contact_email",
+					"type": "varchar(255)",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"status": {
+					"name": "status",
+					"type": "varchar(255)",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false,
+					"default": "'active'"
+				},
+				"created_at": {
+					"name": "created_at",
+					"type": "bigint",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"updated_at": {
+					"name": "updated_at",
+					"type": "bigint",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				}
+			},
+			"indexes": {},
+			"foreignKeys": {},
+			"compositePrimaryKeys": {
+				"publishers_id": {
+					"name": "publishers_id",
+					"columns": ["id"]
+				}
+			},
+			"uniqueConstraints": {},
+			"checkConstraint": {}
+		}
+	},
+	"views": {},
+	"_meta": {
+		"schemas": {},
+		"tables": {},
+		"columns": {}
+	},
+	"internal": {
+		"tables": {},
+		"indexes": {}
+	}
+}

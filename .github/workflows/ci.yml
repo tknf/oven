@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths-ignore:
+      - "docs/**"
+      - ".vscode/**"
+      - "**/*.md"
+      - ".gitignore"
+      - "LICENSE"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  ci:
+    name: Check, typecheck, test
+    runs-on: ubuntu-latest
+    # MySQL adapter tests (model / kv / session / jobs / audit / realtime) are
+    # gated behind OVEN_MYSQL_TEST_URL and otherwise skipped. A service container
+    # provides a real server so they run in CI; each test provisions its own
+    # tables (inline CREATE TABLE or runtime migrate() from the committed
+    # fixtures under test/test_support/fixtures/mysql_migrations).
+    services:
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: oven_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -proot"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=15
+    steps:
+      - uses: actions/checkout@v7
+
+      # Set up Vite+ (vp). The package manager (pnpm) is resolved and
+      # downloaded by vp according to the devEngines.packageManager declaration.
+      - uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version: "22"
+          cache: true
+
+      - name: Install dependencies
+        run: vp install --frozen-lockfile
+
+      # format + lint + type check (wraps oxfmt / oxlint / type checking)
+      - name: Check (format, lint, types)
+        run: vp check
+
+      # Type-only check via tsc --noEmit (package.json scripts)
+      - name: Typecheck
+        run: vp run typecheck
+
+      # Two projects: node (L1/L2) + workerd (L3).
+      # OVEN_MYSQL_TEST_URL points at the mysql service container above, so the
+      # MySQL adapter tests run here (they self-skip only when it is unset).
+      - name: Test
+        env:
+          OVEN_MYSQL_TEST_URL: "mysql://root:root@127.0.0.1:3306/oven_test"
+        run: vp test run
+
+      # Build the library so a packaging break fails CI, not the release run.
+      - name: Build
+        run: vp pack

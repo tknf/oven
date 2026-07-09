@@ -1,0 +1,19 @@
+version: 2
+updates:
+  # Security updates only. `open-pull-requests-limit: 0` disables scheduled
+  # version-update pull requests; Dependabot security updates (enabled in the
+  # repository settings) are unaffected and still open pull requests for
+  # vulnerable dependencies.
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+
+  # Actions are referenced by major version tag in the workflows, so they pick up
+  # minor/patch fixes on their own; only security updates should reach us here.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0

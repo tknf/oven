@@ -1,0 +1,50 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: Publish to npm
+    runs-on: ubuntu-latest
+    permissions:
+      # Required for npm provenance (OIDC).
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      # Provides the npm registry auth scaffolding (.npmrc + NODE_AUTH_TOKEN).
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - uses: voidzero-dev/setup-vp@v1
+        with:
+          cache: true
+
+      - name: Install dependencies
+        run: vp install --frozen-lockfile
+
+      - name: Check (format, lint, types)
+        run: vp check
+
+      - name: Typecheck
+        run: vp run typecheck
+
+      - name: Test
+        run: vp test run
+
+      - name: Build
+        run: vp pack
+
+      - name: Publish
+        run: vp pm publish --access public --no-git-checks --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

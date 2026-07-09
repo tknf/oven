@@ -1,0 +1,27 @@
+{
+	"compilerOptions": {
+		"target": "ES2023",
+		"lib": ["ES2023", "DOM", "WebWorker"],
+		"module": "ESNext",
+		"moduleResolution": "Bundler",
+		"moduleDetection": "force",
+		"resolveJsonModule": true,
+		"isolatedModules": true,
+		"verbatimModuleSyntax": true,
+		"skipLibCheck": true,
+		"noEmit": true,
+		"strict": true,
+		"noUnusedLocals": true,
+		"noUnusedParameters": true,
+		"noFallthroughCasesInSwitch": true,
+		"jsx": "react-jsx",
+		"jsxImportSource": "hono/jsx",
+		"types": [
+			"vite-plus/client",
+			"@cloudflare/workers-types",
+			"@cloudflare/vitest-pool-workers/types"
+		]
+	},
+	"include": ["src", "test", "vite.config.ts"],
+	"exclude": ["node_modules"]
+}

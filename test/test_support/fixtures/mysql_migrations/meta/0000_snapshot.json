@@ -1,0 +1,76 @@
+{
+	"version": "5",
+	"dialect": "mysql",
+	"id": "f6cc3439-6fb2-4db9-b0c2-05d9b1cf4ccf",
+	"prevId": "00000000-0000-0000-0000-000000000000",
+	"tables": {
+		"publishers": {
+			"name": "publishers",
+			"columns": {
+				"id": {
+					"name": "id",
+					"type": "varchar(255)",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"name": {
+					"name": "name",
+					"type": "varchar(255)",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"contact_email": {
+					"name": "contact_email",
+					"type": "varchar(255)",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"status": {
+					"name": "status",
+					"type": "varchar(255)",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false,
+					"default": "'active'"
+				},
+				"created_at": {
+					"name": "created_at",
+					"type": "bigint",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"updated_at": {
+					"name": "updated_at",
+					"type": "bigint",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				}
+			},
+			"indexes": {},
+			"foreignKeys": {},
+			"compositePrimaryKeys": {
+				"publishers_id": {
+					"name": "publishers_id",
+					"columns": ["id"]
+				}
+			},
+			"uniqueConstraints": {},
+			"checkConstraint": {}
+		}
+	},
+	"views": {},
+	"_meta": {
+		"schemas": {},
+		"tables": {},
+		"columns": {}
+	},
+	"internal": {
+		"tables": {},
+		"indexes": {}
+	}
+}

@@ -1,0 +1,55 @@
+{
+	"version": "7",
+	"dialect": "sqlite",
+	"entries": [
+		{
+			"idx": 0,
+			"version": "6",
+			"when": 1783250212168,
+			"tag": "0000_legal_spectrum",
+			"breakpoints": true
+		},
+		{
+			"idx": 1,
+			"version": "6",
+			"when": 1783381549991,
+			"tag": "0001_hard_ultimatum",
+			"breakpoints": true
+		},
+		{
+			"idx": 2,
+			"version": "6",
+			"when": 1783383415942,
+			"tag": "0002_plain_wildside",
+			"breakpoints": true
+		},
+		{
+			"idx": 3,
+			"version": "6",
+			"when": 1783385545656,
+			"tag": "0003_nice_cassandra_nova",
+			"breakpoints": true
+		},
+		{
+			"idx": 4,
+			"version": "6",
+			"when": 1783401451189,
+			"tag": "0004_absurd_vapor",
+			"breakpoints": true
+		},
+		{
+			"idx": 5,
+			"version": "6",
+			"when": 1783408665751,
+			"tag": "0005_nostalgic_baron_strucker",
+			"breakpoints": true
+		},
+		{
+			"idx": 6,
+			"version": "6",
+			"when": 1783516618162,
+			"tag": "0006_familiar_silver_surfer",
+			"breakpoints": true
+		}
+	]
+}

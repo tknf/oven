@@ -1,0 +1,22 @@
+allowBuilds:
+  esbuild: true
+  sharp: true
+  workerd: true
+minimumReleaseAgeExclude:
+  - "@cloudflare/workers-types@5.20260705.1"
+catalog:
+  vite: npm:@voidzero-dev/vite-plus-core@0.2.2
+  vitest: 4.1.9
+  vite-plus: 0.2.2
+overrides:
+  vite: "catalog:"
+  vitest: "catalog:"
+  # Override transitive esbuild 0.18.20 (pulled in via drizzle-kit) to resolve GHSA-67mh-4wv8-2f99.
+  esbuild: ">=0.24.3"
+peerDependencyRules:
+  allowAny:
+    - vite
+    - vitest
+  allowedVersions:
+    vite: "*"
+    vitest: "*"

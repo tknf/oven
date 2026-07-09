@@ -1,0 +1,198 @@
+{
+	"name": "@tknf/oven",
+	"version": "0.1.0",
+	"description": "Convention layer for SSR full-stack apps on Hono (Hono/JSX SSR + Turbo/Stimulus)",
+	"keywords": [
+		"cloudflare-workers",
+		"conventions",
+		"framework",
+		"fullstack",
+		"hono",
+		"ssr",
+		"stimulus",
+		"turbo"
+	],
+	"homepage": "https://github.com/tknf/oven#readme",
+	"bugs": {
+		"url": "https://github.com/tknf/oven/issues"
+	},
+	"license": "MIT",
+	"author": "TKNF",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/tknf/oven.git"
+	},
+	"bin": {
+		"oven": "./dist/cli/index.js"
+	},
+	"files": [
+		"dist"
+	],
+	"type": "module",
+	"sideEffects": false,
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"default": "./dist/index.js"
+		},
+		"./admin": {
+			"types": "./dist/admin/index.d.ts",
+			"default": "./dist/admin/index.js"
+		},
+		"./audit": {
+			"types": "./dist/audit/index.d.ts",
+			"default": "./dist/audit/index.js"
+		},
+		"./auth": {
+			"types": "./dist/auth/index.d.ts",
+			"default": "./dist/auth/index.js"
+		},
+		"./cache": {
+			"types": "./dist/cache/index.d.ts",
+			"default": "./dist/cache/index.js"
+		},
+		"./database": {
+			"types": "./dist/database/index.d.ts",
+			"default": "./dist/database/index.js"
+		},
+		"./datasource": {
+			"types": "./dist/datasource/index.d.ts",
+			"default": "./dist/datasource/index.js"
+		},
+		"./form": {
+			"types": "./dist/form/index.d.ts",
+			"default": "./dist/form/index.js"
+		},
+		"./helpers": {
+			"types": "./dist/helpers/index.d.ts",
+			"default": "./dist/helpers/index.js"
+		},
+		"./i18n": {
+			"types": "./dist/i18n/index.d.ts",
+			"default": "./dist/i18n/index.js"
+		},
+		"./jobs": {
+			"types": "./dist/jobs/index.d.ts",
+			"default": "./dist/jobs/index.js"
+		},
+		"./kv": {
+			"types": "./dist/kv/index.d.ts",
+			"default": "./dist/kv/index.js"
+		},
+		"./logging": {
+			"types": "./dist/logging/index.d.ts",
+			"default": "./dist/logging/index.js"
+		},
+		"./mailer": {
+			"types": "./dist/mailer/index.d.ts",
+			"default": "./dist/mailer/index.js"
+		},
+		"./model": {
+			"types": "./dist/model/index.d.ts",
+			"default": "./dist/model/index.js"
+		},
+		"./pagination": {
+			"types": "./dist/pagination/index.d.ts",
+			"default": "./dist/pagination/index.js"
+		},
+		"./realtime": {
+			"types": "./dist/realtime/index.d.ts",
+			"default": "./dist/realtime/index.js"
+		},
+		"./routing": {
+			"types": "./dist/routing/index.d.ts",
+			"default": "./dist/routing/index.js"
+		},
+		"./security": {
+			"types": "./dist/security/index.d.ts",
+			"default": "./dist/security/index.js"
+		},
+		"./session": {
+			"types": "./dist/session/index.d.ts",
+			"default": "./dist/session/index.js"
+		},
+		"./storage": {
+			"types": "./dist/storage/index.d.ts",
+			"default": "./dist/storage/index.js"
+		},
+		"./support": {
+			"types": "./dist/support/index.d.ts",
+			"default": "./dist/support/index.js"
+		},
+		"./view": {
+			"types": "./dist/view/index.d.ts",
+			"default": "./dist/view/index.js"
+		},
+		"./vite": {
+			"types": "./dist/vite/index.d.ts",
+			"default": "./dist/vite/index.js"
+		},
+		"./cloudflare": {
+			"types": "./dist/cloudflare/index.d.ts",
+			"default": "./dist/cloudflare/index.js"
+		},
+		"./node": {
+			"types": "./dist/node/index.d.ts",
+			"default": "./dist/node/index.js"
+		},
+		"./test": {
+			"types": "./dist/test/index.d.ts",
+			"default": "./dist/test/index.js"
+		}
+	},
+	"publishConfig": {
+		"access": "public"
+	},
+	"scripts": {
+		"build": "vp pack",
+		"check": "vp check",
+		"test": "vp test",
+		"typecheck": "tsc --noEmit",
+		"test-fixtures:generate": "drizzle-kit generate --config=test/test_support/fixtures/drizzle.config.ts",
+		"test-fixtures:generate:pg": "drizzle-kit generate --config=test/test_support/fixtures/pg_drizzle.config.ts",
+		"test-fixtures:generate:mysql": "drizzle-kit generate --config=test/test_support/fixtures/mysql_drizzle.config.ts",
+		"prepare": "vp config",
+		"prepublishOnly": "vp pack"
+	},
+	"dependencies": {
+		"@standard-schema/spec": "^1.1.0",
+		"@tknf/snowflake": "^1.2.0",
+		"aws4fetch": "^1.0.20"
+	},
+	"devDependencies": {
+		"@cloudflare/vitest-pool-workers": "^0.17.0",
+		"@cloudflare/workers-types": "^5.20260705.1",
+		"@electric-sql/pglite": "^0.5.4",
+		"@libsql/client": "^0.17.4",
+		"drizzle-kit": "^0.31.10",
+		"drizzle-orm": "^0.45.2",
+		"hono": "^4.12.27",
+		"mysql2": "^3.22.5",
+		"typescript": "^6.0.3",
+		"vite": "catalog:",
+		"vite-plus": "catalog:",
+		"vitest": "catalog:",
+		"wrangler": "^4.106.0"
+	},
+	"peerDependencies": {
+		"@cloudflare/workers-types": "^5.0.0",
+		"@libsql/client": "^0.17.4",
+		"drizzle-orm": "^0.45.2",
+		"hono": "^4.12.27"
+	},
+	"peerDependenciesMeta": {
+		"@cloudflare/workers-types": {
+			"optional": true
+		},
+		"@libsql/client": {
+			"optional": true
+		}
+	},
+	"devEngines": {
+		"packageManager": {
+			"name": "pnpm",
+			"version": "11.9.0",
+			"onFail": "download"
+		}
+	}
+}

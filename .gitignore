@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Cloudflare Workers / wrangler
+.wrangler/
+
+# Local secrets / env
+.dev.vars*
+.env
+.env.*
+!.env.example
+
+# Agent definitions live in `.agents/` (shared across coding agents). `.claude/`
+# holds only Claude Code local state/shims and is not committed. To let Claude Code
+# discover the agents, create a local `.claude/agents` symlink to `../.agents`.
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
+.claude/agents
+
+# OS / editor
+.DS_Store
+*.log

@@ -1,0 +1,55 @@
+{
+	"version": "7",
+	"dialect": "mysql",
+	"entries": [
+		{
+			"idx": 0,
+			"version": "5",
+			"when": 1783257117506,
+			"tag": "0000_even_paper_doll",
+			"breakpoints": true
+		},
+		{
+			"idx": 1,
+			"version": "5",
+			"when": 1783382594969,
+			"tag": "0001_open_vulcan",
+			"breakpoints": true
+		},
+		{
+			"idx": 2,
+			"version": "5",
+			"when": 1783383425725,
+			"tag": "0002_wandering_reavers",
+			"breakpoints": true
+		},
+		{
+			"idx": 3,
+			"version": "5",
+			"when": 1783385561192,
+			"tag": "0003_absurd_scorpion",
+			"breakpoints": true
+		},
+		{
+			"idx": 4,
+			"version": "5",
+			"when": 1783401464373,
+			"tag": "0004_sudden_synch",
+			"breakpoints": true
+		},
+		{
+			"idx": 5,
+			"version": "5",
+			"when": 1783408672880,
+			"tag": "0005_previous_nighthawk",
+			"breakpoints": true
+		},
+		{
+			"idx": 6,
+			"version": "5",
+			"when": 1783516619238,
+			"tag": "0006_unique_fantastic_four",
+			"breakpoints": true
+		}
+	]
+}
