@@ -152,7 +152,8 @@
 		"test-fixtures:generate:pg": "drizzle-kit generate --config=test/test_support/fixtures/pg_drizzle.config.ts",
 		"test-fixtures:generate:mysql": "drizzle-kit generate --config=test/test_support/fixtures/mysql_drizzle.config.ts",
 		"prepare": "vp config",
-		"prepublishOnly": "vp pack"
+		"prepublishOnly": "vp pack",
+		"playground": "vp dev -c playground/vite.config.ts"
 	},
 	"dependencies": {
 		"@standard-schema/spec": "^1.1.0",
@@ -163,6 +164,7 @@
 		"@cloudflare/vitest-pool-workers": "^0.17.0",
 		"@cloudflare/workers-types": "^5.20260705.1",
 		"@electric-sql/pglite": "^0.5.4",
+		"@hono/vite-dev-server": "^0.26.0",
 		"@libsql/client": "^0.17.4",
 		"drizzle-kit": "^0.31.10",
 		"drizzle-orm": "^0.45.2",

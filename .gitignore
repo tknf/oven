@@ -23,6 +23,3 @@ dist/
 # OS / editor
 .DS_Store
 *.log
-
-# Throwaway local dev harnesses (e.g. dev/admin_preview.ts)
-/dev/

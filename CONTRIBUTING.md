@@ -7,7 +7,8 @@ Contributions to `@tknf/oven` are welcome.
 This project uses [Vite+ (vite-plus)](https://viteplus.dev/) as its unified toolchain. The CLI is `vp`. Do not use npm / yarn / npx (the fallback is pnpm).
 
 ```sh
-vp install          # install dependencies (run after pulling remote changes)
+vp install           # install dependencies (run after pulling remote changes)
+vp run playground    # start a local admin-panel preview, see playground/README.md
 ```
 
 ## Verification (always run before a PR)
