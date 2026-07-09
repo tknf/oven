@@ -239,6 +239,37 @@ at least one entry; resources that don't implement it keep the
 single-column list layout. Selecting a filter combines with an active
 search (`q`) via `AND` and resets pagination back to the first page.
 
+### Adding a year/month/day drilldown to the list screen
+
+Override `dateHierarchy()` to return the name of a date column, and the
+list screen renders a year → month → day drilldown nav above the toolbar.
+The column is assumed to hold an integer epoch-millisecond timestamp
+(oven's usual convention, e.g. `createdAt: integer(...)`):
+
+```ts
+export class PublisherResource extends AdminResource {
+  // ...key/label/model/table/primaryKey/form as above
+
+  dateHierarchy() {
+    return "createdAt";
+  }
+}
+```
+
+Selecting a year (`?dhy=`), then a month (`&dhm=`), then a day (`&dhd=`)
+narrows the list to that period (combined with any active search/filter
+via `AND`) and drills one level deeper each time, down to a day. Every
+link preserves the current search query and active filters and resets
+pagination back to the first page.
+
+This is a simplified drilldown: the year/month/day lists enumerate every
+period between the column's min and max value (found via two
+`AdminModel#listPage` calls, not a new aggregation query), not only
+periods that actually contain rows. Selecting an empty period is possible
+and simply renders an empty list. A resource that doesn't implement
+`dateHierarchy()` renders no drilldown nav, same opt-in pattern as
+`filters()`.
+
 ### Editing child rows inline (tabular inlines)
 
 Override `inlines()` to render a related child table as an editable,
@@ -366,6 +397,65 @@ plain `GET`. When `csrf` is also injected, every `method: "post"` link's
 form automatically embeds the CSRF hidden input, same as every other
 form in the panel.
 
+### Wiring built-in login/logout
+
+Admin does not assume the app's user table shape, so authentication is
+split the same way as everything else it doesn't own: inject `auth` with
+an `authenticate` callback that verifies credentials however the app's
+own user table works, and admin provides the login/logout screens,
+session wiring, and the redirect-when-not-logged-in gate on top of it.
+`auth` requires `session` to also be injected (the constructor throws
+otherwise — there is nowhere to hold the logged-in identity between
+requests):
+
+```ts
+import { verifyPassword } from "@tknf/oven/auth";
+import { sessionAccessor } from "./lib/session.js";
+import { userModel } from "./lib/models.js";
+
+new AdminPanel({
+  authorize: (c) => accountGuard.use(c).role === "admin",
+  session: sessionAccessor.use,
+  csrf,
+  auth: {
+    authenticate: async (c, { username, password }) => {
+      const user = await userModel.findByUsername(username);
+      if (!user || !(await verifyPassword(password, user.passwordHash))) return null;
+      return { id: user.id, label: user.name };
+    },
+  },
+});
+```
+
+`authenticate` returns an `AdminIdentity` (`{ id, label? }`) on success or
+`null` on failure; `verifyPassword` (from `@tknf/oven/auth`) is the same
+constant-time PBKDF2 check `Guard`/`Policy` use elsewhere, but admin
+doesn't require it — any check that resolves to an identity or `null`
+works.
+
+Once `auth` is injected:
+
+- `GET`/`POST "/login"` and `POST "/logout"` are registered under the
+  panel's mount base (e.g. `/admin/login`, `/admin/logout`).
+- Any other request without a logged-in identity in the session is
+  redirected to `/login?next=<original path>` (confined to the panel's
+  own `basePath` — an unrecognized or external `next` falls back to
+  `basePath` itself, an open-redirect guard). A logged-in request still
+  goes through `authorize` as before, so `auth` narrows "is this operator
+  who they say they are" and `authorize` still decides "is this operator
+  allowed in here".
+- On successful login, the session id is reissued (`Session#regenerate`)
+  before the identity is stored, as a defense against session-fixation.
+- If `userTools` is not separately injected, the header's user-tools block
+  defaults to a greeting built from the identity (`label` falling back to
+  `id`) plus a working "Log out" link — so `auth` alone is enough to get a
+  functioning login/logout flow without also wiring `userTools`. Injecting
+  `userTools` explicitly still takes priority, same as always.
+
+Without `auth` injected, there are no login/logout routes and no redirect
+gate — every route is guarded by `authorize` alone, exactly as before
+(backward compatible).
+
 ### Adding job operations, settings, and audit log sections
 
 Each section activates independently by injecting its config; the nav
@@ -418,7 +508,15 @@ language), the panel falls back to English.
 - **`authorize` is mandatory and the panel assumes nothing about roles.**
   There's no default "is this user an admin" check; a misconfigured
   `authorize` (e.g. one that always returns `true`) is the same as
-  leaving `/admin` unauthenticated.
+  leaving `/admin` unauthenticated. `auth` (see "Wiring built-in
+  login/logout" above), when injected, only answers "who is this
+  operator" — `authorize` still runs on every logged-in request and
+  still decides "are they allowed in here".
+- **`auth` doesn't hash or store anything — that's still the app's own
+  user table and `verifyPassword`/`hashPassword` (`@tknf/oven/auth`).**
+  `authenticate` is a plain lookup-and-verify callback; admin only wires
+  the screens, the session-backed identity, and the redirect gate on top
+  of whatever it returns.
 - **Resources are structural, not tied to a specific dialect.**
   `AdminResource#model` only needs to satisfy the `AdminModel` shape
   (`paginate`/`listPage`/`retrieve`/`create`/`update`/`delete`/`count`), so
@@ -431,6 +529,10 @@ language), the panel falls back to English.
   different header replaces, not adds to, the active sort); `?p=` pages
   via `listPage`'s `offset`, which does a full scan-and-discard for deep
   pages on large tables (the same tradeoff `listPage` itself documents).
+- **`dateHierarchy()` assumes an integer epoch-millisecond column and lists
+  every period in range, not only non-empty ones.** The year/month/day
+  lists span the column's min to max value, so selecting a period that
+  happens to contain no rows is possible and just renders an empty list.
 - **Column allowlisting on write is your form's job, not the panel's.**
   `AdminPanel` passes a successful `Form#validate()` result straight to
   `model.create`/`model.update` (stripping only the primary-key column on

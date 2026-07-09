@@ -176,6 +176,20 @@ export abstract class AdminResource {
 	inlines?(): AdminInline[];
 
 	/**
+	 * Declares the date column the list screen's date-based drilldown
+	 * navigation (`?dhy=`/`?dhm=`/`?dhd=`) narrows on. The named column is
+	 * assumed to hold an integer epoch-millisecond timestamp (oven's usual
+	 * convention, e.g. `createdAt: integer(...)`). No navigation renders
+	 * unless this is implemented.
+	 *
+	 * The navigation is a simplified drilldown: it enumerates every
+	 * year/month/day between the column's min and max value, not only
+	 * periods that actually contain rows, so a selected period can render an
+	 * empty list.
+	 */
+	dateHierarchy?(): string;
+
+	/**
 	 * Resolves the display columns. Uses `listColumns()`'s order and names if
 	 * present, otherwise all columns from `getTableColumns(table)` in declaration
 	 * order. Either way, column names in `exclude()` are removed. If a nonexistent

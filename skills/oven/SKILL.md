@@ -172,10 +172,32 @@ area, example-first). Consult them for depth.
   renders as a `<form>` + submit button (needed for logout) and picks up the
   CSRF hidden input automatically when `csrf` is also injected; other links
   render as plain `<a>`.
+- **`AdminPanel`'s login/logout is opt-in via `auth: { authenticate }`** —
+  admin doesn't assume the app's user table shape, so `authenticate: (c, {
+username, password }) => Promise<AdminIdentity | null>` (verify however
+  you like, e.g. `verifyPassword` from `@tknf/oven/auth`) is the only thing
+  the app supplies; `auth` requires `session` to also be injected (throws
+  otherwise) and, once wired, registers `GET`/`POST /login` +
+  `POST /logout`, redirects any logged-out request to
+  `/login?next=<path>` (confined to `basePath`, so an external `next` is
+  ignored), reissues the session id on successful login (fixation
+  defense), and — unless you also inject `userTools` — defaults the header
+  greeting/logout link from the logged-in identity. `authorize` still runs
+  on every logged-in request; `auth` only answers "who is this", not "are
+  they allowed in here". Omit `auth` and nothing changes (no login routes,
+  no redirect gate — `authorize` alone gates access, as before).
 - **`AdminResource#filters()` is a closed allowlist** — declare each filter's
   `options` explicitly; a query value outside that list is silently ignored
   rather than applied. The sidebar (`#changelist-filter`) only renders once
   `filters()` returns at least one entry.
+- **`AdminResource#dateHierarchy()` adds a year/month/day drilldown nav to the
+  list screen** — return an integer epoch-millisecond column name and
+  `?dhy=`/`?dhm=`/`?dhd=` narrow the list to that period (combined with any
+  search/filter via `AND`), one level deeper per selection. It's a
+  simplified drilldown: the enumerated years/months/days span the column's
+  min to max value (two `AdminModel#listPage` calls, no new aggregation
+  query), not only periods that actually contain rows, so a selected period
+  can render an empty list. No nav renders unless implemented.
 - **`AdminPanel`'s dashboard (`GET /admin`) is resource-driven** — once you
   inject `resources`, the dashboard shows a module list of every resource
   (with `Add`/`Change` links) instead of the plain welcome message. Every

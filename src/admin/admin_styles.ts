@@ -20,7 +20,10 @@
  * `#toolbar`, `.module`, `.object-tools`, `.addlink`, `.submit-row`,
  * `.default`, `.deletelink`, `.cancel-link`, `.button`, `.change-list`,
  * `#changelist-filter`, `.actions`, `.action-checkbox-column`,
- * `.result-count`, `.inline-group`, `.tabular-inline`).
+ * `.result-count`, `.inline-group`, `.tabular-inline`, `.date-hierarchy`,
+ * `body.login`, `.login-form`, `.errornote` — the last three from
+ * `admin_login_view.tsx`, the one screen that does not render inside
+ * `AdminLayout`).
  */
 export const ADMIN_CSS = `:root {
 	--primary: #79aec8;
@@ -466,6 +469,27 @@ button:hover,
 	margin: 0 0 10px;
 }
 
+.date-hierarchy {
+	margin: 0 0 10px;
+}
+
+.date-hierarchy ul {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+	display: flex;
+	gap: 12px;
+	flex-wrap: wrap;
+}
+
+.date-hierarchy li {
+	font-size: 13px;
+}
+
+.date-hierarchy a {
+	color: var(--link-fg);
+}
+
 .object-tools .addlink {
 	background: var(--object-tools-bg);
 	color: var(--object-tools-fg);
@@ -676,5 +700,61 @@ table.tabular-inline th {
 table.tabular-inline td {
 	padding: 6px 10px;
 	border-bottom: 1px solid var(--hairline-color);
+}
+
+body.login {
+	background: var(--darkened-bg);
+}
+
+.login-form {
+	width: 100%;
+	max-width: 340px;
+	margin: 72px auto;
+	background: var(--body-bg);
+	border: 1px solid var(--hairline-color);
+}
+
+.login-form h1 {
+	background: var(--header-bg);
+	color: var(--header-link-color);
+	margin: 0;
+	padding: 12px 16px;
+	font-size: 16px;
+	font-weight: 300;
+}
+
+.login-form .login-body {
+	padding: 16px;
+}
+
+.login-form .form-row {
+	margin-bottom: 12px;
+}
+
+.login-form label {
+	display: block;
+	margin-bottom: 4px;
+	font-weight: 600;
+}
+
+.login-form input[type="text"],
+.login-form input[type="password"] {
+	width: 100%;
+	box-sizing: border-box;
+}
+
+.login-form .submit-row {
+	margin-top: 16px;
+	background: none;
+	border: 0;
+	padding: 0;
+}
+
+.login-form .errornote {
+	margin: 0 0 12px;
+	padding: 10px 12px;
+	background: var(--message-error-bg);
+	color: var(--error-fg);
+	font-size: 13px;
 }
 `;

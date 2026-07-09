@@ -32,6 +32,25 @@ import { CSRF_FORM_FIELD_NAME } from "../security/csrf.js";
 /** The list screen's current sort (a display column index from `columns` + direction), or `null` when unsorted (falls back to the resource's default order). */
 export type AdminResourceSort = { index: number; direction: "asc" | "desc" } | null;
 
+/** One page-navigation link within the list screen's date-hierarchy drilldown (see `AdminResource#dateHierarchy`). */
+export type AdminDateHierarchyItem = { label: string; href: string };
+
+/**
+ * The list screen's date-based drilldown navigation state, built by
+ * `AdminPanel` when the resource declares `dateHierarchy()`. `items` lists
+ * the next level down (years, months, or days, depending on how far the
+ * operator has drilled in); `back` links up one level (absent at the top,
+ * year-only level); `current` is set instead of `items` at the bottom (day)
+ * level, since there is no level below it to list. Labels are pre-resolved
+ * by the panel (including the localized month name), so this view renders
+ * them as-is without needing `Context` or a language.
+ */
+export type AdminDateHierarchyNav = {
+	back?: AdminDateHierarchyItem;
+	items: AdminDateHierarchyItem[];
+	current?: string;
+};
+
 /** The subset of list-screen state every generated link (sort/filter/page) needs to reproduce. */
 type ListState = {
 	query: string;
@@ -151,10 +170,44 @@ export type AdminResourceListViewProps = {
 	pageCount: number;
 	/** Total row count matching the current search/filter (`AdminModel#count`), shown near the pagination controls. */
 	total: number;
+	/**
+	 * Date-based drilldown navigation, present only when `AdminResource#dateHierarchy()`
+	 * is implemented and at least one row exists to anchor the min/max period on.
+	 */
+	dateHierarchy?: AdminDateHierarchyNav;
 	/** CSRF token embedded into the bulk-action form. When `null`, no hidden input is emitted. */
 	csrfToken: string | null;
 	t: AdminT;
 };
+
+/**
+ * Date-hierarchy drilldown nav, shown above the search toolbar when the
+ * resource declares `dateHierarchy()`. Renders the "back up one level" link
+ * (when present) followed by either the next level's links (`items`) or, at
+ * the bottom (day) level, the currently selected day as plain text
+ * (`current`). Links are pre-built by `AdminPanel`, so this component only
+ * renders the given `label`/`href` pairs.
+ */
+const DateHierarchyNav = ({ dateHierarchy }: { dateHierarchy: AdminDateHierarchyNav }) => (
+	<nav class="date-hierarchy">
+		<ul>
+			{dateHierarchy.back && (
+				<li>
+					<a href={dateHierarchy.back.href}>{`‹ ${dateHierarchy.back.label}`}</a>
+				</li>
+			)}
+			{dateHierarchy.current !== undefined ? (
+				<li>{dateHierarchy.current}</li>
+			) : (
+				dateHierarchy.items.map((item) => (
+					<li>
+						<a href={item.href}>{item.label}</a>
+					</li>
+				))
+			)}
+		</ul>
+	</nav>
+);
 
 /**
  * Search form. Not rendered when `searchEnabled` is `false`. Since a GET form
@@ -445,6 +498,7 @@ export const AdminResourceListView = ({
 	page,
 	pageCount,
 	total,
+	dateHierarchy,
 	csrfToken,
 	t,
 }: AdminResourceListViewProps) => {
@@ -472,6 +526,7 @@ export const AdminResourceListView = ({
 					</a>
 				</div>
 			)}
+			{dateHierarchy && <DateHierarchyNav dateHierarchy={dateHierarchy} />}
 			{searchEnabled && (
 				<SearchForm
 					basePath={basePath}

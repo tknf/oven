@@ -130,6 +130,49 @@ class PublisherResource extends AdminResource {
 	}
 }
 
+/** `publishers` resource that declares `dateHierarchy()` on `createdAt`, for verifying the list screen's date drilldown. */
+class PublisherResourceWithDateHierarchy extends AdminResource {
+	constructor(private readonly publisherModel: PublisherModel) {
+		super();
+	}
+	get key() {
+		return "publishers";
+	}
+	get label() {
+		return "Publisher";
+	}
+	get model() {
+		return this.publisherModel;
+	}
+	get table() {
+		return schema.publishers;
+	}
+	get primaryKey() {
+		return "id";
+	}
+	form() {
+		return new PublisherForm();
+	}
+	dateHierarchy() {
+		return "createdAt";
+	}
+	searchColumns() {
+		return ["name"];
+	}
+	filters() {
+		return [
+			{
+				column: "status",
+				label: "Status",
+				options: [
+					{ value: "active", label: "Active" },
+					{ value: "inactive", label: "Inactive" },
+				],
+			},
+		];
+	}
+}
+
 /** Read-only (no `form()` implementation) `publishers` resource, for verifying that write routes are not registered. */
 class ReadonlyPublisherResource extends AdminResource {
 	constructor(private readonly publisherModel: PublisherModel) {
@@ -1596,5 +1639,118 @@ describe("AdminPanel resource CRUD inline relations (submission: create/update/d
 		expect(publishers).toHaveLength(0);
 		const books = await ctx.db.select().from(schema.books);
 		expect(books).toHaveLength(0);
+	});
+});
+
+describe("AdminPanel resource CRUD list: date hierarchy drilldown", () => {
+	let ctx: Awaited<ReturnType<typeof createTestDb<typeof schema>>>;
+
+	beforeEach(async () => {
+		ctx = await createTestDb({ schema, migrationsFolder });
+		await insertPublisher(ctx.db, {
+			id: "pub-1",
+			name: "TKNF Books",
+			createdAt: Date.UTC(2023, 5, 1),
+		});
+		await insertPublisher(ctx.db, {
+			id: "pub-2",
+			name: "Another Press",
+			createdAt: Date.UTC(2024, 0, 15),
+		});
+		await insertPublisher(ctx.db, {
+			id: "pub-3",
+			name: "Riverside Editions",
+			createdAt: Date.UTC(2024, 0, 20),
+		});
+		await insertPublisher(ctx.db, {
+			id: "pub-4",
+			name: "Northwind Publishing",
+			createdAt: Date.UTC(2024, 5, 10),
+		});
+	});
+
+	afterEach(() => {
+		ctx.client.close();
+	});
+
+	test("year level: renders the nav with a link per year between min and max", async () => {
+		const resource = new PublisherResourceWithDateHierarchy(new PublisherModel(ctx.db));
+		const app = new Hono();
+		app.route("/admin", new AdminPanel({ authorize: () => true, resources: [resource] }));
+
+		const res = await app.request("/admin/resources/publishers");
+		const body = await res.text();
+
+		expect(res.status).toBe(200);
+		expect(body).toContain('class="date-hierarchy"');
+		expect(body).toContain('href="/admin/resources/publishers?dhy=2023"');
+		expect(body).toContain('href="/admin/resources/publishers?dhy=2024"');
+		// every seeded row still shows at the unfiltered (year-choice) level
+		expect(body).toContain("TKNF Books");
+		expect(body).toContain("Northwind Publishing");
+	});
+
+	test("year selected: narrows the list to that year and renders the month nav with an 'All dates' back link", async () => {
+		const resource = new PublisherResourceWithDateHierarchy(new PublisherModel(ctx.db));
+		const app = new Hono();
+		app.route("/admin", new AdminPanel({ authorize: () => true, resources: [resource] }));
+
+		const res = await app.request("/admin/resources/publishers?dhy=2024");
+		const body = await res.text();
+
+		expect(res.status).toBe(200);
+		expect(body).not.toContain("TKNF Books");
+		expect(body).toContain("Another Press");
+		expect(body).toContain("Riverside Editions");
+		expect(body).toContain("Northwind Publishing");
+		expect(body).toContain('href="/admin/resources/publishers">‹ All dates</a>');
+		expect(body).toContain('href="/admin/resources/publishers?dhy=2024&amp;dhm=1"');
+		expect(body).toContain(">January<");
+	});
+
+	test("year and month selected: narrows the list to that month and renders the day nav with a year back link", async () => {
+		const resource = new PublisherResourceWithDateHierarchy(new PublisherModel(ctx.db));
+		const app = new Hono();
+		app.route("/admin", new AdminPanel({ authorize: () => true, resources: [resource] }));
+
+		const res = await app.request("/admin/resources/publishers?dhy=2024&dhm=1");
+		const body = await res.text();
+
+		expect(res.status).toBe(200);
+		expect(body).toContain("Another Press");
+		expect(body).toContain("Riverside Editions");
+		expect(body).not.toContain("Northwind Publishing");
+		expect(body).not.toContain("TKNF Books");
+		expect(body).toContain('href="/admin/resources/publishers?dhy=2024">‹ 2024</a>');
+		expect(body).toContain('href="/admin/resources/publishers?dhy=2024&amp;dhm=1&amp;dhd=15"');
+	});
+
+	test("without dateHierarchy(): the resource renders no date nav", async () => {
+		const resource = new PublisherResource(new PublisherModel(ctx.db));
+		const app = new Hono();
+		app.route("/admin", new AdminPanel({ authorize: () => true, resources: [resource] }));
+
+		const res = await app.request("/admin/resources/publishers");
+		const body = await res.text();
+
+		expect(res.status).toBe(200);
+		expect(body).not.toContain('class="date-hierarchy"');
+	});
+
+	test("date nav links preserve the search query and active filters, and reset the page", async () => {
+		const resource = new PublisherResourceWithDateHierarchy(new PublisherModel(ctx.db));
+		const app = new Hono();
+		app.route("/admin", new AdminPanel({ authorize: () => true, resources: [resource] }));
+
+		// "status=active" matches every seeded row (insertPublisher defaults to "active"),
+		// so the year list still spans both 2023 and 2024; "q=Press" additionally narrows
+		// the min/max scan to only "Another Press" (2024), collapsing the year list to one link.
+		const res = await app.request("/admin/resources/publishers?q=Press&status=active&p=1");
+		const body = await res.text();
+
+		expect(res.status).toBe(200);
+		expect(body).toContain(
+			'href="/admin/resources/publishers?q=Press&amp;status=active&amp;dhy=2024"',
+		);
 	});
 });

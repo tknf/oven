@@ -59,6 +59,33 @@ const buildCsrfWiredApp = () => {
 	return { app, console_ };
 };
 
+/**
+ * Builds an `AdminPanel` test app wired with session + `auth` (fixed `admin`/`secret`
+ * credentials), and optionally `csrf` (`overrides.csrf`).
+ */
+const buildAuthWiredApp = (overrides: { csrf?: boolean } = {}) => {
+	const storage = new InMemorySessionStorage();
+	const sessionAccessor = new SessionAccessor<SessionEnv, "session">("session", storage);
+	const csrf = overrides.csrf ? new Csrf<SessionEnv>({ session: sessionAccessor.use }) : undefined;
+
+	const app = new Hono<SessionEnv>();
+	app.use(sessionAccessor.register);
+	app.route(
+		"/admin",
+		new AdminPanel<SessionEnv>({
+			authorize: () => true,
+			session: sessionAccessor.use,
+			csrf,
+			auth: {
+				authenticate: async (_c, { username, password }) =>
+					username === "admin" && password === "secret" ? { id: "admin", label: "Admin" } : null,
+			},
+		}),
+	);
+
+	return { app };
+};
+
 const migrationsFolder = new URL("../test_support/fixtures/migrations", import.meta.url).pathname;
 
 /** Test data factory for `AdminJobRow`. */
@@ -680,6 +707,166 @@ describe("AdminPanel", () => {
 			expect(body).toContain('href="/dashboard"');
 			expect(body).not.toContain('href="/dashboard/"');
 			expect(res.status).toBe(200);
+		});
+	});
+
+	describe("auth", () => {
+		test("throws at construction when auth is injected without session", () => {
+			expect(
+				() =>
+					new AdminPanel({
+						authorize: () => true,
+						auth: { authenticate: async () => null },
+					}),
+			).toThrow(/session/);
+		});
+
+		test("redirects an unauthenticated request to /admin/login with next set to the original path", async () => {
+			const { app } = buildAuthWiredApp();
+
+			const res = await app.request("/admin");
+
+			expect(res.status).toBe(302);
+			expect(res.headers.get("location")).toBe("/admin/login?next=%2Fadmin");
+		});
+
+		test("GET /admin/login renders the login form with 200", async () => {
+			const { app } = buildAuthWiredApp();
+
+			const res = await app.request("/admin/login");
+			const body = await res.text();
+
+			expect(res.status).toBe(200);
+			expect(body).toContain('action="/admin/login"');
+			expect(body).toContain('name="username"');
+			expect(body).toContain('name="password"');
+		});
+
+		test("POST /admin/login with valid credentials redirects to admin and the issued session then authenticates further requests", async () => {
+			const { app } = buildAuthWiredApp();
+
+			const loginRes = await app.request("/admin/login", {
+				method: "POST",
+				headers: { "content-type": "application/x-www-form-urlencoded" },
+				body: new URLSearchParams({ username: "admin", password: "secret" }).toString(),
+			});
+			expect(loginRes.status).toBe(303);
+			expect(loginRes.headers.get("location")).toBe("/admin");
+
+			const setCookie = loginRes.headers.get("Set-Cookie");
+			if (!setCookie) throw new Error("Set-Cookie was not issued");
+
+			const dashboardRes = await app.request("/admin", {
+				headers: { Cookie: toCookieHeader(setCookie) },
+			});
+			expect(dashboardRes.status).toBe(200);
+		});
+
+		test("POST /admin/login with invalid credentials re-renders the form with 401 and leaves the request logged out", async () => {
+			const { app } = buildAuthWiredApp();
+
+			const res = await app.request("/admin/login", {
+				method: "POST",
+				headers: { "content-type": "application/x-www-form-urlencoded" },
+				body: new URLSearchParams({ username: "admin", password: "wrong" }).toString(),
+			});
+			const body = await res.text();
+
+			expect(res.status).toBe(401);
+			expect(body).toContain("Please enter a correct username and password.");
+
+			const setCookie = res.headers.get("Set-Cookie");
+			const dashboardRes = await app.request("/admin", {
+				headers: setCookie ? { Cookie: toCookieHeader(setCookie) } : {},
+			});
+			expect(dashboardRes.status).toBe(302);
+		});
+
+		test("POST /admin/logout clears the session, and the same session is redirected to login again afterward", async () => {
+			const { app } = buildAuthWiredApp();
+
+			const loginRes = await app.request("/admin/login", {
+				method: "POST",
+				headers: { "content-type": "application/x-www-form-urlencoded" },
+				body: new URLSearchParams({ username: "admin", password: "secret" }).toString(),
+			});
+			const setCookie = loginRes.headers.get("Set-Cookie");
+			if (!setCookie) throw new Error("Set-Cookie was not issued");
+			const cookieHeader = toCookieHeader(setCookie);
+
+			const logoutRes = await app.request("/admin/logout", {
+				method: "POST",
+				headers: { Cookie: cookieHeader },
+			});
+			expect(logoutRes.status).toBe(303);
+			expect(logoutRes.headers.get("location")).toBe("/admin/login");
+
+			const dashboardRes = await app.request("/admin", { headers: { Cookie: cookieHeader } });
+			expect(dashboardRes.status).toBe(302);
+			expect(dashboardRes.headers.get("location")).toBe("/admin/login?next=%2Fadmin");
+		});
+
+		test("when auth is not injected, there are no login/logout routes and authorize alone gates access (backward compatibility)", async () => {
+			const app = new Hono();
+			app.route("/admin", new AdminPanel({ authorize: () => false }));
+
+			const loginRes = await app.request("/admin/login");
+			expect(loginRes.status).toBe(404);
+
+			const dashboardRes = await app.request("/admin");
+			expect(dashboardRes.status).toBe(403);
+		});
+
+		test("the default userTools shows the identity greeting and a working logout link once logged in", async () => {
+			const { app } = buildAuthWiredApp();
+
+			const loginRes = await app.request("/admin/login", {
+				method: "POST",
+				headers: { "content-type": "application/x-www-form-urlencoded" },
+				body: new URLSearchParams({ username: "admin", password: "secret" }).toString(),
+			});
+			const setCookie = loginRes.headers.get("Set-Cookie");
+			if (!setCookie) throw new Error("Set-Cookie was not issued");
+
+			const dashboardRes = await app.request("/admin", {
+				headers: { Cookie: toCookieHeader(setCookie) },
+			});
+			const body = await dashboardRes.text();
+
+			expect(body).toContain("Admin");
+			expect(body).toContain('action="/admin/logout"');
+			expect(body).toContain("Log out");
+		});
+
+		test("an unrecognized next target falls back to basePath instead of the raw external URL (open-redirect guard)", async () => {
+			const { app } = buildAuthWiredApp();
+
+			const res = await app.request("/admin/login?next=https%3A%2F%2Fevil.example%2F");
+			const body = await res.text();
+
+			expect(body).toContain('value="/admin"');
+			expect(body).not.toContain("evil.example");
+		});
+
+		test("GET /admin/login embeds the CSRF hidden input when csrf is injected", async () => {
+			const { app } = buildAuthWiredApp({ csrf: true });
+
+			const res = await app.request("/admin/login");
+			const body = await res.text();
+
+			expect(() => extractCsrfToken(body)).not.toThrow();
+		});
+
+		test("POST /admin/login without a token returns 403 when csrf is injected", async () => {
+			const { app } = buildAuthWiredApp({ csrf: true });
+
+			const res = await app.request("/admin/login", {
+				method: "POST",
+				headers: { "content-type": "application/x-www-form-urlencoded" },
+				body: new URLSearchParams({ username: "admin", password: "secret" }).toString(),
+			});
+
+			expect(res.status).toBe(403);
 		});
 	});
 

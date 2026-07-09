@@ -51,7 +51,7 @@
  * editor, not an oversight; see `docs/admin.md`'s inline section for the
  * operator-facing note.
  */
-import { and, eq, getTableColumns } from "drizzle-orm";
+import { and, eq, getTableColumns, gte, lt } from "drizzle-orm";
 import type { Column, SQL } from "drizzle-orm";
 import type { Context, Env, MiddlewareHandler } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
@@ -66,12 +66,17 @@ import { AdminAuditView } from "./admin_audit_view.js";
 import { AdminJobsView } from "./admin_jobs_view.js";
 import type { AdminBreadcrumb, AdminNavItem } from "./admin_layout.js";
 import { AdminLayout } from "./admin_layout.js";
+import { AdminLoginView } from "./admin_login_view.js";
 import { AdminResourceBulkDeleteView } from "./admin_resource_bulk_delete_view.js";
 import { AdminResourceDeleteView } from "./admin_resource_delete_view.js";
 import type { AdminInlineGroup, AdminInlineGroupRow } from "./admin_resource_form_view.js";
 import { AdminResourceFormView } from "./admin_resource_form_view.js";
 import { AdminResourceListView } from "./admin_resource_list_view.js";
-import type { AdminResourceSort } from "./admin_resource_list_view.js";
+import type {
+	AdminDateHierarchyItem,
+	AdminDateHierarchyNav,
+	AdminResourceSort,
+} from "./admin_resource_list_view.js";
 import { AdminResourceShowView } from "./admin_resource_show_view.js";
 import { AdminSettingsView } from "./admin_settings_view.js";
 import type {
@@ -92,6 +97,13 @@ import type {
  */
 const ADMIN_MESSAGES_FLASH_KEY = "__oven_admin_messages__";
 
+/**
+ * Reserved session key holding the logged-in `AdminIdentity`, set by the built-in
+ * `/login` route and read by the auth gate in `middleware()`. Same reservation
+ * convention as `ADMIN_MESSAGES_FLASH_KEY`.
+ */
+const ADMIN_IDENTITY_SESSION_KEY = "__oven_admin_identity__";
+
 /** Whether `value` has the shape of a single `AdminMessage`. */
 const isAdminMessage = (value: unknown): value is AdminMessage =>
 	typeof value === "object" &&
@@ -104,6 +116,15 @@ const isAdminMessage = (value: unknown): value is AdminMessage =>
 /** Whether `value` has the shape of an `AdminMessage[]`, as flashed by `AdminPanel#flashMessage`. */
 const isAdminMessageArray = (value: unknown): value is AdminMessage[] =>
 	Array.isArray(value) && value.every(isAdminMessage);
+
+/** Whether `value` has the shape of an `AdminIdentity`, as stored by `AdminPanel#setIdentity`. */
+const isAdminIdentity = (value: unknown): value is AdminIdentity => {
+	if (typeof value !== "object" || value === null) return false;
+	if (!("id" in value) || typeof value.id !== "string") return false;
+	if ("label" in value && value.label !== undefined && typeof value.label !== "string")
+		return false;
+	return true;
+};
 
 /** Number of items per page in the resource list. */
 const PAGE_SIZE = 20;
@@ -130,6 +151,191 @@ const parseSort = (raw: string | undefined, columnCount: number): AdminResourceS
 const parsePage = (raw: string | undefined): number => {
 	const page = Number.parseInt(raw ?? "0", 10);
 	return Number.isInteger(page) && page > 0 ? page : 0;
+};
+
+/**
+ * Combines zero or more optional `WHERE` clauses with `AND`, skipping the
+ * `undefined` ones. Returns `undefined` when nothing remains (no narrowing),
+ * the single clause unwrapped when only one remains, or an `and(...)` of
+ * every remaining clause otherwise.
+ */
+const combineWhere = (...conditions: (SQL | undefined)[]): SQL | undefined => {
+	const defined = conditions.filter((value): value is SQL => value !== undefined);
+	if (defined.length === 0) return undefined;
+	return defined.length === 1 ? defined[0] : and(...defined);
+};
+
+/**
+ * The list screen's `?dhy=`/`?dhm=`/`?dhd=` drilldown query, parsed down to
+ * the deepest **valid** level: an out-of-range or non-numeric deeper value is
+ * dropped rather than rejecting the whole query (e.g. a valid year with a
+ * bogus month yields `{ year }`, not `{}`).
+ */
+type DateHierarchyQuery = { year?: number; month?: number; day?: number };
+
+/** Number of days in `year`-`month` (1-based month), via `Date.UTC`'s day-0-of-next-month trick. */
+const daysInMonth = (year: number, month: number): number =>
+	new Date(Date.UTC(year, month, 0)).getUTCDate();
+
+/** Parses the list screen's date-hierarchy drilldown query from its raw `?dhy=`/`?dhm=`/`?dhd=` string values. */
+const parseDateHierarchyQuery = (
+	rawYear: string | undefined,
+	rawMonth: string | undefined,
+	rawDay: string | undefined,
+): DateHierarchyQuery => {
+	const year = Number.parseInt(rawYear ?? "", 10);
+	if (!Number.isInteger(year)) return {};
+
+	const month = Number.parseInt(rawMonth ?? "", 10);
+	if (!Number.isInteger(month) || month < 1 || month > 12) return { year };
+
+	const day = Number.parseInt(rawDay ?? "", 10);
+	if (!Number.isInteger(day) || day < 1 || day > daysInMonth(year, month)) return { year, month };
+
+	return { year, month, day };
+};
+
+/**
+ * Builds the `WHERE` clause narrowing `column` (an integer epoch-millisecond
+ * date column) to the period described by `query` (inclusive start,
+ * exclusive end, UTC calendar). `undefined` when no year is selected (no
+ * narrowing at all).
+ */
+const dateHierarchyPeriodWhere = (column: Column, query: DateHierarchyQuery): SQL | undefined => {
+	const { year, month, day } = query;
+	if (year === undefined) return undefined;
+
+	if (month === undefined) {
+		return and(gte(column, Date.UTC(year, 0, 1)), lt(column, Date.UTC(year + 1, 0, 1)));
+	}
+	if (day === undefined) {
+		return and(gte(column, Date.UTC(year, month - 1, 1)), lt(column, Date.UTC(year, month, 1)));
+	}
+	return and(
+		gte(column, Date.UTC(year, month - 1, day)),
+		lt(column, Date.UTC(year, month - 1, day + 1)),
+	);
+};
+
+/**
+ * Builds one date-hierarchy nav link: preserves the current search `query`
+ * and `activeFilters`, sets `?dhy=`/`?dhm=`/`?dhd=` from `dh`, and always
+ * resets pagination (`?p=` is dropped), same "changing scope returns to page
+ * 0" convention as `buildListUrl` in `admin_resource_list_view.tsx`. Passing
+ * an empty `dh` clears every `dh*` param (the "back to all periods" link).
+ */
+const buildDateHierarchyHref = (
+	basePath: string,
+	resourceKey: string,
+	query: string,
+	activeFilters: Record<string, string | undefined>,
+	dh: DateHierarchyQuery,
+): string => {
+	const params = new URLSearchParams();
+	if (query) params.set("q", query);
+	for (const [column, value] of Object.entries(activeFilters)) {
+		if (value) params.set(column, value);
+	}
+	if (dh.year !== undefined) params.set("dhy", String(dh.year));
+	if (dh.month !== undefined) params.set("dhm", String(dh.month));
+	if (dh.day !== undefined) params.set("dhd", String(dh.day));
+
+	const qs = params.toString();
+	const base = `${basePath}/resources/${resourceKey}`;
+	return qs ? `${base}?${qs}` : base;
+};
+
+/** Localized long month name for `year`-`month` (1-based), via `Intl.DateTimeFormat`. */
+const dateHierarchyMonthLabel = (lang: string, year: number, month: number): string =>
+	new Intl.DateTimeFormat(lang, { month: "long", timeZone: "UTC" }).format(
+		new Date(Date.UTC(year, month - 1, 1)),
+	);
+
+/**
+ * Builds the list screen's date-hierarchy nav (`AdminDateHierarchyNav`) one
+ * level at a time (year -> month -> day), following how far `dhQuery` has
+ * drilled down. `baseWhere` is the search/filter `WHERE` clause **without**
+ * the date period narrowing, so the enumerated years/months/days reflect the
+ * full search/filter scope rather than just the currently selected period.
+ *
+ * `dhColumn`'s min/max value is found via two `AdminModel#listPage` calls
+ * (`orderBy`+`limit: 1`, ascending and descending) rather than a dedicated
+ * aggregation query (no new `AdminModel` method is introduced for this).
+ * Every year/month/day between min and max is enumerated, not only periods
+ * that actually contain rows — a deliberate simplification documented on
+ * `AdminResource#dateHierarchy`; a selected period can render an empty list.
+ * Returns `undefined` when there is no row to anchor min/max on.
+ */
+const buildDateHierarchyNav = async (
+	target: AdminResource,
+	dhColumnName: string,
+	dhColumn: Column,
+	baseWhere: SQL | undefined,
+	dhQuery: DateHierarchyQuery,
+	basePath: string,
+	resourceKey: string,
+	searchQuery: string,
+	activeFilters: Record<string, string | undefined>,
+	lang: string,
+	t: AdminT,
+): Promise<AdminDateHierarchyNav | undefined> => {
+	const [[earliest], [latest]] = await Promise.all([
+		target.model.listPage({
+			where: baseWhere,
+			orderBy: [{ column: dhColumn, direction: "asc" }],
+			limit: 1,
+		}),
+		target.model.listPage({
+			where: baseWhere,
+			orderBy: [{ column: dhColumn, direction: "desc" }],
+			limit: 1,
+		}),
+	]);
+	if (!earliest || !latest) return undefined;
+
+	const minMs = Number(earliest[dhColumnName]);
+	const maxMs = Number(latest[dhColumnName]);
+	if (!Number.isFinite(minMs) || !Number.isFinite(maxMs)) return undefined;
+
+	const href = (dh: DateHierarchyQuery) =>
+		buildDateHierarchyHref(basePath, resourceKey, searchQuery, activeFilters, dh);
+
+	if (dhQuery.year === undefined) {
+		const minYear = new Date(minMs).getUTCFullYear();
+		const maxYear = new Date(maxMs).getUTCFullYear();
+		const items: AdminDateHierarchyItem[] = [];
+		for (let year = minYear; year <= maxYear; year++) {
+			items.push({ label: String(year), href: href({ year }) });
+		}
+		return { items };
+	}
+
+	const { year } = dhQuery;
+	if (dhQuery.month === undefined) {
+		const items: AdminDateHierarchyItem[] = [];
+		for (let month = 1; month <= 12; month++) {
+			items.push({
+				label: dateHierarchyMonthLabel(lang, year, month),
+				href: href({ year, month }),
+			});
+		}
+		return { back: { label: t("dateHierarchy.all"), href: href({}) }, items };
+	}
+
+	const { month } = dhQuery;
+	if (dhQuery.day === undefined) {
+		const items: AdminDateHierarchyItem[] = [];
+		for (let day = 1; day <= daysInMonth(year, month); day++) {
+			items.push({ label: String(day), href: href({ year, month, day }) });
+		}
+		return { back: { label: String(year), href: href({ year }) }, items };
+	}
+
+	return {
+		back: { label: dateHierarchyMonthLabel(lang, year, month), href: href({ year, month }) },
+		items: [],
+		current: String(dhQuery.day),
+	};
 };
 
 /**
@@ -463,6 +669,17 @@ const toAuditRow = (row: Record<string, unknown>): AdminAuditRow => ({
 	createdAt: Number(row.createdAt ?? 0),
 });
 
+/**
+ * The logged-in operator's identity, as returned by `AdminPanelOptions.auth.authenticate`
+ * and held in the session between requests. Deliberately minimal — admin does not
+ * assume the app's user table shape (role, permissions, etc. stay the app's own
+ * concern, read back via `session` from within `authorize`).
+ */
+export type AdminIdentity = {
+	id: string;
+	label?: string;
+};
+
 export type AdminPanelOptions<E extends Env = Env> = {
 	/**
 	 * Admin access authorization callback (required). Assumes reuse of the existing
@@ -512,6 +729,25 @@ export type AdminPanelOptions<E extends Env = Env> = {
 	 * block is rendered (backward compatible).
 	 */
 	userTools?: (c: Context<E>) => AdminUserTools;
+	/**
+	 * Built-in login/logout screens and session wiring (`GET`/`POST "/login"`,
+	 * `POST "/logout"`), injected the same optional way as `csrf`/`audit`/`session`.
+	 * Admin does not assume the app's user table shape — credential verification is
+	 * entirely the app's own `authenticate` callback (e.g. looking up a row and
+	 * checking it with `verifyPassword` from `@tknf/oven/auth`); admin only wires the
+	 * screens, the session-backed identity, and the auth gate that redirects an
+	 * unauthenticated request to `/login`. Requires `session` to also be injected
+	 * (enforced by the constructor); without it there is nowhere to hold the
+	 * logged-in identity between requests. When not injected, there are no
+	 * login/logout routes and no auth gate — every route is guarded by `authorize`
+	 * alone, exactly as before (backward compatible).
+	 */
+	auth?: {
+		authenticate: (
+			c: Context<E>,
+			credentials: { username: string; password: string },
+		) => Promise<AdminIdentity | null>;
+	};
 };
 
 /** `RouteHandler` subclass that serves the unified admin panel, mounted explicitly by the app. */
@@ -532,6 +768,11 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 	constructor(options: AdminPanelOptions<E>) {
 		super();
 		this.panelOptions = options;
+		if (options.auth && !options.session) {
+			throw new Error(
+				"AdminPanel: the `auth` option requires `session` to also be injected (there is nowhere to hold the logged-in identity otherwise).",
+			);
+		}
 		this.wireSections();
 	}
 
@@ -545,6 +786,20 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 				const options = this.panelOptions;
 				if (!options) return c.text("admin not configured", 500);
 
+				/**
+				 * The login/logout routes themselves are exempt from the auth gate and
+				 * `authorize` (otherwise a not-yet-logged-in request could never reach
+				 * `/login`, and a logged-in-but-unauthorized request could never reach
+				 * `/logout`), but still pass through to `csrfVerify` below like every
+				 * other route.
+				 */
+				if (this.isAuthRoute(c)) return next();
+
+				if (options.auth && !this.currentIdentity(c)) {
+					const next_ = encodeURIComponent(c.req.path);
+					return c.redirect(`${this.resolveBasePath()}/login?next=${next_}`);
+				}
+
 				const allowed = await options.authorize(c);
 				if (!allowed) return c.text("Forbidden", options.denyStatus ?? 403);
 
@@ -556,6 +811,50 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 				return csrf.verify(c, next);
 			},
 		];
+	}
+
+	/** Whether `c` targets this panel's built-in `/login` or `/logout` route (see `middleware()`'s auth gate). */
+	private isAuthRoute(c: Context<E>): boolean {
+		const basePath = this.resolveBasePath();
+		return c.req.path === `${basePath}/login` || c.req.path === `${basePath}/logout`;
+	}
+
+	/**
+	 * Reads the logged-in `AdminIdentity` from the session, if `panelOptions.session`
+	 * is injected and holds a well-formed one. `null` otherwise (not logged in, no
+	 * session injected, or a malformed stored value).
+	 */
+	private currentIdentity(c: Context<E>): AdminIdentity | null {
+		const session = this.panelOptions?.session;
+		if (!session) return null;
+
+		const value = session(c).get(ADMIN_IDENTITY_SESSION_KEY);
+		return isAdminIdentity(value) ? value : null;
+	}
+
+	/** Stores `identity` in the session as the logged-in operator, if `panelOptions.session` is injected. */
+	private setIdentity(c: Context<E>, identity: AdminIdentity): void {
+		this.panelOptions?.session?.(c).set(ADMIN_IDENTITY_SESSION_KEY, identity);
+	}
+
+	/** Removes the logged-in identity from the session, if `panelOptions.session` is injected. */
+	private clearIdentity(c: Context<E>): void {
+		this.panelOptions?.session?.(c).unset(ADMIN_IDENTITY_SESSION_KEY);
+	}
+
+	/**
+	 * Validates the login screen's `?next=`/`next` redirect target: only a path
+	 * confined to this panel's `basePath` is allowed through as-is (an open
+	 * redirect guard), anything else — an external URL, a protocol-relative URL,
+	 * or simply a look-alike path such as `/adminX` — falls back to `basePath`
+	 * itself.
+	 */
+	private sanitizeNext(raw: string | undefined): string {
+		const basePath = this.resolveBasePath();
+		if (raw === basePath || raw?.startsWith(`${basePath}/`) || raw?.startsWith(`${basePath}?`)) {
+			return raw;
+		}
+		return basePath;
 	}
 
 	/**
@@ -658,9 +957,29 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 		return this.panelOptions?.csrf?.csrfToken(c) ?? null;
 	}
 
-	/** Resolves the header's user-tools block content via `panelOptions.userTools`. `undefined` when not injected (no block rendered). */
+	/**
+	 * Resolves the header's user-tools block content. `panelOptions.userTools`, when
+	 * injected, always wins. Otherwise, when `auth` is injected and the request is
+	 * logged in, a default block is built from the session identity (a greeting plus
+	 * a "Log out" link posting to this panel's `/logout`), so wiring `auth` alone
+	 * gets a working logout control without also having to inject `userTools`.
+	 * `undefined` when neither applies (no block rendered, backward compatible).
+	 */
 	private resolveUserTools(c: Context<E>): AdminUserTools | undefined {
-		return this.panelOptions?.userTools?.(c);
+		const options = this.panelOptions;
+		if (options?.userTools) return options.userTools(c);
+		if (!options?.auth) return undefined;
+
+		const identity = this.currentIdentity(c);
+		if (!identity) return undefined;
+
+		const t = bindAdminT(c);
+		return {
+			greeting: identity.label ?? identity.id,
+			links: [
+				{ label: t("auth.logOut"), href: `${this.resolveBasePath()}/logout`, method: "post" },
+			],
+		};
 	}
 
 	/**
@@ -820,10 +1139,87 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 		const options = this.panelOptions;
 		if (!options) return;
 
+		if (options.auth) this.wireAuth();
 		if (options.jobs) this.wireJobs();
 		if (options.settings) this.wireSettings();
 		if (options.audit) this.wireAudit();
 		if (options.resources && options.resources.length > 0) this.wireResources();
+	}
+
+	/**
+	 * Registers `GET`/`POST "/login"` and `POST "/logout"`. The auth gate in
+	 * `middleware()` exempts these two paths from both itself and `authorize` (see
+	 * `isAuthRoute`), so they are reachable both logged-out (to log in) and
+	 * logged-in-but-unauthorized (to log out).
+	 */
+	private wireAuth(): void {
+		this.get("/login", async (c) => {
+			const options = this.panelOptions;
+			if (!options?.auth) return c.notFound();
+
+			const basePath = this.resolveBasePath();
+			if (this.currentIdentity(c)) return c.redirect(basePath, 303);
+
+			const t = bindAdminT(c);
+			return c.html(
+				<AdminLoginView
+					brand={options.brand ?? "Admin"}
+					basePath={basePath}
+					csrfToken={this.csrfToken(c)}
+					next={this.sanitizeNext(c.req.query("next"))}
+					error={false}
+					username=""
+					lang={c.get("language") ?? "en"}
+					t={t}
+				/>,
+			);
+		});
+
+		this.post("/login", async (c) => {
+			const options = this.panelOptions;
+			if (!options?.auth) return c.notFound();
+
+			const basePath = this.resolveBasePath();
+			const body = await c.req.parseBody();
+			const username = typeof body.username === "string" ? body.username : "";
+			const password = typeof body.password === "string" ? body.password : "";
+			const next = this.sanitizeNext(typeof body.next === "string" ? body.next : undefined);
+
+			const identity = await options.auth.authenticate(c, { username, password });
+			if (!identity) {
+				const t = bindAdminT(c);
+				return c.html(
+					<AdminLoginView
+						brand={options.brand ?? "Admin"}
+						basePath={basePath}
+						csrfToken={this.csrfToken(c)}
+						next={next}
+						error={true}
+						username={username}
+						lang={c.get("language") ?? "en"}
+						t={t}
+					/>,
+					401,
+				);
+			}
+
+			/**
+			 * Reissues the session id on a successful login (session-fixation defense:
+			 * `Session#regenerate`), keeping the session's existing data (including any
+			 * CSRF secret already issued to this browser) but with a fresh id.
+			 */
+			options.session?.(c).regenerate();
+			this.setIdentity(c, identity);
+			return c.redirect(next, 303);
+		});
+
+		this.post("/logout", async (c) => {
+			const options = this.panelOptions;
+			if (!options?.auth) return c.notFound();
+
+			this.clearIdentity(c);
+			return c.redirect(`${this.resolveBasePath()}/login`, 303);
+		});
 	}
 
 	/** Registers `GET /jobs`, `POST /jobs/:id/retry`, and `POST /jobs/:id/delete`. */
@@ -1018,13 +1414,23 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 
 				const search = query ? target.searchWhere(query) : undefined;
 				const filter = target.filterWhere(selected);
-				const conditions = [search, filter].filter((value): value is SQL => value !== undefined);
-				const where =
-					conditions.length === 0
-						? undefined
-						: conditions.length === 1
-							? conditions[0]
-							: and(...conditions);
+				const baseWhere = combineWhere(search, filter);
+
+				const dhColumnName = target.dateHierarchy?.();
+				const dhColumn = dhColumnName ? getTableColumns(target.table)[dhColumnName] : undefined;
+				if (dhColumnName && !dhColumn) {
+					throw new Error(
+						`AdminResource "${target.key}": dateHierarchy() specified a nonexistent column name "${dhColumnName}"`,
+					);
+				}
+				const dhQuery = parseDateHierarchyQuery(
+					c.req.query("dhy"),
+					c.req.query("dhm"),
+					c.req.query("dhd"),
+				);
+				const where = dhColumn
+					? combineWhere(baseWhere, dateHierarchyPeriodWhere(dhColumn, dhQuery))
+					: baseWhere;
 
 				const displayColumns = target.columns();
 				const sort = parseSort(c.req.query("o") ?? undefined, displayColumns.length);
@@ -1034,13 +1440,29 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 
 				const page = parsePage(c.req.query("p") ?? undefined);
 				const offset = page * PAGE_SIZE;
+				const lang = c.get("language") ?? "en";
+				const t = bindAdminT(c);
 
-				const [rows, total] = await Promise.all([
+				const [rows, total, dateHierarchy] = await Promise.all([
 					target.model.listPage({ where, orderBy, limit: PAGE_SIZE, offset }),
 					target.model.count(where),
+					dhColumn && dhColumnName
+						? buildDateHierarchyNav(
+								target,
+								dhColumnName,
+								dhColumn,
+								baseWhere,
+								dhQuery,
+								this.resolveBasePath(),
+								key,
+								query,
+								selected,
+								lang,
+								t,
+							)
+						: Promise.resolve(undefined),
 				]);
 				const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
-				const t = bindAdminT(c);
 
 				return c.html(
 					<AdminLayout
@@ -1069,6 +1491,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 							page={page}
 							pageCount={pageCount}
 							total={total}
+							dateHierarchy={dateHierarchy}
 							csrfToken={this.csrfToken(c)}
 							t={t}
 						/>

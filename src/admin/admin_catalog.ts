@@ -87,6 +87,12 @@ const en = {
 	"settings.maintOff": "Operating normally",
 	"settings.maintEnable": "Start maintenance",
 	"settings.maintDisable": "End maintenance",
+	"dateHierarchy.all": "All dates",
+	"auth.logIn": "Log in",
+	"auth.logOut": "Log out",
+	"auth.username": "Username",
+	"auth.password": "Password",
+	"auth.invalid": "Please enter a correct username and password.",
 } satisfies Catalog;
 
 /** Japanese catalog. Values mirror the literals previously hard-coded in each `.tsx` view. */
@@ -156,6 +162,12 @@ const ja = {
 	"settings.maintOff": "通常運転",
 	"settings.maintEnable": "メンテ開始",
 	"settings.maintDisable": "メンテ解除",
+	"dateHierarchy.all": "すべての日付",
+	"auth.logIn": "ログイン",
+	"auth.logOut": "ログアウト",
+	"auth.username": "ユーザー名",
+	"auth.password": "パスワード",
+	"auth.invalid": "正しいユーザー名とパスワードを入力してください。",
 } satisfies Catalog;
 
 /** The key set of the admin panel's own catalog (`en` is authoritative; every other catalog mirrors the same keys). */
@@ -228,6 +240,12 @@ const zh = {
 	"settings.maintOff": "正常运行",
 	"settings.maintEnable": "开启维护",
 	"settings.maintDisable": "解除维护",
+	"dateHierarchy.all": "所有日期",
+	"auth.logIn": "登录",
+	"auth.logOut": "退出登录",
+	"auth.username": "用户名",
+	"auth.password": "密码",
+	"auth.invalid": "请输入正确的用户名和密码。",
 } satisfies AdminCatalog;
 
 /** Spanish catalog. */
@@ -297,6 +315,12 @@ const es = {
 	"settings.maintOff": "Funcionamiento normal",
 	"settings.maintEnable": "Iniciar mantenimiento",
 	"settings.maintDisable": "Finalizar mantenimiento",
+	"dateHierarchy.all": "Todas las fechas",
+	"auth.logIn": "Iniciar sesión",
+	"auth.logOut": "Cerrar sesión",
+	"auth.username": "Usuario",
+	"auth.password": "Contraseña",
+	"auth.invalid": "Introduzca un nombre de usuario y una contraseña correctos.",
 } satisfies AdminCatalog;
 
 /** French catalog. */
@@ -366,6 +390,12 @@ const fr = {
 	"settings.maintOff": "Fonctionnement normal",
 	"settings.maintEnable": "Démarrer la maintenance",
 	"settings.maintDisable": "Terminer la maintenance",
+	"dateHierarchy.all": "Toutes les dates",
+	"auth.logIn": "Connexion",
+	"auth.logOut": "Déconnexion",
+	"auth.username": "Nom d'utilisateur",
+	"auth.password": "Mot de passe",
+	"auth.invalid": "Veuillez saisir un nom d'utilisateur et un mot de passe corrects.",
 } satisfies AdminCatalog;
 
 /** German catalog. */
@@ -435,6 +465,12 @@ const de = {
 	"settings.maintOff": "Normalbetrieb",
 	"settings.maintEnable": "Wartung starten",
 	"settings.maintDisable": "Wartung beenden",
+	"dateHierarchy.all": "Alle Daten",
+	"auth.logIn": "Anmelden",
+	"auth.logOut": "Abmelden",
+	"auth.username": "Benutzername",
+	"auth.password": "Passwort",
+	"auth.invalid": "Bitte geben Sie einen korrekten Benutzernamen und ein korrektes Passwort ein.",
 } satisfies AdminCatalog;
 
 /** Brazilian Portuguese catalog. */
@@ -504,6 +540,12 @@ const pt = {
 	"settings.maintOff": "Operação normal",
 	"settings.maintEnable": "Iniciar manutenção",
 	"settings.maintDisable": "Encerrar manutenção",
+	"dateHierarchy.all": "Todas as datas",
+	"auth.logIn": "Entrar",
+	"auth.logOut": "Sair",
+	"auth.username": "Nome de usuário",
+	"auth.password": "Senha",
+	"auth.invalid": "Digite um nome de usuário e uma senha corretos.",
 } satisfies AdminCatalog;
 
 /** Russian catalog. */
@@ -573,6 +615,12 @@ const ru = {
 	"settings.maintOff": "Работает нормально",
 	"settings.maintEnable": "Начать обслуживание",
 	"settings.maintDisable": "Завершить обслуживание",
+	"dateHierarchy.all": "Все даты",
+	"auth.logIn": "Войти",
+	"auth.logOut": "Выйти",
+	"auth.username": "Имя пользователя",
+	"auth.password": "Пароль",
+	"auth.invalid": "Пожалуйста, введите правильные имя пользователя и пароль.",
 } satisfies AdminCatalog;
 
 /** Korean catalog. */
@@ -642,6 +690,12 @@ const ko = {
 	"settings.maintOff": "정상 운영",
 	"settings.maintEnable": "유지보수 시작",
 	"settings.maintDisable": "유지보수 해제",
+	"dateHierarchy.all": "모든 날짜",
+	"auth.logIn": "로그인",
+	"auth.logOut": "로그아웃",
+	"auth.username": "사용자 이름",
+	"auth.password": "비밀번호",
+	"auth.invalid": "올바른 사용자 이름과 비밀번호를 입력하세요.",
 } satisfies AdminCatalog;
 
 /** Arabic catalog (right-to-left). */
@@ -711,6 +765,12 @@ const ar = {
 	"settings.maintOff": "تعمل بشكل طبيعي",
 	"settings.maintEnable": "بدء الصيانة",
 	"settings.maintDisable": "إنهاء الصيانة",
+	"dateHierarchy.all": "كل التواريخ",
+	"auth.logIn": "تسجيل الدخول",
+	"auth.logOut": "تسجيل الخروج",
+	"auth.username": "اسم المستخدم",
+	"auth.password": "كلمة المرور",
+	"auth.invalid": "يرجى إدخال اسم مستخدم وكلمة مرور صحيحين.",
 } satisfies AdminCatalog;
 
 /**
