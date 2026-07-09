@@ -299,6 +299,75 @@ describe("SQLiteModel", () => {
 		expect(page3.nextCursor).toBeNull();
 	});
 
+	test("listPage sorts by an arbitrary column and direction, including multi-column order", async () => {
+		await model.create({ name: "Charlie", count: 1 });
+		await model.create({ name: "Alpha", count: 2 });
+		await model.create({ name: "Bravo", count: 2 });
+
+		const byNameAsc = await model.listPage({
+			orderBy: [{ column: items.name, direction: "asc" }],
+			limit: 10,
+		});
+		expect(byNameAsc.map((r) => r.name)).toEqual(["Alpha", "Bravo", "Charlie"]);
+
+		const byNameDesc = await model.listPage({
+			orderBy: [{ column: items.name, direction: "desc" }],
+			limit: 10,
+		});
+		expect(byNameDesc.map((r) => r.name)).toEqual(["Charlie", "Bravo", "Alpha"]);
+
+		const byCountThenName = await model.listPage({
+			orderBy: [
+				{ column: items.count, direction: "desc" },
+				{ column: items.name, direction: "asc" },
+			],
+			limit: 10,
+		});
+		expect(byCountThenName.map((r) => r.name)).toEqual(["Alpha", "Bravo", "Charlie"]);
+	});
+
+	test("listPage paginates via limit/offset without duplicating or skipping rows", async () => {
+		for (let i = 1; i <= 5; i++) {
+			await model.create({ name: `item${i}` });
+		}
+
+		const page1 = await model.listPage({ limit: 2, offset: 0 });
+		expect(page1.map((r) => r.id)).toEqual(["id-0001", "id-0002"]);
+
+		const page2 = await model.listPage({ limit: 2, offset: 2 });
+		expect(page2.map((r) => r.id)).toEqual(["id-0003", "id-0004"]);
+
+		const page3 = await model.listPage({ limit: 2, offset: 4 });
+		expect(page3.map((r) => r.id)).toEqual(["id-0005"]);
+	});
+
+	test("listPage defaults to primary key ascending order when orderBy is omitted", async () => {
+		for (let i = 1; i <= 3; i++) {
+			await model.create({ name: `item${i}` });
+		}
+
+		const page = await model.listPage({ limit: 10 });
+		expect(page.map((r) => r.id)).toEqual(["id-0001", "id-0002", "id-0003"]);
+	});
+
+	test("listPage combines a where filter with ordering and offset", async () => {
+		for (let i = 1; i <= 3; i++) {
+			await model.create({ name: `PublishedItem${i}`, status: "published" });
+		}
+		for (let i = 1; i <= 2; i++) {
+			await model.create({ name: `DraftItem${i}`, status: "draft" });
+		}
+
+		const page = await model.listPage({
+			where: eq(items.status, "published"),
+			orderBy: [{ column: items.name, direction: "desc" }],
+			limit: 2,
+			offset: 1,
+		});
+		expect(page.map((r) => r.name)).toEqual(["PublishedItem2", "PublishedItem1"]);
+		expect(page.every((r) => r.status === "published")).toBe(true);
+	});
+
 	test("updateWhere returns the number of matched rows, or 0 when the condition no longer matches (optimistic locking)", async () => {
 		const created = await model.create({ name: "Target", status: "draft" });
 

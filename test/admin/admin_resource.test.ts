@@ -23,6 +23,7 @@ const items = sqliteTable("items", {
 /** Dummy for `AdminResource#model` (an unimplemented stub is fine since tests never call it). */
 const dummyModel: AdminModel = {
 	paginate: () => Promise.reject(new Error("not used")),
+	listPage: () => Promise.reject(new Error("not used")),
 	retrieve: () => Promise.reject(new Error("not used")),
 	create: () => Promise.reject(new Error("not used")),
 	update: () => Promise.reject(new Error("not used")),

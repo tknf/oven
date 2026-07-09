@@ -321,6 +321,28 @@ describe.skipIf(!OVEN_MYSQL_TEST_URL)("MySqlModel", () => {
 		expect(page3.nextCursor).toBeNull();
 	});
 
+	test("listPage sorts by an arbitrary column, paginates via limit/offset, and defaults to primary key order", async () => {
+		for (let i = 1; i <= 5; i++) {
+			await model.create({ name: `item${i}`, status: "published" });
+		}
+
+		const byNameDesc = await model.listPage({
+			orderBy: [{ column: items.name, direction: "desc" }],
+			limit: 2,
+			offset: 0,
+		});
+		expect(byNameDesc.map((r) => r.name)).toEqual(["item5", "item4"]);
+
+		const page2 = await model.listPage({ limit: 2, offset: 2 });
+		expect(page2.map((r) => r.id)).toEqual(["id-0003", "id-0004"]);
+
+		const filtered = await model.listPage({
+			where: eq(items.status, "draft"),
+			limit: 10,
+		});
+		expect(filtered).toEqual([]);
+	});
+
 	test("updateWhere returns the number of matched rows, or 0 when the condition no longer matches (optimistic locking)", async () => {
 		const created = await model.create({ name: "Target", status: "draft" });
 

@@ -35,8 +35,8 @@
  * `MailPreviewHandler` precedent and consistently references `this.panelOptions` at
  * request time (inside a closure).
  */
-import { and } from "drizzle-orm";
-import type { SQL } from "drizzle-orm";
+import { and, getTableColumns } from "drizzle-orm";
+import type { Column, SQL } from "drizzle-orm";
 import type { Context, Env, MiddlewareHandler } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import type { FormInput } from "../form/form.js";
@@ -54,6 +54,7 @@ import { AdminResourceBulkDeleteView } from "./admin_resource_bulk_delete_view.j
 import { AdminResourceDeleteView } from "./admin_resource_delete_view.js";
 import { AdminResourceFormView } from "./admin_resource_form_view.js";
 import { AdminResourceListView } from "./admin_resource_list_view.js";
+import type { AdminResourceSort } from "./admin_resource_list_view.js";
 import { AdminResourceShowView } from "./admin_resource_show_view.js";
 import { AdminSettingsView } from "./admin_settings_view.js";
 import type {
@@ -88,6 +89,30 @@ const isAdminMessageArray = (value: unknown): value is AdminMessage[] =>
 
 /** Number of items per page in the resource list. */
 const PAGE_SIZE = 20;
+
+/**
+ * Parses the list screen's `?o=` sort query into a display column index +
+ * direction, matching a familiar admin-console convention (`?o=<i>` ascending,
+ * `?o=-<i>` descending; `i` indexes `AdminResource#columns()`, the same order
+ * the list table's headers render in). Returns `null` for a missing,
+ * non-numeric, or out-of-range value, so the caller falls back to its own
+ * default order rather than passing a bogus column index to `listPage`.
+ */
+const parseSort = (raw: string | undefined, columnCount: number): AdminResourceSort => {
+	if (!raw) return null;
+
+	const direction = raw.startsWith("-") ? "desc" : "asc";
+	const index = Number.parseInt(direction === "desc" ? raw.slice(1) : raw, 10);
+	if (!Number.isInteger(index) || index < 0 || index >= columnCount) return null;
+
+	return { index, direction };
+};
+
+/** Parses the list screen's `?p=` page query (0-based). Clamps anything invalid or negative to `0`. */
+const parsePage = (raw: string | undefined): number => {
+	const page = Number.parseInt(raw ?? "0", 10);
+	return Number.isInteger(page) && page > 0 ? page : 0;
+};
 
 /**
  * Returns a shallow copy of `value` with `key` removed, if `value` is an object.
@@ -325,6 +350,17 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 	/** Resolves `panelOptions.basePath` (default `"/admin"`). Named this way because `basePath` is a Hono-reserved name. */
 	private resolveBasePath(): string {
 		return this.panelOptions?.basePath ?? "/admin";
+	}
+
+	/**
+	 * The list screen's order when `?o=` is absent or invalid: primary key
+	 * descending (newest first), matching the pre-existing `paginate`-based
+	 * behavior this replaces. Falls back to no explicit order (DB default) in
+	 * the unexpected case where `primaryKey` doesn't name an actual column.
+	 */
+	private defaultOrderBy(target: AdminResource): { column: Column; direction: "asc" | "desc" }[] {
+		const pkColumn = getTableColumns(target.table)[target.primaryKey];
+		return pkColumn ? [{ column: pkColumn, direction: "desc" }] : [];
 	}
 
 	/** Issues a token string only when `panelOptions.csrf` is injected. `null` when not injected (no hidden input in forms). */
@@ -662,7 +698,6 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 				const target = resolve();
 				if (!options || !target) return c.notFound();
 
-				const cursor = c.req.query("cursor") || undefined;
 				const query = c.req.query("q") ?? "";
 				const filterDefs = target.filters?.() ?? [];
 				const selected: Record<string, string | undefined> = {};
@@ -680,10 +715,20 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 							? conditions[0]
 							: and(...conditions);
 
-				const [{ rows, nextCursor, hasMore }, total] = await Promise.all([
-					target.model.paginate({ limit: PAGE_SIZE, cursor, direction: "desc", where }),
+				const displayColumns = target.columns();
+				const sort = parseSort(c.req.query("o") ?? undefined, displayColumns.length);
+				const orderBy: { column: Column; direction: "asc" | "desc" }[] = sort
+					? [{ column: displayColumns[sort.index].column, direction: sort.direction }]
+					: this.defaultOrderBy(target);
+
+				const page = parsePage(c.req.query("p") ?? undefined);
+				const offset = page * PAGE_SIZE;
+
+				const [rows, total] = await Promise.all([
+					target.model.listPage({ where, orderBy, limit: PAGE_SIZE, offset }),
 					target.model.count(where),
 				]);
+				const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
 				const t = bindAdminT(c);
 
 				return c.html(
@@ -698,7 +743,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 							basePath={this.resolveBasePath()}
 							resourceKey={key}
 							label={target.label}
-							columns={target.columns().map((column) => column.name)}
+							columns={displayColumns.map((column) => column.name)}
 							rows={rows}
 							primaryKey={target.primaryKey}
 							canWrite={target.canWrite()}
@@ -706,8 +751,9 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 							query={query}
 							filters={filterDefs}
 							activeFilters={selected}
-							nextCursor={nextCursor}
-							hasMore={hasMore}
+							sort={sort}
+							page={page}
+							pageCount={pageCount}
 							total={total}
 							csrfToken={this.csrfToken(c)}
 							t={t}

@@ -530,4 +530,38 @@ td.action-checkbox-column {
 	font-size: 13px;
 	color: var(--body-quiet-color);
 }
+
+th.sortable a {
+	color: inherit;
+	text-decoration: none;
+}
+
+th.sorted {
+	background: var(--selected-bg);
+}
+
+.paginator {
+	display: flex;
+	gap: 6px;
+	align-items: center;
+	padding: 10px 0;
+	flex-wrap: wrap;
+}
+
+.paginator a {
+	background: var(--button-bg);
+	color: var(--button-fg);
+	padding: 2px 8px;
+	border-radius: 4px;
+	text-decoration: none;
+}
+
+.paginator .this-page {
+	font-weight: bold;
+	color: var(--body-quiet-color);
+}
+
+.paginator .ellipsis {
+	color: var(--body-quiet-color);
+}
 `;

@@ -961,6 +961,173 @@ describe("AdminPanel resource CRUD bulk delete success message", () => {
 	});
 });
 
+describe("AdminPanel resource CRUD list: sorting and numbered pagination", () => {
+	let ctx: Awaited<ReturnType<typeof createTestDb<typeof schema>>>;
+
+	beforeEach(async () => {
+		ctx = await createTestDb({ schema, migrationsFolder });
+	});
+
+	afterEach(() => {
+		ctx.client.close();
+	});
+
+	/**
+	 * `PublisherResource` doesn't override `listColumns()`, so display columns
+	 * follow `getTableColumns(schema.publishers)`'s declaration order:
+	 * `id`(0), `name`(1), `contactEmail`(2), `status`(3), `createdAt`(4),
+	 * `updatedAt`(5). Sort tests below target index `1` (`name`).
+	 */
+	const NAME_COLUMN_INDEX = 1;
+
+	test("sort: ?o=<i> orders the given column ascending", async () => {
+		await insertPublisher(ctx.db, { id: "pub-1", name: "Beta Press" });
+		await insertPublisher(ctx.db, { id: "pub-2", name: "Alpha Books" });
+		const resource = new PublisherResource(new PublisherModel(ctx.db));
+		const app = new Hono();
+		app.route("/admin", new AdminPanel({ authorize: () => true, resources: [resource] }));
+
+		const res = await app.request(`/admin/resources/publishers?o=${NAME_COLUMN_INDEX}`);
+		const body = await res.text();
+
+		expect(res.status).toBe(200);
+		expect(body.indexOf("Alpha Books")).toBeLessThan(body.indexOf("Beta Press"));
+	});
+
+	test("sort: ?o=-<i> orders the given column descending", async () => {
+		await insertPublisher(ctx.db, { id: "pub-1", name: "Beta Press" });
+		await insertPublisher(ctx.db, { id: "pub-2", name: "Alpha Books" });
+		const resource = new PublisherResource(new PublisherModel(ctx.db));
+		const app = new Hono();
+		app.route("/admin", new AdminPanel({ authorize: () => true, resources: [resource] }));
+
+		const res = await app.request(`/admin/resources/publishers?o=-${NAME_COLUMN_INDEX}`);
+		const body = await res.text();
+
+		expect(res.status).toBe(200);
+		expect(body.indexOf("Beta Press")).toBeLessThan(body.indexOf("Alpha Books"));
+	});
+
+	test("sort: column headers render sortable, and the active column is marked sorted", async () => {
+		await insertPublisher(ctx.db, { id: "pub-1", name: "Beta Press" });
+		const resource = new PublisherResource(new PublisherModel(ctx.db));
+		const app = new Hono();
+		app.route("/admin", new AdminPanel({ authorize: () => true, resources: [resource] }));
+
+		const res = await app.request(`/admin/resources/publishers?o=${NAME_COLUMN_INDEX}`);
+		const body = await res.text();
+
+		expect(body).toContain('class="sortable column-name sorted ascending"');
+		expect(body).toContain('class="sortable column-status"');
+	});
+
+	test("pagination: ?p=1 shows the second page's rows, not the first page's", async () => {
+		for (let i = 1; i <= 25; i++) {
+			const n = String(i).padStart(2, "0");
+			await insertPublisher(ctx.db, { id: `pub-${n}`, name: `Publisher ${n}` });
+		}
+		const resource = new PublisherResource(new PublisherModel(ctx.db));
+		const app = new Hono();
+		app.route("/admin", new AdminPanel({ authorize: () => true, resources: [resource] }));
+
+		// Sort by name ascending so page membership is deterministic (page size is 20).
+		const firstPage = await app.request(`/admin/resources/publishers?o=${NAME_COLUMN_INDEX}`);
+		const secondPage = await app.request(`/admin/resources/publishers?o=${NAME_COLUMN_INDEX}&p=1`);
+		const firstBody = await firstPage.text();
+		const secondBody = await secondPage.text();
+
+		expect(firstBody).toContain("Publisher 01");
+		expect(firstBody).not.toContain("Publisher 21");
+		expect(secondBody).toContain("Publisher 21");
+		expect(secondBody).not.toContain("Publisher 01");
+	});
+
+	test("pagination: the paginator renders numbered links and the total count", async () => {
+		for (let i = 1; i <= 25; i++) {
+			const n = String(i).padStart(2, "0");
+			await insertPublisher(ctx.db, { id: `pub-${n}`, name: `Publisher ${n}` });
+		}
+		const resource = new PublisherResource(new PublisherModel(ctx.db));
+		const app = new Hono();
+		app.route("/admin", new AdminPanel({ authorize: () => true, resources: [resource] }));
+
+		const res = await app.request("/admin/resources/publishers");
+		const body = await res.text();
+
+		expect(body).toContain('class="paginator"');
+		expect(body).toContain('aria-current="page"');
+		expect(body).toContain("25 Publisher");
+	});
+
+	test("pagination: a single page of results renders no numbered links", async () => {
+		await insertPublisher(ctx.db, { id: "pub-1", name: "TKNF Books" });
+		const resource = new PublisherResource(new PublisherModel(ctx.db));
+		const app = new Hono();
+		app.route("/admin", new AdminPanel({ authorize: () => true, resources: [resource] }));
+
+		const res = await app.request("/admin/resources/publishers");
+		const body = await res.text();
+
+		expect(body).not.toContain("aria-current");
+		expect(body).toContain("1 Publisher");
+	});
+
+	test("state preservation: a sort link resets the page back to 0", async () => {
+		for (let i = 1; i <= 25; i++) {
+			const n = String(i).padStart(2, "0");
+			await insertPublisher(ctx.db, { id: `pub-${n}`, name: `Publisher ${n}` });
+		}
+		const resource = new PublisherResource(new PublisherModel(ctx.db));
+		const app = new Hono();
+		app.route("/admin", new AdminPanel({ authorize: () => true, resources: [resource] }));
+
+		// On page 1 sorted ascending by name, clicking the (already active) name
+		// header must toggle to descending and drop `p` (return to page 0).
+		const res = await app.request(`/admin/resources/publishers?o=${NAME_COLUMN_INDEX}&p=1`);
+		const body = await res.text();
+
+		expect(body).toContain(`href="/admin/resources/publishers?o=-${NAME_COLUMN_INDEX}"`);
+	});
+
+	test("state preservation: a page link keeps the current sort and filter", async () => {
+		for (let i = 1; i <= 25; i++) {
+			const n = String(i).padStart(2, "0");
+			await insertPublisher(ctx.db, {
+				id: `pub-${n}`,
+				name: `Publisher ${n}`,
+				status: "active",
+			});
+		}
+		const resource = new PublisherResource(new PublisherModel(ctx.db));
+		const app = new Hono();
+		app.route("/admin", new AdminPanel({ authorize: () => true, resources: [resource] }));
+
+		const res = await app.request(
+			`/admin/resources/publishers?o=${NAME_COLUMN_INDEX}&status=active`,
+		);
+		const body = await res.text();
+
+		expect(body).toContain(
+			`href="/admin/resources/publishers?status=active&amp;o=${NAME_COLUMN_INDEX}&amp;p=1"`,
+		);
+	});
+
+	test("state preservation: the search form carries the current sort and filters as hidden inputs", async () => {
+		await insertPublisher(ctx.db, { id: "pub-1", name: "TKNF Books", status: "active" });
+		const resource = new PublisherResource(new PublisherModel(ctx.db));
+		const app = new Hono();
+		app.route("/admin", new AdminPanel({ authorize: () => true, resources: [resource] }));
+
+		const res = await app.request(
+			`/admin/resources/publishers?o=-${NAME_COLUMN_INDEX}&status=active`,
+		);
+		const body = await res.text();
+
+		expect(body).toContain(`<input type="hidden" name="o" value="-${NAME_COLUMN_INDEX}"`);
+		expect(body).toContain('<input type="hidden" name="status" value="active"');
+	});
+});
+
 describe("AdminPanel resource CRUD authorization", () => {
 	let ctx: Awaited<ReturnType<typeof createTestDb<typeof schema>>>;
 

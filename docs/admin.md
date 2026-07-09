@@ -113,6 +113,29 @@ columns the list screen shows, and `searchColumns()` to enable a search
 box (search terms are matched with an escaped `LIKE`, so `%`/`_` in user
 input can't widen the match unexpectedly).
 
+### Sorting and paging the list screen
+
+The list screen is offset-based, numbered pagination over
+`AdminModel#listPage` (`SQLiteModel`/`PgModel`/`MySqlModel` all implement
+it) — not `Model#paginate`'s cursor pagination, which has no way to jump
+to an arbitrary page. Every display column's header (`AdminResource#columns()`'s
+order) is a sort link: clicking an unsorted column sorts it ascending;
+clicking the active column toggles its direction. This is reflected in
+two query parameters, matching a familiar admin-console convention:
+
+- `?o=<i>` sorts the `i`-th display column ascending; `?o=-<i>` sorts it
+  descending. An absent or out-of-range `o` falls back to primary key
+  descending (newest first) — the list screen's previous default.
+- `?p=<n>` selects the `n`-th page, 0-based. The page footer
+  (`.paginator`) shows numbered links (eliding long runs down to the
+  first 2, the last 2, and a window around the current page) plus the
+  total row count.
+
+Changing the sort or a filter always resets back to page 0; only the
+paginator's own page links preserve the current sort/search/filters.
+
+
+
 Deleting a row is a two-step flow: every `Delete` link (on the list,
 show, and edit screens) navigates to a `GET
 /resources/:key/:id/delete` confirmation screen that summarizes the
@@ -285,11 +308,16 @@ language), the panel falls back to English.
   leaving `/admin` unauthenticated.
 - **Resources are structural, not tied to a specific dialect.**
   `AdminResource#model` only needs to satisfy the `AdminModel` shape
-  (`paginate`/`retrieve`/`create`/`update`/`delete`/`count`), so
+  (`paginate`/`listPage`/`retrieve`/`create`/`update`/`delete`/`count`), so
   `SQLiteModel`, `PgModel`, and `MySqlModel` subclasses all work without
   adapters.
 - **Primary keys are assumed to be strings.** Number-PK tables aren't
   supported by `AdminResource` today.
+- **List sort/pagination is single-column and offset-based.** `?o=`
+  supports sorting by exactly one display column at a time (clicking a
+  different header replaces, not adds to, the active sort); `?p=` pages
+  via `listPage`'s `offset`, which does a full scan-and-discard for deep
+  pages on large tables (the same tradeoff `listPage` itself documents).
 - **Column allowlisting on write is your form's job, not the panel's.**
   `AdminPanel` passes a successful `Form#validate()` result straight to
   `model.create`/`model.update` (stripping only the primary-key column on

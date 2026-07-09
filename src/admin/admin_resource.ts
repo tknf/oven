@@ -37,6 +37,18 @@ export type AdminModel = {
 		direction?: "asc" | "desc";
 		where?: SQL;
 	}): Promise<{ rows: Record<string, unknown>[]; nextCursor: string | null; hasMore: boolean }>;
+	/**
+	 * Offset-based page fetch (`SQLiteModel#listPage`/`PgModel#listPage`/
+	 * `MySqlModel#listPage`), used instead of `paginate` for the list screen's
+	 * numbered pagination and arbitrary-column sort (`?o=`/`?p=`; see
+	 * `AdminPanel#wireResources`).
+	 */
+	listPage(options: {
+		where?: SQL;
+		orderBy?: { column: Column; direction: "asc" | "desc" }[];
+		limit: number;
+		offset?: number;
+	}): Promise<Record<string, unknown>[]>;
 	retrieve(pk: string): Promise<Record<string, unknown> | undefined>;
 	create(input: unknown): Promise<Record<string, unknown>>;
 	update(pk: string, patch: unknown): Promise<Record<string, unknown> | undefined>;

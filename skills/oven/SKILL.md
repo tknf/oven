@@ -156,7 +156,10 @@ area, example-first). Consult them for depth.
   `CookieSessionStorage`, ...). Weak/short secrets only emit a `console.warn`,
   never throw — do not rely on the runtime to catch it.
 - **`Model#paginate` is keyset (cursor) pagination**, not offset — options are
-  `{ limit, cursor?, direction? }`; there is no `page` number.
+  `{ limit, cursor?, direction? }`; there is no `page` number. For an
+  arbitrary-column-order, numbered-page listing (e.g. admin), use
+  `Model#listPage({ where?, orderBy?, limit, offset? })` instead — offset-based,
+  so prefer `paginate` for large-scale public listings.
 - **`Model` soft delete has no implicit global scope** — add
   `isNull(table.deletedAt)` to your own `where` when you want to exclude deleted
   rows. Concurrency uses `updateLocked` + a `lockVersion` column (`StaleRecordError`).
@@ -191,6 +194,13 @@ area, example-first). Consult them for depth.
   present in the body. `AdminModel` requires a `count(where?)` method (all of
   `SQLiteModel`/`PgModel`/`MySqlModel` already have it); the list screen shows
   the total row count near pagination for every resource, writable or not.
+- **`AdminPanel`'s list screen is numbered pagination + single-column sort**,
+  built on `AdminModel#listPage` (not `Model#paginate`) — `?o=<i>`/`?o=-<i>`
+  sorts the `i`-th display column (`AdminResource#columns()`'s order)
+  ascending/descending, falling back to primary key descending when absent or
+  out of range; `?p=<n>` selects the 0-based page. Clicking a column header or
+  a filter link resets to page 0; only the paginator's own page links keep the
+  current sort/search/filters.
 - **`BroadcastWebSocket` needs an Origin check + connection authorization** in
   the `authorize` hook / `channels` callback (prevents Cross-Site WebSocket
   Hijacking).

@@ -109,6 +109,25 @@ const page2 = page1.hasMore
 (`direction: "desc"` for "most recent first" when the primary key is a
 monotonically increasing id, such as the default Snowflake id).
 
+### Offset pagination with `listPage`
+
+```ts
+const page = await model.listPage({
+  orderBy: [{ column: items.name, direction: "asc" }],
+  limit: 20,
+  offset: 20, // page 2
+});
+```
+
+`listPage` is the counterpart to `paginate` for cases `paginate` can't cover:
+sorting by an arbitrary column (not just the primary key) and jumping
+directly to a page number, the shape a column-sortable admin listing needs.
+`orderBy` defaults to primary key ascending when omitted, and `where` filters
+the same way as other list methods. Prefer `paginate` for large-scale,
+publicly listed data — a large `offset` still makes the database scan and
+discard that many rows, so `listPage` is best kept to bounded, internal-facing
+listings (e.g. an admin panel).
+
 ### Optimistic locking with `updateLocked`
 
 ```ts

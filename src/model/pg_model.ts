@@ -97,6 +97,15 @@ export type PgPaginateResult<TTable extends PgTable, TPk extends PgColumn> = {
 	hasMore: boolean;
 };
 
+/** Arguments for `PgModel#listPage`. */
+export type PgListPageOptions = {
+	where?: SQL;
+	/** Sort columns, applied in array order. Defaults to primary key ascending when omitted or empty. */
+	orderBy?: { column: PgColumn; direction: "asc" | "desc" }[];
+	limit: number;
+	offset?: number;
+};
+
 /** Conflict resolution for `PgModel#upsert`. `target` is the column(s) making up the UNIQUE constraint, `set` is what to update on conflict. */
 export type PgUpsertConflict<TTable extends PgTable> = {
 	target: PgColumn | PgColumn[];
@@ -362,6 +371,37 @@ export abstract class PgModel<
 		 * `$inferSelect`, so `as` is used only here (same reason as `SQLiteModel#paginate`).
 		 */
 		return { rows: rows as PgModelRecord<TTable>[], nextCursor, hasMore };
+	}
+
+	/**
+	 * Offset-based pagination in arbitrary column order (same contract as
+	 * `SQLiteModel#listPage`). Where `paginate` is cursor-based and fixed to primary key
+	 * order, `listPage` trades that for the flexibility of sorting by any column and
+	 * jumping straight to a given page number — the shape a column-sortable,
+	 * numbered-page admin listing needs. Prefer `paginate` for large-scale, publicly
+	 * listed data: a large `offset` still requires the database to scan and discard that
+	 * many rows before returning results, so `listPage` is best suited to bounded,
+	 * internal-facing listings (e.g. an admin panel) rather than deep pagination over
+	 * unbounded public data.
+	 *
+	 * `orderBy` is applied in array order; when omitted or empty, rows are sorted by
+	 * primary key ascending so results stay deterministic across calls. `offset` defaults
+	 * to `0`.
+	 */
+	async listPage(options: PgListPageOptions): Promise<PgModelRecord<TTable>[]> {
+		const orderBy =
+			options.orderBy && options.orderBy.length > 0
+				? options.orderBy.map((entry) =>
+						entry.direction === "desc" ? desc(entry.column) : asc(entry.column),
+					)
+				: [asc(this.primaryKey)];
+		return this.db
+			.select()
+			.from(this.pgTable)
+			.where(options.where)
+			.orderBy(...orderBy)
+			.limit(options.limit)
+			.offset(options.offset ?? 0);
 	}
 
 	/**

@@ -17,11 +17,96 @@
  * a "Run" submit button). `AdminPanel#wireResources` dispatches on the presence of
  * `action` in the posted body to distinguish this from the create-form POST that
  * targets the same URL.
+ *
+ * The list itself is a numbered, offset-based pagination (`?p=`, 0-based) over
+ * `AdminModel#listPage`, with an arbitrary-column sort (`?o=<i>` ascending,
+ * `?o=-<i>` descending, `i` indexing `columns` — a familiar admin-console
+ * convention) instead of `paginate`'s cursor-only, primary-key-fixed order. Every
+ * link that changes sort or a filter resets back to page 0 (`buildListUrl`'s
+ * `page` argument); only page links preserve the current page.
  */
-import { PaginationView } from "../pagination/pagination_view.js";
 import type { AdminFilter } from "./admin_resource.js";
 import type { AdminT } from "./admin_catalog.js";
 import { CSRF_FORM_FIELD_NAME } from "../security/csrf.js";
+
+/** The list screen's current sort (a display column index from `columns` + direction), or `null` when unsorted (falls back to the resource's default order). */
+export type AdminResourceSort = { index: number; direction: "asc" | "desc" } | null;
+
+/** The subset of list-screen state every generated link (sort/filter/page) needs to reproduce. */
+type ListState = {
+	query: string;
+	activeFilters: Record<string, string | undefined>;
+	sort: AdminResourceSort;
+};
+
+/**
+ * Builds one list screen URL from the current `state` plus `page` and optional
+ * sort/filter overrides. Sort and filter links always pass `page: 0` (Django
+ * admin's convention: changing the ordering or a filter returns to the first
+ * page); only the paginator's own page links pass the target page number.
+ */
+const buildListUrl = (
+	basePath: string,
+	resourceKey: string,
+	state: ListState,
+	page: number,
+	overrides?: {
+		filterColumn?: string;
+		filterValue?: string;
+		sortIndex?: number;
+		sortDirection?: "asc" | "desc";
+	},
+): string => {
+	const params = new URLSearchParams();
+	if (state.query) params.set("q", state.query);
+
+	for (const [column, value] of Object.entries(state.activeFilters)) {
+		const resolved = overrides?.filterColumn === column ? overrides.filterValue : value;
+		if (resolved) params.set(column, resolved);
+	}
+
+	const sortIndex = overrides?.sortIndex ?? state.sort?.index;
+	const sortDirection = overrides?.sortDirection ?? state.sort?.direction;
+	if (sortIndex !== undefined) {
+		params.set("o", sortDirection === "desc" ? `-${sortIndex}` : String(sortIndex));
+	}
+
+	if (page > 0) params.set("p", String(page));
+
+	const qs = params.toString();
+	const base = `${basePath}/resources/${resourceKey}`;
+	return qs ? `${base}?${qs}` : base;
+};
+
+/** Ellipsis marker used by `buildPageRange` to elide long runs of page numbers. */
+const PAGE_RANGE_ELLIPSIS = "…";
+
+/**
+ * Elides a long page-number list down to the first 2, the last 2, and a window
+ * of 3 pages on either side of the current page (a simplified version of Django
+ * admin's `Paginator.get_elided_page_range`). Returns `page`-indexed numbers
+ * (0-based) interleaved with `PAGE_RANGE_ELLIPSIS` markers wherever a gap is
+ * skipped.
+ */
+const buildPageRange = (
+	page: number,
+	pageCount: number,
+): (number | typeof PAGE_RANGE_ELLIPSIS)[] => {
+	const kept = new Set<number>();
+	for (let i = 0; i < Math.min(2, pageCount); i++) kept.add(i);
+	for (let i = Math.max(0, pageCount - 2); i < pageCount; i++) kept.add(i);
+	for (let i = Math.max(0, page - 3); i <= Math.min(pageCount - 1, page + 3); i++) kept.add(i);
+
+	const sorted = [...kept].sort((a, b) => a - b);
+	const range: (number | typeof PAGE_RANGE_ELLIPSIS)[] = [];
+	let previous: number | null = null;
+	for (const current of sorted) {
+		if (previous !== null && current - previous > 1) range.push(PAGE_RANGE_ELLIPSIS);
+		range.push(current);
+		previous = current;
+	}
+	return range;
+};
 
 /**
  * Converts one `Record<string, unknown>` cell value into a display string. Since
@@ -58,8 +143,12 @@ export type AdminResourceListViewProps = {
 	filters: AdminFilter[];
 	/** Currently selected value per filter column (`filters[].column` -> selected value, if any). */
 	activeFilters: Record<string, string | undefined>;
-	nextCursor: string | null;
-	hasMore: boolean;
+	/** Current sort (a `columns` index + direction), or `null` when unsorted (the resource's default order applies). */
+	sort: AdminResourceSort;
+	/** Current page (0-based, the `?p=` query). */
+	page: number;
+	/** Total number of pages at the current page size (always at least `1`). */
+	pageCount: number;
 	/** Total row count matching the current search/filter (`AdminModel#count`), shown near the pagination controls. */
 	total: number;
 	/** CSRF token embedded into the bulk-action form. When `null`, no hidden input is emitted. */
@@ -67,27 +156,58 @@ export type AdminResourceListViewProps = {
 	t: AdminT;
 };
 
-/** Search form. Not rendered when `searchEnabled` is `false`. */
+/**
+ * Search form. Not rendered when `searchEnabled` is `false`. Since a GET form
+ * only submits its own named fields, the current sort and active filters are
+ * carried through as hidden inputs (dropping `p`, so a new search always lands
+ * on page 0 — the same "changing the query resets pagination" convention as
+ * the sort/filter links).
+ */
 const SearchForm = ({
 	basePath,
 	resourceKey,
 	query,
+	sort,
+	filters,
+	activeFilters,
 	t,
 }: {
 	basePath: string;
 	resourceKey: string;
 	query: string;
+	sort: AdminResourceSort;
+	filters: AdminFilter[];
+	activeFilters: Record<string, string | undefined>;
 	t: AdminT;
 }) => (
 	<div id="toolbar">
 		<form method="get" action={`${basePath}/resources/${resourceKey}`}>
 			<input type="search" name="q" value={query} />
+			{sort !== null && (
+				<input
+					type="hidden"
+					name="o"
+					value={sort.direction === "desc" ? `-${sort.index}` : String(sort.index)}
+				/>
+			)}
+			{filters.map((f) => {
+				const value = activeFilters[f.column];
+				return value ? <input type="hidden" name={f.column} value={value} /> : null;
+			})}
 			<button type="submit">{t("action.search")}</button>
 		</form>
 	</div>
 );
 
-/** List table body. Renders only the "no matches" message when there are 0 rows. */
+/**
+ * List table body. Renders only the "no matches" message when there are 0
+ * rows. Every display column's header is a sort link (`class="sortable
+ * column-{name}"`; the active column additionally gets `sorted
+ * ascending`/`sorted descending`) built from `state`/`buildListUrl`: clicking an
+ * inactive column sorts it ascending, clicking the active column toggles its
+ * direction — a single-column sort, matching a familiar admin-console
+ * convention (multi-column sort is out of scope here).
+ */
 const ResourceTable = ({
 	basePath,
 	resourceKey,
@@ -95,6 +215,7 @@ const ResourceTable = ({
 	rows,
 	primaryKey,
 	canWrite,
+	state,
 	t,
 }: {
 	basePath: string;
@@ -103,6 +224,7 @@ const ResourceTable = ({
 	rows: Record<string, unknown>[];
 	primaryKey: string;
 	canWrite: boolean;
+	state: ListState;
 	t: AdminT;
 }) => {
 	if (rows.length === 0) return <p>{t("resource.empty")}</p>;
@@ -117,9 +239,26 @@ const ResourceTable = ({
 								<input type="checkbox" id="action-toggle" />
 							</th>
 						)}
-						{columns.map((name) => (
-							<th>{name}</th>
-						))}
+						{columns.map((name, index) => {
+							const isActive = state.sort !== null && state.sort.index === index;
+							const direction = isActive && state.sort ? state.sort.direction : null;
+							const nextDirection = direction === "asc" ? "desc" : "asc";
+							const classNames = ["sortable", `column-${name}`];
+							if (isActive)
+								classNames.push("sorted", direction === "asc" ? "ascending" : "descending");
+							const href = buildListUrl(basePath, resourceKey, state, 0, {
+								sortIndex: index,
+								sortDirection: nextDirection,
+							});
+							return (
+								<th class={classNames.join(" ")}>
+									<a href={href}>
+										{name}
+										{direction === "asc" ? " ▲" : direction === "desc" ? " ▼" : ""}
+									</a>
+								</th>
+							);
+						})}
 						<th />
 					</tr>
 				</thead>
@@ -188,61 +327,108 @@ const ActionsBar = ({ label, t }: { label: string; t: AdminT }) => (
 
 /**
  * Filter sidebar shown next to the results when `filters` is non-empty. For each
- * declared filter, links `q`/the other filters' current selections through and
+ * declared filter, links the current `q`/sort/other-filters state through and
  * either sets or clears this filter's column, so switching a filter never loses
- * search text or other active filters. `cursor` is deliberately not carried over
+ * search text, sort, or other active filters. Every link resets to page 0
  * (changing a filter always returns to the first page).
  */
 const FilterSidebar = ({
 	basePath,
 	resourceKey,
-	query,
 	filters,
 	activeFilters,
+	state,
 	t,
 }: {
 	basePath: string;
 	resourceKey: string;
-	query: string;
 	filters: AdminFilter[];
 	activeFilters: Record<string, string | undefined>;
+	state: ListState;
 	t: AdminT;
-}) => {
-	const buildHref = (column: string, value: string | undefined): string => {
-		const params = new URLSearchParams();
-		if (query) params.set("q", query);
-		for (const f of filters) {
-			const v = f.column === column ? value : activeFilters[f.column];
-			if (v) params.set(f.column, v);
-		}
-		const qs = params.toString();
-		const base = `${basePath}/resources/${resourceKey}`;
-		return qs ? `${base}?${qs}` : base;
-	};
-
-	return (
-		<div id="changelist-filter">
-			<h2>{t("filter.title")}</h2>
-			{filters.map((f) => (
-				<>
-					<h3>{f.label ?? f.column}</h3>
-					<ul>
-						<li class={activeFilters[f.column] ? "" : "selected"}>
-							<a href={buildHref(f.column, undefined)}>{t("filter.all")}</a>
+}) => (
+	<div id="changelist-filter">
+		<h2>{t("filter.title")}</h2>
+		{filters.map((f) => (
+			<>
+				<h3>{f.label ?? f.column}</h3>
+				<ul>
+					<li class={activeFilters[f.column] ? "" : "selected"}>
+						<a
+							href={buildListUrl(basePath, resourceKey, state, 0, {
+								filterColumn: f.column,
+								filterValue: undefined,
+							})}
+						>
+							{t("filter.all")}
+						</a>
+					</li>
+					{f.options.map((option) => (
+						<li class={activeFilters[f.column] === option.value ? "selected" : ""}>
+							<a
+								href={buildListUrl(basePath, resourceKey, state, 0, {
+									filterColumn: f.column,
+									filterValue: option.value,
+								})}
+							>
+								{option.label}
+							</a>
 						</li>
-						{f.options.map((option) => (
-							<li class={activeFilters[f.column] === option.value ? "selected" : ""}>
-								<a href={buildHref(f.column, option.value)}>{option.label}</a>
-							</li>
-						))}
-					</ul>
-				</>
-			))}
-		</div>
-	);
-};
+					))}
+				</ul>
+			</>
+		))}
+	</div>
+);
 
-/** Resource list screen body. Renders the heading, new-record link, search form, list table (with a bulk-action form when `canWrite`), result count, pagination, and (when `filters` is non-empty) the filter sidebar. */
+/**
+ * Numbered pagination + result count, replacing the previous cursor-based
+ * "next" link (`PaginationView`). The page-number list only renders when there
+ * is more than one page (`pageCount > 1`); the result count is always shown.
+ * Page numbers are displayed 1-based (`p + 1`) even though the `?p=` query
+ * itself is 0-based, and the current page renders as plain text with
+ * `aria-current="page"` rather than a link (mirrors a familiar admin-console's
+ * `paginator_number` behavior).
+ */
+const Paginator = ({
+	basePath,
+	resourceKey,
+	state,
+	page,
+	pageCount,
+	total,
+	label,
+}: {
+	basePath: string;
+	resourceKey: string;
+	state: ListState;
+	page: number;
+	pageCount: number;
+	total: number;
+	label: string;
+}) => (
+	<nav class="paginator" aria-label="pagination">
+		{pageCount > 1 &&
+			buildPageRange(page, pageCount).map((entry) => {
+				if (entry === PAGE_RANGE_ELLIPSIS) {
+					return <span class="ellipsis">{PAGE_RANGE_ELLIPSIS}</span>;
+				}
+				if (entry === page) {
+					return (
+						<span class="this-page" aria-current="page">
+							{entry + 1}
+						</span>
+					);
+				}
+				return <a href={buildListUrl(basePath, resourceKey, state, entry)}>{entry + 1}</a>;
+			})}
+		<span class="result-count">
+			{total} {label}
+		</span>
+	</nav>
+);
+
+/** Resource list screen body. Renders the heading, new-record link, search form, list table (with a bulk-action form when `canWrite`), numbered pagination + result count, and (when `filters` is non-empty) the filter sidebar. */
 export const AdminResourceListView = ({
 	basePath,
 	resourceKey,
@@ -255,13 +441,15 @@ export const AdminResourceListView = ({
 	query,
 	filters,
 	activeFilters,
-	nextCursor,
-	hasMore,
+	sort,
+	page,
+	pageCount,
 	total,
 	csrfToken,
 	t,
 }: AdminResourceListViewProps) => {
 	const listUrl = `${basePath}/resources/${resourceKey}`;
+	const state: ListState = { query, activeFilters, sort };
 	const table = (
 		<ResourceTable
 			basePath={basePath}
@@ -270,6 +458,7 @@ export const AdminResourceListView = ({
 			rows={rows}
 			primaryKey={primaryKey}
 			canWrite={canWrite}
+			state={state}
 			t={t}
 		/>
 	);
@@ -284,7 +473,15 @@ export const AdminResourceListView = ({
 				</div>
 			)}
 			{searchEnabled && (
-				<SearchForm basePath={basePath} resourceKey={resourceKey} query={query} t={t} />
+				<SearchForm
+					basePath={basePath}
+					resourceKey={resourceKey}
+					query={query}
+					sort={sort}
+					filters={filters}
+					activeFilters={activeFilters}
+					t={t}
+				/>
 			)}
 			{canWrite && rows.length > 0 ? (
 				<form id="changelist-form" method="post" action={listUrl}>
@@ -297,18 +494,14 @@ export const AdminResourceListView = ({
 			) : (
 				table
 			)}
-			<p class="result-count">
-				{total} {label}
-			</p>
-			<PaginationView
-				nextCursor={nextCursor}
-				hasMore={hasMore}
-				label={t("action.next")}
-				buildUrl={(cursor) =>
-					`${listUrl}?cursor=${encodeURIComponent(String(cursor))}${
-						query ? `&q=${encodeURIComponent(query)}` : ""
-					}`
-				}
+			<Paginator
+				basePath={basePath}
+				resourceKey={resourceKey}
+				state={state}
+				page={page}
+				pageCount={pageCount}
+				total={total}
+				label={label}
 			/>
 		</>
 	);
@@ -324,9 +517,9 @@ export const AdminResourceListView = ({
 					<FilterSidebar
 						basePath={basePath}
 						resourceKey={resourceKey}
-						query={query}
 						filters={filters}
 						activeFilters={activeFilters}
+						state={state}
 						t={t}
 					/>
 				</div>
