@@ -20,7 +20,7 @@
  * `#toolbar`, `.module`, `.object-tools`, `.addlink`, `.submit-row`,
  * `.default`, `.deletelink`, `.cancel-link`, `.button`, `.change-list`,
  * `#changelist-filter`, `.actions`, `.action-checkbox-column`,
- * `.result-count`).
+ * `.result-count`, `.inline-group`, `.tabular-inline`).
  */
 export const ADMIN_CSS = `:root {
 	--primary: #79aec8;
@@ -641,5 +641,40 @@ th.sorted {
 
 .paginator .ellipsis {
 	color: var(--body-quiet-color);
+}
+
+.inline-group {
+	margin: 0 0 20px;
+}
+
+.inline-group > h2 {
+	background: var(--header-bg);
+	color: var(--header-link-color);
+	margin: 0;
+	padding: 8px 12px;
+	font-size: 13px;
+	text-transform: uppercase;
+	letter-spacing: 0.5px;
+	font-weight: 400;
+}
+
+table.tabular-inline {
+	width: 100%;
+	border-collapse: collapse;
+}
+
+table.tabular-inline th {
+	background: var(--darkened-bg);
+	color: var(--body-quiet-color);
+	text-align: left;
+	padding: 6px 10px;
+	font-size: 12px;
+	text-transform: uppercase;
+	border-bottom: 1px solid var(--hairline-color);
+}
+
+table.tabular-inline td {
+	padding: 6px 10px;
+	border-bottom: 1px solid var(--hairline-color);
 }
 `;

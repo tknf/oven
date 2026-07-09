@@ -11,6 +11,7 @@ import type { Env } from "hono";
 import { Hono } from "hono";
 import { afterEach, beforeEach, describe, expect, test } from "vite-plus/test";
 import { AdminPanel } from "../../src/admin/admin_panel.js";
+import type { AdminInline } from "../../src/admin/admin_resource.js";
 import { AdminResource, fieldsFromTable } from "../../src/admin/admin_resource.js";
 import { SQLiteAuditLog } from "../../src/audit/sqlite_audit_log.js";
 import type { FieldDef } from "../../src/form/form.js";
@@ -154,6 +155,76 @@ class ReadonlyPublisherResource extends AdminResource {
 	}
 }
 
+type BookInput = { title: string };
+
+/** Real `SQLiteModel` subclass that operates on the `books` table, for verifying `AdminResource#inlines()`. */
+class BookModel extends SQLiteModel<typeof schema.books, typeof schema.books.id, typeof schema> {
+	protected get table() {
+		return schema.books;
+	}
+	protected get primaryKey() {
+		return schema.books.id;
+	}
+}
+
+/** Inline child form for `books`, whose only editable field is `title`. */
+class BookForm extends Form<StandardSchemaV1<unknown, BookInput>, string> {
+	protected schema() {
+		return defineStubSchema<BookInput>((value) => {
+			const record = value as Record<string, unknown>;
+			if (typeof record.title !== "string" || record.title === "") {
+				return { issues: [{ message: "Title is required", path: ["title"] }] };
+			}
+			return { value: { title: record.title } };
+		});
+	}
+	protected fields(): Record<string, FieldDef> {
+		return fieldsFromTable(schema.books, { omit: ["publisherId"] });
+	}
+}
+
+/** `publishers` resource that declares a `books` inline (see `AdminInline`). */
+class PublisherResourceWithInlines extends AdminResource {
+	constructor(
+		private readonly publisherModel: PublisherModel,
+		private readonly bookModel: BookModel,
+	) {
+		super();
+	}
+	get key() {
+		return "publishers";
+	}
+	get label() {
+		return "Publisher";
+	}
+	get model() {
+		return this.publisherModel;
+	}
+	get table() {
+		return schema.publishers;
+	}
+	get primaryKey() {
+		return "id";
+	}
+	form() {
+		return new PublisherForm();
+	}
+	inlines(): AdminInline[] {
+		return [
+			{
+				key: "books",
+				label: "Books",
+				model: this.bookModel,
+				table: schema.books,
+				primaryKey: "id",
+				foreignKey: "publisherId",
+				form: () => new BookForm(),
+				extra: 2,
+			},
+		];
+	}
+}
+
 /** Inserts one row into the `publishers` table. */
 const insertPublisher = async (
 	db: Awaited<ReturnType<typeof createTestDb<typeof schema>>>["db"],
@@ -164,6 +235,20 @@ const insertPublisher = async (
 	await db.insert(schema.publishers).values({
 		contactEmail: overrides.contactEmail ?? `${overrides.id}@example.com`,
 		status: overrides.status ?? "active",
+		createdAt: overrides.createdAt ?? now,
+		updatedAt: overrides.updatedAt ?? now,
+		...overrides,
+	});
+};
+
+/** Inserts one row into the `books` table. */
+const insertBook = async (
+	db: Awaited<ReturnType<typeof createTestDb<typeof schema>>>["db"],
+	overrides: Partial<typeof schema.books.$inferInsert> &
+		Pick<typeof schema.books.$inferInsert, "id" | "publisherId" | "title">,
+) => {
+	const now = Date.now();
+	await db.insert(schema.books).values({
 		createdAt: overrides.createdAt ?? now,
 		updatedAt: overrides.updatedAt ?? now,
 		...overrides,
@@ -1183,5 +1268,333 @@ describe("AdminPanel resource CRUD authorization", () => {
 		expect(editForm.status).toBe(403);
 		expect(update.status).toBe(403);
 		expect(remove.status).toBe(403);
+	});
+});
+
+describe("AdminPanel resource CRUD inline relations (declaration + rendering only)", () => {
+	let ctx: Awaited<ReturnType<typeof createTestDb<typeof schema>>>;
+
+	beforeEach(async () => {
+		ctx = await createTestDb({ schema, migrationsFolder });
+	});
+
+	afterEach(() => {
+		ctx.client.close();
+	});
+
+	test("edit form: renders the inline group, existing rows with values and __pk, and blank extra rows", async () => {
+		await insertPublisher(ctx.db, { id: "pub-1", name: "TKNF Books" });
+		await insertBook(ctx.db, { id: "book-1", publisherId: "pub-1", title: "First Book" });
+		await insertBook(ctx.db, { id: "book-2", publisherId: "pub-1", title: "Second Book" });
+
+		const resource = new PublisherResourceWithInlines(
+			new PublisherModel(ctx.db),
+			new BookModel(ctx.db),
+		);
+		const app = new Hono();
+		app.route("/admin", new AdminPanel({ authorize: () => true, resources: [resource] }));
+
+		const res = await app.request("/admin/resources/publishers/pub-1/edit");
+		const body = await res.text();
+
+		expect(res.status).toBe(200);
+		expect(body).toContain('class="inline-group"');
+		expect(body).toContain("Books");
+
+		// Two existing rows (index 0/1) prefilled with their title and pk, plus two blank extra rows (index 2/3, extra=2).
+		expect(body).toContain('name="books-0-title"');
+		expect(body).toContain('value="First Book"');
+		expect(body).toContain('name="books-1-title"');
+		expect(body).toContain('value="Second Book"');
+		expect(body).toContain('<input type="hidden" name="books-0-__pk" value="book-1"');
+		expect(body).toContain('<input type="hidden" name="books-1-__pk" value="book-2"');
+		expect(body).toContain('name="books-0-__delete"');
+		expect(body).toContain('name="books-1-__delete"');
+		expect(body).toContain('name="books-2-title"');
+		expect(body).toContain('name="books-3-title"');
+		expect(body).not.toContain('name="books-2-__pk"');
+		expect(body).not.toContain('name="books-2-__delete"');
+
+		// total = 2 existing + extra(2) = 4.
+		expect(body).toContain('<input type="hidden" name="books-__total" value="4"');
+	});
+
+	test("new form: renders only blank rows, with no __pk or __delete markers", async () => {
+		const resource = new PublisherResourceWithInlines(
+			new PublisherModel(ctx.db),
+			new BookModel(ctx.db),
+		);
+		const app = new Hono();
+		app.route("/admin", new AdminPanel({ authorize: () => true, resources: [resource] }));
+
+		const res = await app.request("/admin/resources/publishers/new");
+		const body = await res.text();
+
+		expect(res.status).toBe(200);
+		expect(body).toContain('class="inline-group"');
+		expect(body).toContain('name="books-0-title"');
+		expect(body).toContain('name="books-1-title"');
+		expect(body).not.toContain('name="books-2-title"');
+		expect(body).not.toContain("__pk");
+		expect(body).not.toContain("__delete");
+		expect(body).toContain('<input type="hidden" name="books-__total" value="2"');
+	});
+
+	test("a resource without inlines() renders no inline group", async () => {
+		await insertPublisher(ctx.db, { id: "pub-1", name: "TKNF Books" });
+		const resource = new PublisherResource(new PublisherModel(ctx.db));
+		const app = new Hono();
+		app.route("/admin", new AdminPanel({ authorize: () => true, resources: [resource] }));
+
+		const res = await app.request("/admin/resources/publishers/pub-1/edit");
+		const body = await res.text();
+
+		expect(res.status).toBe(200);
+		expect(body).not.toContain('class="inline-group"');
+	});
+});
+
+describe("AdminPanel resource CRUD inline relations (submission: create/update/delete children)", () => {
+	let ctx: Awaited<ReturnType<typeof createTestDb<typeof schema>>>;
+
+	beforeEach(async () => {
+		ctx = await createTestDb({ schema, migrationsFolder });
+	});
+
+	afterEach(() => {
+		ctx.client.close();
+	});
+
+	/** Builds a form body for `PublisherResourceWithInlines`'s parent fields (name/contactEmail/status default "active"). */
+	const parentFields = (overrides?: Partial<PublisherInput>): [string, string][] => [
+		["name", overrides?.name ?? "TKNF Books"],
+		["contactEmail", overrides?.contactEmail ?? "tknf@example.com"],
+		["status", overrides?.status ?? "active"],
+	];
+
+	test("edit: changing an existing child row's title updates it in the DB", async () => {
+		await insertPublisher(ctx.db, { id: "pub-1", name: "TKNF Books" });
+		await insertBook(ctx.db, { id: "book-1", publisherId: "pub-1", title: "First Book" });
+
+		const resource = new PublisherResourceWithInlines(
+			new PublisherModel(ctx.db),
+			new BookModel(ctx.db),
+		);
+		const app = new Hono();
+		app.route("/admin", new AdminPanel({ authorize: () => true, resources: [resource] }));
+
+		const res = await app.request("/admin/resources/publishers/pub-1", {
+			method: "POST",
+			headers: { "content-type": "application/x-www-form-urlencoded" },
+			body: new URLSearchParams([
+				...parentFields(),
+				["books-__total", "1"],
+				["books-0-__pk", "book-1"],
+				["books-0-title", "Renamed Book"],
+			]).toString(),
+		});
+
+		expect(res.status).toBe(303);
+		const [book] = await ctx.db.select().from(schema.books).where(eq(schema.books.id, "book-1"));
+		expect(book?.title).toBe("Renamed Book");
+	});
+
+	test("edit: filling in a blank extra row creates a new child row bound to the parent", async () => {
+		await insertPublisher(ctx.db, { id: "pub-1", name: "TKNF Books" });
+
+		const resource = new PublisherResourceWithInlines(
+			new PublisherModel(ctx.db),
+			new BookModel(ctx.db),
+		);
+		const app = new Hono();
+		app.route("/admin", new AdminPanel({ authorize: () => true, resources: [resource] }));
+
+		const res = await app.request("/admin/resources/publishers/pub-1", {
+			method: "POST",
+			headers: { "content-type": "application/x-www-form-urlencoded" },
+			body: new URLSearchParams([
+				...parentFields(),
+				["books-__total", "2"],
+				["books-0-title", "New Child Book"],
+				["books-1-title", ""],
+			]).toString(),
+		});
+
+		expect(res.status).toBe(303);
+		const books = await ctx.db
+			.select()
+			.from(schema.books)
+			.where(eq(schema.books.publisherId, "pub-1"));
+		expect(books).toHaveLength(1);
+		expect(books[0]?.title).toBe("New Child Book");
+	});
+
+	test("edit: checking __delete on an existing child row removes it", async () => {
+		await insertPublisher(ctx.db, { id: "pub-1", name: "TKNF Books" });
+		await insertBook(ctx.db, { id: "book-1", publisherId: "pub-1", title: "First Book" });
+		await insertBook(ctx.db, { id: "book-2", publisherId: "pub-1", title: "Second Book" });
+
+		const resource = new PublisherResourceWithInlines(
+			new PublisherModel(ctx.db),
+			new BookModel(ctx.db),
+		);
+		const app = new Hono();
+		app.route("/admin", new AdminPanel({ authorize: () => true, resources: [resource] }));
+
+		const res = await app.request("/admin/resources/publishers/pub-1", {
+			method: "POST",
+			headers: { "content-type": "application/x-www-form-urlencoded" },
+			body: new URLSearchParams([
+				...parentFields(),
+				["books-__total", "2"],
+				["books-0-__pk", "book-1"],
+				["books-0-title", "First Book"],
+				["books-0-__delete", "on"],
+				["books-1-__pk", "book-2"],
+				["books-1-title", "Second Book"],
+			]).toString(),
+		});
+
+		expect(res.status).toBe(303);
+		const books = await ctx.db
+			.select()
+			.from(schema.books)
+			.where(eq(schema.books.publisherId, "pub-1"));
+		expect(books).toHaveLength(1);
+		expect(books[0]?.id).toBe("book-2");
+	});
+
+	test("edit: leaving extra blank rows untouched creates no child rows", async () => {
+		await insertPublisher(ctx.db, { id: "pub-1", name: "TKNF Books" });
+
+		const resource = new PublisherResourceWithInlines(
+			new PublisherModel(ctx.db),
+			new BookModel(ctx.db),
+		);
+		const app = new Hono();
+		app.route("/admin", new AdminPanel({ authorize: () => true, resources: [resource] }));
+
+		const res = await app.request("/admin/resources/publishers/pub-1", {
+			method: "POST",
+			headers: { "content-type": "application/x-www-form-urlencoded" },
+			body: new URLSearchParams([
+				...parentFields(),
+				["books-__total", "2"],
+				["books-0-title", ""],
+				["books-1-title", ""],
+			]).toString(),
+		});
+
+		expect(res.status).toBe(303);
+		const books = await ctx.db
+			.select()
+			.from(schema.books)
+			.where(eq(schema.books.publisherId, "pub-1"));
+		expect(books).toHaveLength(0);
+	});
+
+	test("edit: an invalid child row re-renders 422 and writes neither the parent nor any child", async () => {
+		await insertPublisher(ctx.db, {
+			id: "pub-1",
+			name: "TKNF Books",
+			contactEmail: "old@example.com",
+		});
+
+		const resource = new PublisherResourceWithInlines(
+			new PublisherModel(ctx.db),
+			new BookModel(ctx.db),
+		);
+		const app = new Hono();
+		app.route("/admin", new AdminPanel({ authorize: () => true, resources: [resource] }));
+
+		const res = await app.request("/admin/resources/publishers/pub-1", {
+			method: "POST",
+			headers: { "content-type": "application/x-www-form-urlencoded" },
+			body: new URLSearchParams([
+				...parentFields({ name: "TKNF Books Renamed" }),
+				["books-__total", "1"],
+				["books-0-title", ""],
+				["books-0-__pk", "book-missing-pk-but-filled"],
+			]).toString(),
+		});
+
+		expect(res.status).toBe(422);
+		const body = await res.text();
+		expect(body).toContain("Title is required");
+
+		const [publisher] = await ctx.db
+			.select()
+			.from(schema.publishers)
+			.where(eq(schema.publishers.id, "pub-1"));
+		expect(publisher?.name).toBe("TKNF Books");
+
+		const books = await ctx.db
+			.select()
+			.from(schema.books)
+			.where(eq(schema.books.publisherId, "pub-1"));
+		expect(books).toHaveLength(0);
+	});
+
+	test("create: filling in a blank row creates the parent, then a child row bound to the new parent id", async () => {
+		const resource = new PublisherResourceWithInlines(
+			new PublisherModel(ctx.db),
+			new BookModel(ctx.db),
+		);
+		const app = new Hono();
+		app.route("/admin", new AdminPanel({ authorize: () => true, resources: [resource] }));
+
+		const res = await app.request("/admin/resources/publishers", {
+			method: "POST",
+			headers: { "content-type": "application/x-www-form-urlencoded" },
+			body: new URLSearchParams([
+				...parentFields({ name: "Brand New Publisher" }),
+				["books-__total", "1"],
+				["books-0-title", "First Child Book"],
+			]).toString(),
+		});
+
+		expect(res.status).toBe(303);
+
+		const [publisher] = await ctx.db
+			.select()
+			.from(schema.publishers)
+			.where(eq(schema.publishers.name, "Brand New Publisher"));
+		expect(publisher).toBeDefined();
+		const publisherId = publisher?.id;
+		if (!publisherId) throw new Error("expected publisher to be created");
+
+		const books = await ctx.db
+			.select()
+			.from(schema.books)
+			.where(eq(schema.books.publisherId, publisherId));
+		expect(books).toHaveLength(1);
+		expect(books[0]?.title).toBe("First Child Book");
+	});
+
+	test("create: an invalid parent with a valid child writes neither the parent nor the child", async () => {
+		const resource = new PublisherResourceWithInlines(
+			new PublisherModel(ctx.db),
+			new BookModel(ctx.db),
+		);
+		const app = new Hono();
+		app.route("/admin", new AdminPanel({ authorize: () => true, resources: [resource] }));
+
+		const res = await app.request("/admin/resources/publishers", {
+			method: "POST",
+			headers: { "content-type": "application/x-www-form-urlencoded" },
+			body: new URLSearchParams([
+				["name", ""],
+				["contactEmail", ""],
+				["books-__total", "1"],
+				["books-0-title", "Valid Child Title"],
+			]).toString(),
+		});
+
+		expect(res.status).toBe(422);
+
+		const publishers = await ctx.db.select().from(schema.publishers);
+		expect(publishers).toHaveLength(0);
+		const books = await ctx.db.select().from(schema.books);
+		expect(books).toHaveLength(0);
 	});
 });

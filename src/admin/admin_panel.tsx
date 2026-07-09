@@ -34,24 +34,41 @@
  * constructor and immutable thereafter, but each handler follows the
  * `MailPreviewHandler` precedent and consistently references `this.panelOptions` at
  * request time (inside a closure).
+ *
+ * ## Persisting inline child rows
+ * When a resource declares `inlines()` (`AdminInline` in `admin_resource.ts`), the
+ * create/update handlers plan every submitted row (`planAllInlineRows`) and
+ * validate the parent form **before writing anything**: if the parent or any
+ * row fails, the whole request re-renders as 422 with nothing written, parent
+ * or child (`buildInlineGroupsFromBody` rebuilds the inline groups straight
+ * from the submitted body, since the DB hasn't changed). Only once everything
+ * validates does the handler write the parent, then each inline row
+ * (`persistInlineRows`) in declaration order. **This sequence is not
+ * transactional** — `AdminModel` exposes no cross-table transaction primitive,
+ * so a failure partway through child writes (e.g. a DB error on the third of
+ * five child rows) can leave the parent and some children committed while
+ * others are not. This is a deliberate scope limit of the fixed-row inline
+ * editor, not an oversight; see `docs/admin.md`'s inline section for the
+ * operator-facing note.
  */
-import { and, getTableColumns } from "drizzle-orm";
+import { and, eq, getTableColumns } from "drizzle-orm";
 import type { Column, SQL } from "drizzle-orm";
 import type { Context, Env, MiddlewareHandler } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
-import type { FormInput } from "../form/form.js";
+import type { FormInput, FormInputValue, FormResult } from "../form/form.js";
 import { RouteHandler } from "../routing/route_handler.js";
 import type { Csrf } from "../security/csrf.js";
 import type { Session } from "../session/session.js";
 import { bindAdminT } from "./admin_catalog.js";
 import type { AdminT } from "./admin_catalog.js";
-import type { AdminResource } from "./admin_resource.js";
+import type { AdminInline, AdminResource } from "./admin_resource.js";
 import { AdminAuditView } from "./admin_audit_view.js";
 import { AdminJobsView } from "./admin_jobs_view.js";
 import type { AdminBreadcrumb, AdminNavItem } from "./admin_layout.js";
 import { AdminLayout } from "./admin_layout.js";
 import { AdminResourceBulkDeleteView } from "./admin_resource_bulk_delete_view.js";
 import { AdminResourceDeleteView } from "./admin_resource_delete_view.js";
+import type { AdminInlineGroup, AdminInlineGroupRow } from "./admin_resource_form_view.js";
 import { AdminResourceFormView } from "./admin_resource_form_view.js";
 import { AdminResourceListView } from "./admin_resource_list_view.js";
 import type { AdminResourceSort } from "./admin_resource_list_view.js";
@@ -141,6 +158,266 @@ const stringify = (value: unknown): string => {
 	if (typeof value === "string") return value;
 	if (typeof value === "number" || typeof value === "bigint") return String(value);
 	return "";
+};
+
+/**
+ * Prepends `${prefix}-` to every key of `input`. `Form#bind({ prefix, values })`
+ * looks up `values` by the already-prefixed key (matching how the browser
+ * submits a prefixed form; see `form.ts`'s "prefix round trip" JSDoc), but
+ * `Form#toInput(row)` returns raw (unprefixed) keys, so an inline row's
+ * prefilled values must be re-keyed through this before being passed to `bind`.
+ */
+const prefixFormInput = (input: FormInput, prefix: string): FormInput =>
+	Object.fromEntries(Object.entries(input).map(([key, value]) => [`${prefix}-${key}`, value]));
+
+/**
+ * Builds the `AdminInlineGroup[]` (`admin_resource_form_view.tsx`) for `target`'s
+ * create/edit form, one group per `target.inlines()` entry. Passing `parentId`
+ * (the edit form's row id) fetches the existing children via
+ * `inline.model.listPage`, matched against `inline.foreignKey`, and renders one
+ * bound row per child ahead of `inline.extra` (default `3`) blank rows; omitting
+ * it (the new form, where there is no parent row yet) renders only blank rows.
+ * Row field-name prefixes (`${key}-${index}`) and the `__pk`/`__total` markers
+ * follow the convention documented on `AdminInline` — kept in lockstep with it
+ * since a later step's submission handler depends on this exact naming.
+ */
+const buildInlineGroups = async (
+	target: AdminResource,
+	parentId?: string,
+): Promise<AdminInlineGroup[]> => {
+	const inlines = target.inlines?.() ?? [];
+	const groups: AdminInlineGroup[] = [];
+
+	for (const inline of inlines) {
+		const extra = inline.extra ?? 3;
+		const foreignKeyColumn = getTableColumns(inline.table)[inline.foreignKey];
+		if (!foreignKeyColumn) {
+			throw new Error(
+				`AdminResource "${target.key}": inlines() inline "${inline.key}" specified a nonexistent foreignKey column "${inline.foreignKey}"`,
+			);
+		}
+
+		const children =
+			parentId !== undefined
+				? await inline.model.listPage({ where: eq(foreignKeyColumn, parentId), limit: 200 })
+				: [];
+
+		const rows: AdminInlineGroupRow[] = children.map((child, index) => {
+			const prefix = `${inline.key}-${index}`;
+			return {
+				index,
+				binding: inline
+					.form()
+					.bind({ prefix, values: prefixFormInput(inline.form().toInput(child), prefix) }),
+				pk: stringify(child[inline.primaryKey]),
+			};
+		});
+		for (let index = children.length; index < children.length + extra; index++) {
+			rows.push({ index, binding: inline.form().bind({ prefix: `${inline.key}-${index}` }) });
+		}
+
+		groups.push({
+			key: inline.key,
+			label: inline.label,
+			headers: inline
+				.form()
+				.bind()
+				.visibleFields()
+				.map((field) => field.label),
+			rows,
+			total: children.length + extra,
+		});
+	}
+
+	return groups;
+};
+
+/**
+ * Plan for one submitted inline row (`admin_panel.tsx`'s inline submission
+ * handling; see the module JSDoc "Persisting inline child rows"). Built by
+ * `planInlineRows` ahead of any write, so the parent write only happens once
+ * every row (across every inline) is known to be either skippable, a
+ * deletion, or a successful validation.
+ */
+type InlineRowPlan = {
+	/** 0-based row index within this inline, matching `${key}-${index}-*` field names. */
+	index: number;
+	/** The row's `${key}-${index}-__pk` value. Empty string for a not-yet-persisted row. */
+	pk: string;
+	/** Whether `${key}-${index}-__delete` was checked. */
+	del: boolean;
+	/** A wholly blank extra row (no pk, no field filled in) — not validated, created, updated, or deleted. */
+	skip: boolean;
+	/**
+	 * The row's own `Form#validate` result. `null` when `skip` is `true` or when
+	 * the row is a deletion of an existing row (`del && pk !== ""`), neither of
+	 * which requires validation.
+	 */
+	result: FormResult<unknown> | null;
+};
+
+/**
+ * Whether `body` has at least one non-empty field value under the row prefix
+ * `${prefix}-` (excluding the `__pk`/`__delete` markers). Used by
+ * `planInlineRows` to distinguish an untouched extra blank row (which must not
+ * be validated or created) from a row the operator actually filled in.
+ */
+const hasNonEmptyRowValue = (body: FormInput, prefix: string): boolean => {
+	const marker = `${prefix}-`;
+	for (const [fieldKey, value] of Object.entries(body)) {
+		if (!fieldKey.startsWith(marker)) continue;
+		if (fieldKey === `${marker}__pk` || fieldKey === `${marker}__delete`) continue;
+		if (typeof value === "string" && value !== "") return true;
+		if (Array.isArray(value) && value.some((item) => typeof item === "string" && item !== "")) {
+			return true;
+		}
+	}
+	return false;
+};
+
+/** Parses an inline group's `${key}-__total` hidden field. Clamps anything missing, non-numeric, or negative to `0`. */
+const parseInlineTotal = (raw: FormInputValue): number => {
+	const total = Number.parseInt(stringify(raw), 10);
+	return Number.isInteger(total) && total > 0 ? total : 0;
+};
+
+/**
+ * Plans every row of one submitted `AdminInline`, up to its `${key}-__total`
+ * count, following the fixed decision order documented on `InlineRowPlan`:
+ * a wholly blank row is skipped before anything else is checked, then a
+ * checked delete on an existing row is marked without validating, and every
+ * remaining row (an existing row's edit, or a filled-in new row) is validated
+ * through the child `Form`.
+ */
+const planInlineRows = async (inline: AdminInline, body: FormInput): Promise<InlineRowPlan[]> => {
+	const total = parseInlineTotal(body[`${inline.key}-__total`]);
+	const rows: InlineRowPlan[] = [];
+
+	for (let index = 0; index < total; index++) {
+		const prefix = `${inline.key}-${index}`;
+		const pk = stringify(body[`${prefix}-__pk`] ?? "");
+		const del = body[`${prefix}-__delete`] !== undefined;
+
+		if (pk === "" && !hasNonEmptyRowValue(body, prefix)) {
+			rows.push({ index, pk, del, skip: true, result: null });
+			continue;
+		}
+		if (del && pk !== "") {
+			rows.push({ index, pk, del, skip: false, result: null });
+			continue;
+		}
+
+		const result = await inline.form().validate(body, { prefix });
+		rows.push({ index, pk, del, skip: false, result });
+	}
+
+	return rows;
+};
+
+/** Plans every inline row of every `target.inlines()` entry, keyed by `AdminInline#key`. */
+const planAllInlineRows = async (
+	target: AdminResource,
+	body: FormInput,
+): Promise<Map<string, InlineRowPlan[]>> => {
+	const plans = new Map<string, InlineRowPlan[]>();
+	for (const inline of target.inlines?.() ?? []) {
+		plans.set(inline.key, await planInlineRows(inline, body));
+	}
+	return plans;
+};
+
+/** Whether `row` requires no write-blocking action: it's skippable, a validation-free deletion, or a successful validation. */
+const inlineRowIsValid = (row: InlineRowPlan): boolean =>
+	row.skip || (row.del && row.pk !== "") || (row.result?.ok ?? false);
+
+/** Whether every planned row across every inline in `plans` is valid (see `inlineRowIsValid`). */
+const allInlineRowsValid = (plans: Map<string, InlineRowPlan[]>): boolean =>
+	[...plans.values()].every((rows) => rows.every(inlineRowIsValid));
+
+/**
+ * Rebuilds `AdminInlineGroup[]` for a 422 re-render, straight from the
+ * submitted `body` and its `plans` (`planAllInlineRows`) rather than from the
+ * DB (the write hasn't happened yet). `values: body` works as-is because
+ * `body`'s keys are already prefixed with `${key}-${index}-` (the exact shape
+ * `Form#bind({ prefix, values })` expects), unlike `buildInlineGroups`'s
+ * DB-sourced rows which need `prefixFormInput` first.
+ */
+const buildInlineGroupsFromBody = (
+	target: AdminResource,
+	body: FormInput,
+	plans: Map<string, InlineRowPlan[]>,
+): AdminInlineGroup[] => {
+	const groups: AdminInlineGroup[] = [];
+
+	for (const inline of target.inlines?.() ?? []) {
+		const rows = plans.get(inline.key) ?? [];
+		groups.push({
+			key: inline.key,
+			label: inline.label,
+			headers: inline
+				.form()
+				.bind()
+				.visibleFields()
+				.map((field) => field.label),
+			rows: rows.map((row) => {
+				const prefix = `${inline.key}-${row.index}`;
+				const errors = row.result && !row.result.ok ? row.result.errors : [];
+				return {
+					index: row.index,
+					binding: inline.form().bind({ prefix, errors, values: body }),
+					pk: row.pk !== "" ? row.pk : undefined,
+				};
+			}),
+			total: rows.length,
+		});
+	}
+
+	return groups;
+};
+
+/**
+ * Returns a shallow copy of `value` with `foreignKey` set to `parentId`, if
+ * `value` is an object. Used to attach a newly-created inline child row to its
+ * just-created-or-existing parent (the child `Form#schema()` never includes
+ * the foreign key column itself, since `fieldsFromTable` derives fields from
+ * non-primary-key columns but a foreign key is the app's own field list to
+ * manage — see `AdminInline#form`'s JSDoc).
+ */
+const withForeignKey = (value: unknown, foreignKey: string, parentId: string): unknown => {
+	if (typeof value !== "object" || value === null) return value;
+	return { ...value, [foreignKey]: parentId };
+};
+
+/**
+ * Persists every planned inline row (`planAllInlineRows`) against `parentId`,
+ * one `AdminModel` call per row, in declaration order — sequentially, not in
+ * a transaction (see the module JSDoc "Persisting inline child rows": admin
+ * has no cross-table transaction primitive to use here). Only called once the
+ * caller has confirmed `allInlineRowsValid(plans)`, so `!row.result.ok` is not
+ * expected to occur; such a row is defensively skipped rather than persisted
+ * with unvalidated data.
+ */
+const persistInlineRows = async (
+	target: AdminResource,
+	plans: Map<string, InlineRowPlan[]>,
+	parentId: string,
+): Promise<void> => {
+	for (const inline of target.inlines?.() ?? []) {
+		for (const row of plans.get(inline.key) ?? []) {
+			if (row.skip) continue;
+			if (row.del && row.pk !== "") {
+				await inline.model.delete(row.pk);
+				continue;
+			}
+			if (!row.result || !row.result.ok) continue;
+
+			if (row.pk !== "") {
+				await inline.model.update(row.pk, row.result.value);
+			} else {
+				await inline.model.create(withForeignKey(row.result.value, inline.foreignKey, parentId));
+			}
+		}
+	}
 };
 
 /**
@@ -808,6 +1085,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 					if (!form) return c.notFound();
 
 					const binding = form.bind();
+					const inlineGroups = await buildInlineGroups(target);
 					const t = bindAdminT(c);
 					return c.html(
 						<AdminLayout
@@ -831,6 +1109,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 								mode="new"
 								form={binding}
 								action={`${this.resolveBasePath()}/resources/${key}`}
+								inlineGroups={inlineGroups}
 								csrfToken={this.csrfToken(c)}
 								t={t}
 							/>
@@ -897,9 +1176,22 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 					const body = await c.req.parseBody({ all: true });
 					if (typeof body.action === "string") return this.handleBulkAction(c, target, key, body);
 
-					const result = await form.validate(body);
-					if (!result.ok) {
-						const binding = form.bind({ errors: result.errors, values: result.values });
+					/**
+					 * Parent and every inline row are validated up front, before any write
+					 * (see the module JSDoc "Persisting inline child rows"): only when
+					 * `allValid` holds does the handler proceed to create the parent and
+					 * persist inline rows.
+					 */
+					const parentResult = await form.validate(body);
+					const inlinePlans = await planAllInlineRows(target, body);
+					const allValid = parentResult.ok && allInlineRowsValid(inlinePlans);
+
+					if (!allValid) {
+						const binding = form.bind({
+							errors: parentResult.ok ? [] : parentResult.errors,
+							values: parentResult.ok ? body : parentResult.values,
+						});
+						const inlineGroups = buildInlineGroupsFromBody(target, body, inlinePlans);
 						const t = bindAdminT(c);
 						return c.html(
 							<AdminLayout
@@ -922,6 +1214,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 									mode="new"
 									form={binding}
 									action={`${this.resolveBasePath()}/resources/${key}`}
+									inlineGroups={inlineGroups}
 									csrfToken={this.csrfToken(c)}
 									t={t}
 								/>
@@ -930,8 +1223,9 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 						);
 					}
 
-					const created = await target.model.create(result.value);
+					const created = await target.model.create(parentResult.value);
 					const createdId = stringify(created[target.primaryKey]);
+					await persistInlineRows(target, inlinePlans, createdId);
 					await this.recordAudit(c, "resource.create", `${key}/${createdId}`);
 
 					const t = bindAdminT(c);
@@ -951,6 +1245,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 					if (!row) return c.notFound();
 
 					const binding = form.bind({ values: form.toInput(row) });
+					const inlineGroups = await buildInlineGroups(target, id);
 					const t = bindAdminT(c);
 					return c.html(
 						<AdminLayout
@@ -975,6 +1270,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 								form={binding}
 								action={`${this.resolveBasePath()}/resources/${key}/${id}`}
 								id={id}
+								inlineGroups={inlineGroups}
 								csrfToken={this.csrfToken(c)}
 								t={t}
 							/>
@@ -993,10 +1289,29 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 					const existing = await target.model.retrieve(id);
 					if (!existing) return c.notFound();
 
-					const body = await c.req.parseBody();
-					const result = await form.validate(body);
-					if (!result.ok) {
-						const binding = form.bind({ errors: result.errors, values: result.values });
+					/**
+					 * `{ all: true }` is needed here too (not just on create), so a child
+					 * inline row's own multi-value fields (e.g. a `checkbox-group`) survive
+					 * as an array rather than collapsing to their last value.
+					 */
+					const body = await c.req.parseBody({ all: true });
+
+					/**
+					 * Parent and every inline row are validated up front, before any write
+					 * (see the module JSDoc "Persisting inline child rows"): only when
+					 * `allValid` holds does the handler proceed to update the parent and
+					 * persist inline rows.
+					 */
+					const parentResult = await form.validate(body);
+					const inlinePlans = await planAllInlineRows(target, body);
+					const allValid = parentResult.ok && allInlineRowsValid(inlinePlans);
+
+					if (!allValid) {
+						const binding = form.bind({
+							errors: parentResult.ok ? [] : parentResult.errors,
+							values: parentResult.ok ? body : parentResult.values,
+						});
+						const inlineGroups = buildInlineGroupsFromBody(target, body, inlinePlans);
 						const t = bindAdminT(c);
 						return c.html(
 							<AdminLayout
@@ -1020,6 +1335,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 									form={binding}
 									action={`${this.resolveBasePath()}/resources/${key}/${id}`}
 									id={id}
+									inlineGroups={inlineGroups}
 									csrfToken={this.csrfToken(c)}
 									t={t}
 								/>
@@ -1038,7 +1354,8 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 					 * is not done here (this stripping is not applied on create, since it would
 					 * break tables where admin inputs a natural key such as `code`).
 					 */
-					await target.model.update(id, withoutKey(result.value, target.primaryKey));
+					await target.model.update(id, withoutKey(parentResult.value, target.primaryKey));
+					await persistInlineRows(target, inlinePlans, id);
 					await this.recordAudit(c, "resource.update", `${key}/${id}`);
 
 					const t = bindAdminT(c);

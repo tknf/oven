@@ -74,6 +74,43 @@ export type AdminFilterOption = { value: string; label: string };
 export type AdminFilter = { column: string; label?: string; options: AdminFilterOption[] };
 
 /**
+ * One inline-editable child relation declared by `AdminResource#inlines`. The
+ * parent's create/edit form renders `extra` blank rows plus one row per
+ * existing child (found via `foreignKey`), as a fixed-row-count table — no
+ * JavaScript "add another row" control (Step D-i1: declaration + rendering
+ * only; submitting the parent form does not yet persist inline changes, that
+ * lands in a later step). `form()` is the child row's own `Form` subclass,
+ * reused for both the read-only display defaults and (in a later step) child
+ * validation.
+ *
+ * Field naming for one inline row (row index `i`, 0-based) follows a fixed
+ * convention shared with the not-yet-implemented submission step, so the
+ * rendered HTML is forward-compatible with it:
+ * - `${key}-${i}-<field>`: one child field, via `form().bind({ prefix: `${key}-${i}` })`.
+ * - `${key}-${i}-__pk`: hidden child primary key (existing rows only).
+ * - `${key}-${i}-__delete`: deletion checkbox (existing rows only).
+ * - `${key}-__total`: hidden count of rendered rows for this inline.
+ */
+export type AdminInline = {
+	/** Field-name-safe slug, unique among the parent resource's inlines. */
+	key: string;
+	/** Group heading shown above the inline table. */
+	label: string;
+	/** The child `Model` (same structural contract as `AdminResource#model`). */
+	model: AdminModel;
+	/** The child Drizzle table (inspected for row primary key resolution). */
+	table: Table;
+	/** Child column name holding the child row's primary key. */
+	primaryKey: string;
+	/** Child column name holding the parent row's primary key (the relation's foreign key). */
+	foreignKey: string;
+	/** The child row's create/edit `Form`, reused per rendered row. */
+	form(): Form<StandardSchemaV1>;
+	/** Number of blank rows to render in addition to existing children. Default `3`. */
+	extra?: number;
+};
+
+/**
  * Escapes LIKE pattern wildcard characters (`%`/`_`) and the escape character itself
  * (`\`). If `searchWhere` embedded user input as-is into `%${query}%`, a `query`
  * containing `%`/`_` could widen the match to an unintended scope (e.g. matching
@@ -130,6 +167,13 @@ export abstract class AdminResource {
 	 * implemented.
 	 */
 	filters?(): AdminFilter[];
+
+	/**
+	 * Declares this resource's inline-editable child relations (tabular
+	 * inlines rendered inside the parent's create/edit form; see `AdminInline`).
+	 * No inline group renders unless this is implemented.
+	 */
+	inlines?(): AdminInline[];
 
 	/**
 	 * Resolves the display columns. Uses `listColumns()`'s order and names if

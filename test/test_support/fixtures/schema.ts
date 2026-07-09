@@ -27,6 +27,21 @@ export const publishers = sqliteTable("publishers", {
 	updatedAt: integer("updated_at").notNull(),
 });
 
+/**
+ * Child table of `publishers`, added to verify `AdminResource#inlines()`
+ * (tabular inline editing of a parent's related rows) against a real
+ * parent/child pair.
+ */
+export const books = sqliteTable("books", {
+	id: text("id").primaryKey(),
+	publisherId: text("publisher_id")
+		.notNull()
+		.references(() => publishers.id),
+	title: text("title").notNull(),
+	createdAt: integer("created_at").notNull(),
+	updatedAt: integer("updated_at").notNull(),
+});
+
 export const jobs = sqliteJobsTable();
 
 export const broadcasts = sqliteBroadcastsTable();

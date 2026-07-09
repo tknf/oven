@@ -239,6 +239,85 @@ at least one entry; resources that don't implement it keep the
 single-column list layout. Selecting a filter combines with an active
 search (`q`) via `AND` and resets pagination back to the first page.
 
+### Editing child rows inline (tabular inlines)
+
+Override `inlines()` to render a related child table as an editable,
+fixed-row grid inside the parent's create/edit form — no JavaScript "add
+another row" control. Each declared `AdminInline` needs the child's own
+`Model`, table, primary/foreign key column names, and a `Form` (the same
+kind of `Form` subclass a top-level resource uses):
+
+```ts
+import { AdminResource, fieldsFromTable } from "@tknf/oven/admin";
+import type { AdminInline } from "@tknf/oven/admin";
+import { Form } from "@tknf/oven/form";
+import type { FieldDef } from "@tknf/oven/form";
+import { books, publishers } from "../db/schema.js";
+import { bookModel, publisherModel } from "../lib/models.js";
+
+class BookForm extends Form<typeof bookSchema> {
+  protected schema() {
+    return bookSchema;
+  }
+  protected fields(): Record<string, FieldDef> {
+    return fieldsFromTable(books, { omit: ["publisherId"] });
+  }
+}
+
+export class PublisherResource extends AdminResource {
+  // ...key/label/model/table/primaryKey/form as above
+
+  inlines(): AdminInline[] {
+    return [
+      {
+        key: "books",
+        label: "Books",
+        model: bookModel,
+        table: books,
+        primaryKey: "id",
+        foreignKey: "publisherId",
+        form: () => new BookForm(),
+        extra: 2, // blank rows rendered in addition to existing children (default 3)
+      },
+    ];
+  }
+}
+```
+
+The edit form renders one bound row per existing child (via
+`inline.model.listPage`, matched on `foreignKey`) plus `extra` blank rows;
+the new form (no parent row yet) renders only blank rows. Each rendered
+row's fields use the name prefix `${key}-${index}` (0-based), an existing
+row additionally carries a hidden `${key}-${index}-__pk` (the child's
+primary key) and a `${key}-${index}-__delete` checkbox, and the group as a
+whole carries a hidden `${key}-__total` (the rendered row count). A
+resource that doesn't implement `inlines()` renders no inline group, same
+opt-in pattern as `filters()`.
+
+Submitting the parent create/edit form also creates, updates, and deletes
+child rows, one per rendered row:
+
+- A row with a `${key}-${index}-__pk` and its `${key}-${index}-__delete`
+  checked is **deleted** (`inline.model.delete`) — its own fields are not
+  validated.
+- A row with a `${key}-${index}-__pk` and its fields filled in is
+  **updated** (`inline.model.update`) through the child `Form`.
+- A row with no `${key}-${index}-__pk` but at least one non-empty field is
+  **created** (`inline.model.create`), with `foreignKey` set to the
+  parent's row id.
+- A row with no `${key}-${index}-__pk` and every field left blank (an
+  untouched extra row) is **skipped** entirely — it is not validated or
+  created.
+
+The parent form and every inline row are validated **before anything is
+written**: if the parent or any row fails validation, the whole request
+re-renders with `422` and nothing is written, parent or child. Once
+everything validates, the parent is written first, then each inline row
+in declaration order — **this sequence is not a single transaction**
+(`AdminModel` has no cross-table transaction primitive), so a DB failure
+partway through child writes can leave the parent and some children
+committed while others are not.
+
 ### Wiring CSRF protection
 
 Inject a `Csrf` instance (from `@tknf/oven/security`) so every write
@@ -357,6 +436,18 @@ language), the panel falls back to English.
   `model.create`/`model.update` (stripping only the primary-key column on
   update, so the URL's `id` can't be overwritten); your `Form#schema()`
   is what determines which fields are actually accepted.
+- **Inline child writes are not transactional.** The parent and every
+  inline row are validated together before any write, but the writes
+  themselves (parent, then each child) happen as separate sequential
+  `AdminModel` calls, not inside one DB transaction — `AdminModel` exposes
+  no cross-table transaction primitive. A failure partway through child
+  writes can leave the parent and some children committed while others
+  are not.
+- **An inline child `Form#fields()` must not declare the foreign key
+  column.** `AdminPanel` sets `foreignKey` itself when creating a new
+  child row (`fieldsFromTable(childTable, { omit: ["theForeignKey"] })`,
+  as in the example above); if the child form's schema also accepts and
+  returns that column, its value would come from operator input instead.
 
 ## See also
 

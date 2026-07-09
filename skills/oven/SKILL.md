@@ -213,6 +213,23 @@ area, example-first). Consult them for depth.
   out of range; `?p=<n>` selects the 0-based page. Clicking a column header or
   a filter link resets to page 0; only the paginator's own page links keep the
   current sort/search/filters.
+- **`AdminResource#inlines()` renders and persists child rows, but not
+  atomically.** Each `AdminInline` (child `model`/`table`/`primaryKey`/
+  `foreignKey`/`form()`, plus `extra` blank rows, default 3) renders a
+  fixed-row `.inline-group` table inside the parent's create/edit form —
+  no "add another row" JS. Row `i`'s fields use the name prefix
+  `${key}-${i}`; an existing row additionally carries hidden
+  `${key}-${i}-__pk` and a `${key}-${i}-__delete` checkbox, and the group
+  carries a hidden `${key}-__total`. Submitting the parent form validates
+  the parent and every row first (re-rendering `422` with nothing written
+  if any of them fails), then creates/updates/deletes each row via
+  `inline.model` — a checked `__delete` on a row with `__pk` deletes it, a
+  row with `__pk` and filled-in fields updates it, a row with no `__pk`
+  but at least one non-empty field creates it (with `foreignKey` set to
+  the parent's id), and an untouched blank row is skipped. The parent
+  write and the child writes are separate sequential calls, not one
+  transaction. The child `Form#fields()` must omit the foreign key column
+  (`AdminPanel` sets it itself on create).
 - **`BroadcastWebSocket` needs an Origin check + connection authorization** in
   the `authorize` hook / `channels` callback (prevents Cross-Site WebSocket
   Hijacking).
