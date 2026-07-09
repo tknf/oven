@@ -45,35 +45,40 @@ const PendingJobsTable = ({
 	if (pending.length === 0) return <p>{t("jobs.emptyPending")}</p>;
 
 	return (
-		<table>
-			<thead>
-				<tr>
-					<th>ID</th>
-					<th>{t("col.name")}</th>
-					<th>{t("jobs.col.priority")}</th>
-					<th>{t("jobs.col.runAt")}</th>
-					<th>{t("jobs.col.attempts")}</th>
-					<th />
-				</tr>
-			</thead>
-			<tbody>
-				{pending.map((row) => (
+		<div class="module">
+			<table>
+				<thead>
 					<tr>
-						<td>{row.id}</td>
-						<td>{row.name}</td>
-						<td>{row.priority}</td>
-						<td>{formatTime(row.runAt)}</td>
-						<td>{row.attempts}</td>
-						<td>
-							<form method="post" action={`${basePath}/jobs/${encodeURIComponent(row.id)}/delete`}>
-								<CsrfHiddenInput csrfToken={csrfToken} />
-								<button type="submit">{t("action.delete")}</button>
-							</form>
-						</td>
+						<th>ID</th>
+						<th>{t("col.name")}</th>
+						<th>{t("jobs.col.priority")}</th>
+						<th>{t("jobs.col.runAt")}</th>
+						<th>{t("jobs.col.attempts")}</th>
+						<th />
 					</tr>
-				))}
-			</tbody>
-		</table>
+				</thead>
+				<tbody>
+					{pending.map((row) => (
+						<tr>
+							<td>{row.id}</td>
+							<td>{row.name}</td>
+							<td>{row.priority}</td>
+							<td>{formatTime(row.runAt)}</td>
+							<td>{row.attempts}</td>
+							<td>
+								<form
+									method="post"
+									action={`${basePath}/jobs/${encodeURIComponent(row.id)}/delete`}
+								>
+									<CsrfHiddenInput csrfToken={csrfToken} />
+									<button type="submit">{t("action.delete")}</button>
+								</form>
+							</td>
+						</tr>
+					))}
+				</tbody>
+			</table>
+		</div>
 	);
 };
 
@@ -92,39 +97,44 @@ const FailedJobsTable = ({
 	if (failed.length === 0) return <p>{t("jobs.emptyFailed")}</p>;
 
 	return (
-		<table>
-			<thead>
-				<tr>
-					<th>ID</th>
-					<th>{t("col.name")}</th>
-					<th>{t("jobs.col.attempts")}</th>
-					<th>{t("jobs.col.failedAt")}</th>
-					<th>{t("jobs.col.error")}</th>
-					<th />
-				</tr>
-			</thead>
-			<tbody>
-				{failed.map((row) => (
+		<div class="module">
+			<table>
+				<thead>
 					<tr>
-						<td>{row.id}</td>
-						<td>{row.name}</td>
-						<td>{row.attempts}</td>
-						<td>{formatTime(row.failedAt)}</td>
-						<td>{row.lastError ?? "-"}</td>
-						<td>
-							<form method="post" action={`${basePath}/jobs/${encodeURIComponent(row.id)}/retry`}>
-								<CsrfHiddenInput csrfToken={csrfToken} />
-								<button type="submit">{t("action.retry")}</button>
-							</form>
-							<form method="post" action={`${basePath}/jobs/${encodeURIComponent(row.id)}/delete`}>
-								<CsrfHiddenInput csrfToken={csrfToken} />
-								<button type="submit">{t("action.delete")}</button>
-							</form>
-						</td>
+						<th>ID</th>
+						<th>{t("col.name")}</th>
+						<th>{t("jobs.col.attempts")}</th>
+						<th>{t("jobs.col.failedAt")}</th>
+						<th>{t("jobs.col.error")}</th>
+						<th />
 					</tr>
-				))}
-			</tbody>
-		</table>
+				</thead>
+				<tbody>
+					{failed.map((row) => (
+						<tr>
+							<td>{row.id}</td>
+							<td>{row.name}</td>
+							<td>{row.attempts}</td>
+							<td>{formatTime(row.failedAt)}</td>
+							<td>{row.lastError ?? "-"}</td>
+							<td>
+								<form method="post" action={`${basePath}/jobs/${encodeURIComponent(row.id)}/retry`}>
+									<CsrfHiddenInput csrfToken={csrfToken} />
+									<button type="submit">{t("action.retry")}</button>
+								</form>
+								<form
+									method="post"
+									action={`${basePath}/jobs/${encodeURIComponent(row.id)}/delete`}
+								>
+									<CsrfHiddenInput csrfToken={csrfToken} />
+									<button type="submit">{t("action.delete")}</button>
+								</form>
+							</td>
+						</tr>
+					))}
+				</tbody>
+			</table>
+		</div>
 	);
 };
 

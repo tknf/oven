@@ -205,6 +205,20 @@ describe("AdminPanel", () => {
 		expect(body).toContain("My Admin");
 	});
 
+	test("nav Dashboard link points at the mounted route without a trailing slash", async () => {
+		const app = new Hono();
+		app.route("/admin", new AdminPanel({ authorize: () => true }));
+
+		const res = await app.request("/admin");
+		const body = await res.text();
+
+		expect(body).toContain('href="/admin"');
+		expect(body).not.toContain('href="/admin/"');
+
+		const dashboardRes = await app.request("/admin");
+		expect(dashboardRes.status).toBe(200);
+	});
+
 	test("overrides the authorization-failure status when denyStatus is specified", async () => {
 		const app = new Hono();
 		app.route("/admin", new AdminPanel({ authorize: () => false, denyStatus: 401 }));
@@ -222,7 +236,20 @@ describe("AdminPanel", () => {
 		const body = await res.text();
 
 		expect(body).toContain("<style>");
-		expect(body).toContain("header nav ul");
+		expect(body).toContain("#nav-header ul");
+	});
+
+	test("inline styles keep raw double quotes instead of being HTML-escaped", async () => {
+		const app = new Hono();
+		app.route("/admin", new AdminPanel({ authorize: () => true }));
+
+		const res = await app.request("/admin");
+		const body = await res.text();
+
+		expect(body).toContain('nav[aria-label="pagination"]');
+		expect(body).not.toContain("aria-label=&quot;pagination&quot;");
+		expect(body).toContain('html[data-theme="dark"]');
+		expect(body).not.toContain("data-theme=&quot;dark&quot;");
 	});
 
 	describe("job console", () => {
@@ -546,6 +573,18 @@ describe("AdminPanel", () => {
 
 			const retryRes = await app.request("/mounted/jobs/job-2/retry", { method: "POST" });
 			expect(retryRes.headers.get("location")).toBe("/mounted/jobs");
+		});
+
+		test("nav Dashboard link reflects a custom basePath without a trailing slash and is reachable", async () => {
+			const app = new Hono();
+			app.route("/dashboard", new AdminPanel({ authorize: () => true, basePath: "/dashboard" }));
+
+			const res = await app.request("/dashboard");
+			const body = await res.text();
+
+			expect(body).toContain('href="/dashboard"');
+			expect(body).not.toContain('href="/dashboard/"');
+			expect(res.status).toBe(200);
 		});
 	});
 

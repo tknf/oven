@@ -162,6 +162,35 @@ area, example-first). Consult them for depth.
   rows. Concurrency uses `updateLocked` + a `lockVersion` column (`StaleRecordError`).
 - **CSRF is not automatic on `AdminPanel`** — inject a `Csrf` instance so write
   routes are verified.
+- **`AdminResource#filters()` is a closed allowlist** — declare each filter's
+  `options` explicitly; a query value outside that list is silently ignored
+  rather than applied. The sidebar (`#changelist-filter`) only renders once
+  `filters()` returns at least one entry.
+- **`AdminPanel`'s dashboard (`GET /admin`) is resource-driven** — once you
+  inject `resources`, the dashboard shows a module list of every resource
+  (with `Add`/`Change` links) instead of the plain welcome message. Every
+  screen but the dashboard also renders a breadcrumb trail below the header.
+- **`AdminPanel`'s create/edit forms have three submit buttons** —
+  `_save`/`_addanother`/`_continue` (list / new-form / just-saved row's edit
+  URL, respectively; a missing or unrecognized button name falls back to
+  `_save`'s list redirect). Inject `session` (e.g. `SessionAccessor#use`) to
+  flash a one-time "added/changed/deleted successfully" `<ul class="messagelist">`
+  banner on the next screen; without it, no banner is shown.
+- **`AdminPanel` deletes are two-step** — every `Delete` link navigates to a
+  `GET /resources/:key/:id/delete` confirmation screen; the row is removed
+  only when that screen's form (hidden `post=yes` field) is submitted. A
+  `POST` without `post=yes` redirects back to the list without deleting.
+- **`AdminPanel`'s list screen supports bulk delete** — a writable resource
+  with at least one row shows a row-checkbox column and an actions bar
+  (`<select name="action">` + `Run`). Choosing "Delete selected {label}" and
+  running it is also two-step: it posts `action`/`_selected_action` (no
+  `post=yes` yet) to render a confirmation screen, which then posts
+  `post=yes`/`action=delete`/`_selected_action` back to actually delete. Both
+  the actions-bar form and the create-form POST target the same
+  `/resources/:key` URL; `AdminPanel` dispatches on whether `action` is
+  present in the body. `AdminModel` requires a `count(where?)` method (all of
+  `SQLiteModel`/`PgModel`/`MySqlModel` already have it); the list screen shows
+  the total row count near pagination for every resource, writable or not.
 - **`BroadcastWebSocket` needs an Origin check + connection authorization** in
   the `authorize` hook / `channels` callback (prevents Cross-Site WebSocket
   Hijacking).

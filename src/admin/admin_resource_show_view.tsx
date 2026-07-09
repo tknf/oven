@@ -3,8 +3,9 @@
  * show screen. A pure JSX component that does not depend on Hono's `Context`, same
  * convention as `admin_jobs_view.tsx`.
  *
- * Operations (delete) are completed with native `<form method="post">` and carry no
- * JS (CSRF/SecureHeaders are not added here, being the upstream app's responsibility).
+ * Delete is a two-step flow: the link here only navigates to the delete
+ * confirmation screen (`AdminResourceDeleteView`), which is where the actual
+ * `<form method="post">` submission happens.
  */
 
 import type { AdminT } from "./admin_catalog.js";
@@ -53,20 +54,24 @@ export const AdminResourceShowView = ({
 	return (
 		<>
 			<h2>{t("resource.showTitle", { label })}</h2>
-			<dl>
-				{columns.map((name) => (
-					<>
-						<dt>{name}</dt>
-						<dd>{stringify(row[name])}</dd>
-					</>
-				))}
-			</dl>
+			<div class="module">
+				<dl>
+					{columns.map((name) => (
+						<>
+							<dt>{name}</dt>
+							<dd>{stringify(row[name])}</dd>
+						</>
+					))}
+				</dl>
+			</div>
 			{canWrite && (
 				<>
-					<a href={`${detailHref}/edit`}>{t("action.edit")}</a>
-					<form method="post" action={`${detailHref}/delete`}>
-						<button type="submit">{t("action.delete")}</button>
-					</form>
+					<a class="button" href={`${detailHref}/edit`}>
+						{t("action.edit")}
+					</a>
+					<a class="deletelink" href={`${detailHref}/delete`}>
+						{t("action.delete")}
+					</a>
 				</>
 			)}
 			<a href={`${basePath}/resources/${resourceKey}`}>{t("action.backToList")}</a>

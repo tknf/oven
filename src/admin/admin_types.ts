@@ -84,3 +84,13 @@ export type AdminAuditLog = {
 		changes?: unknown;
 	}): Promise<void>;
 };
+
+/**
+ * A single flash message shown at the top of the next screen, mirroring the
+ * `django.contrib.messages` framework's severity levels used by admin's own
+ * change/add confirmations.
+ */
+export type AdminMessage = {
+	level: "success" | "error" | "info";
+	text: string;
+};

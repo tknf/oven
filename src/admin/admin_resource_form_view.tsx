@@ -6,13 +6,12 @@
  *
  * Passes `csrfToken` (issued by `AdminPanel` only when `panelOptions.csrf` is
  * injected) straight through to `FormView` (which automatically inserts a CSRF
- * hidden input when non-`null`). The delete form also embeds the same token as a
- * CSRF hidden input. When not injected, it stays `null` and no hidden input is
- * emitted, as before (backward compatible).
+ * hidden input when non-`null`). Delete is a two-step flow: the delete link here
+ * only navigates to the delete confirmation screen (`AdminResourceDeleteView`),
+ * which is where the actual `<form method="post">` submission happens.
  */
 import type { FormBinding } from "../form/form.js";
 import { FormView } from "../form/form_field.js";
-import { CSRF_FORM_FIELD_NAME } from "../security/csrf.js";
 import type { AdminT } from "./admin_catalog.js";
 
 export type AdminResourceFormViewProps = {
@@ -23,34 +22,31 @@ export type AdminResourceFormViewProps = {
 	mode: "new" | "edit";
 	form: FormBinding<string>;
 	action: string;
-	/** Primary key value of the target row when `mode === "edit"` (used to build the delete form). */
+	/** Primary key value of the target row when `mode === "edit"` (used to build the delete link). */
 	id?: string;
 	/** CSRF token. When `null`, no hidden input is emitted. */
 	csrfToken: string | null;
 	t: AdminT;
 };
 
-/** Delete form, rendered only when `mode === "edit"` and `id` is present. */
-const DeleteForm = ({
+/** Delete link to the confirmation screen, rendered only when `mode === "edit"` and `id` is present. */
+const DeleteLink = ({
 	basePath,
 	resourceKey,
 	id,
-	csrfToken,
 	t,
 }: {
 	basePath: string;
 	resourceKey: string;
 	id: string;
-	csrfToken: string | null;
 	t: AdminT;
 }) => (
-	<form
-		method="post"
-		action={`${basePath}/resources/${resourceKey}/${encodeURIComponent(id)}/delete`}
+	<a
+		class="deletelink"
+		href={`${basePath}/resources/${resourceKey}/${encodeURIComponent(id)}/delete`}
 	>
-		{csrfToken !== null && <input type="hidden" name={CSRF_FORM_FIELD_NAME} value={csrfToken} />}
-		<button type="submit">{t("action.delete")}</button>
-	</form>
+		{t("action.delete")}
+	</a>
 );
 
 /** Resource create/edit form screen body. */
@@ -70,16 +66,20 @@ export const AdminResourceFormView = ({
 			{mode === "new" ? t("resource.newTitle", { label }) : t("resource.editTitle", { label })}
 		</h2>
 		<FormView form={form} action={action} method="post" csrfToken={csrfToken}>
-			<button type="submit">{t("action.save")}</button>
+			<div class="submit-row">
+				<button type="submit" name="_save" value="1" class="default">
+					{t("action.save")}
+				</button>
+				<button type="submit" name="_addanother" value="1">
+					{t("action.saveAddAnother")}
+				</button>
+				<button type="submit" name="_continue" value="1">
+					{t("action.saveContinue")}
+				</button>
+			</div>
 		</FormView>
 		{mode === "edit" && id !== undefined && (
-			<DeleteForm
-				basePath={basePath}
-				resourceKey={resourceKey}
-				id={id}
-				csrfToken={csrfToken}
-				t={t}
-			/>
+			<DeleteLink basePath={basePath} resourceKey={resourceKey} id={id} t={t} />
 		)}
 		<a href={`${basePath}/resources/${resourceKey}`}>{t("action.backToList")}</a>
 	</>

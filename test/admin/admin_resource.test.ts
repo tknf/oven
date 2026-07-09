@@ -27,6 +27,7 @@ const dummyModel: AdminModel = {
 	create: () => Promise.reject(new Error("not used")),
 	update: () => Promise.reject(new Error("not used")),
 	delete: () => Promise.reject(new Error("not used")),
+	count: () => Promise.reject(new Error("not used")),
 };
 
 /** Minimal read-only (no `form` implementation) `AdminResource` subclass. */

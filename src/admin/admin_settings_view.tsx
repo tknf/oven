@@ -41,7 +41,7 @@ const FeatureFlagsSection = ({
 	csrfToken: string | null;
 	t: AdminT;
 }) => (
-	<section>
+	<section class="module">
 		<h3>{t("settings.flags")}</h3>
 		{flags.length === 0 ? (
 			<p>{t("settings.flagsEmpty")}</p>
@@ -82,7 +82,7 @@ const MaintenanceModeSection = ({
 	if (maintenance === null) return null;
 
 	return (
-		<section>
+		<section class="module">
 			<h3>{t("settings.maintenance")}</h3>
 			<p>
 				{t("settings.current")}{" "}

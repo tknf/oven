@@ -23,21 +23,23 @@ const AuditFilterForm = ({
 	filter: { actor?: string; action?: string; target?: string };
 	t: AdminT;
 }) => (
-	<form method="get" action={`${basePath}/audit`}>
-		<label>
-			actor
-			<input type="text" name="actor" value={filter.actor ?? ""} />
-		</label>
-		<label>
-			action
-			<input type="text" name="action" value={filter.action ?? ""} />
-		</label>
-		<label>
-			target
-			<input type="text" name="target" value={filter.target ?? ""} />
-		</label>
-		<button type="submit">{t("action.filter")}</button>
-	</form>
+	<div id="toolbar">
+		<form method="get" action={`${basePath}/audit`}>
+			<label>
+				actor
+				<input type="text" name="actor" value={filter.actor ?? ""} />
+			</label>
+			<label>
+				action
+				<input type="text" name="action" value={filter.action ?? ""} />
+			</label>
+			<label>
+				target
+				<input type="text" name="target" value={filter.target ?? ""} />
+			</label>
+			<button type="submit">{t("action.filter")}</button>
+		</form>
+	</div>
 );
 
 /** Audit log list table. Shows a "no matching audit logs" message when empty. */
@@ -45,28 +47,30 @@ const AuditRowsTable = ({ rows, t }: { rows: AdminAuditRow[]; t: AdminT }) => {
 	if (rows.length === 0) return <p>{t("audit.empty")}</p>;
 
 	return (
-		<table>
-			<thead>
-				<tr>
-					<th>{t("audit.col.time")}</th>
-					<th>actor</th>
-					<th>action</th>
-					<th>target</th>
-					<th>{t("audit.col.changes")}</th>
-				</tr>
-			</thead>
-			<tbody>
-				{rows.map((row) => (
+		<div class="module">
+			<table>
+				<thead>
 					<tr>
-						<td>{new Date(row.createdAt).toISOString()}</td>
-						<td>{row.actor}</td>
-						<td>{row.action}</td>
-						<td>{row.target}</td>
-						<td>{row.changes ?? ""}</td>
+						<th>{t("audit.col.time")}</th>
+						<th>actor</th>
+						<th>action</th>
+						<th>target</th>
+						<th>{t("audit.col.changes")}</th>
 					</tr>
-				))}
-			</tbody>
-		</table>
+				</thead>
+				<tbody>
+					{rows.map((row) => (
+						<tr>
+							<td>{new Date(row.createdAt).toISOString()}</td>
+							<td>{row.actor}</td>
+							<td>{row.action}</td>
+							<td>{row.target}</td>
+							<td>{row.changes ?? ""}</td>
+						</tr>
+					))}
+				</tbody>
+			</table>
+		</div>
 	);
 };
 

@@ -38,7 +38,12 @@ app.route(
 ```
 
 With only `authorize` supplied, the panel renders a dashboard at
-`GET /admin` and nothing else — every other section below is opt-in.
+`GET /admin` and nothing else — every other section below is opt-in. The
+dashboard shows a welcome message until you inject `resources`; once you
+do, it becomes a module list of every registered resource (with `Add`/
+`Change` links) instead. Every screen except the dashboard itself also
+renders a breadcrumb trail (e.g. `Home › Publisher › Add`) below the
+header, built from the same `authorize`-gated nav.
 
 ## Common tasks
 
@@ -107,6 +112,105 @@ governs this). Override `listColumns()`/`exclude()` to control which
 columns the list screen shows, and `searchColumns()` to enable a search
 box (search terms are matched with an escaped `LIKE`, so `%`/`_` in user
 input can't widen the match unexpectedly).
+
+Deleting a row is a two-step flow: every `Delete` link (on the list,
+show, and edit screens) navigates to a `GET
+/resources/:key/:id/delete` confirmation screen that summarizes the
+target row, rather than deleting immediately. The row is only removed
+once that screen's `<form method="post">` — which embeds a hidden
+`post=yes` field — is submitted; a `POST` to the same URL without
+`post=yes` (e.g. one that skipped the confirmation screen) redirects
+back to the list without deleting anything.
+
+Every create/edit form renders three submit buttons — `Save`, `Save and
+add another`, and `Save and continue editing` — matching the `_save`/
+`_addanother`/`_continue` submit button names of a familiar admin-console
+convention. Pressing `Save` (or posting without one of these three names,
+kept for backward compatibility) redirects to the resource's list;
+`Save and add another` redirects to the resource's own new-form URL; and
+`Save and continue editing` redirects to the just-saved row's edit URL.
+
+### Bulk deleting rows from the list screen
+
+For a writable resource, the list screen also shows a row-selection
+checkbox column and an actions bar (`<select name="action">` + a `Run`
+button) above the result table, whenever at least one row is on the
+current page. Selecting one or more rows, choosing "Delete selected
+{label}", and pressing `Run` follows the same two-step confirmation
+contract as a single-row delete: it first renders a confirmation screen
+listing the selected rows, and only deletes them once that screen's
+`<form method="post">` — embedding `post=yes`, `action=delete`, and one
+hidden `_selected_action` per selected id — is submitted. Rows that no
+longer exist by the time the confirmation is submitted are skipped
+rather than causing an error. Read-only resources (no `form()`) show
+neither the checkbox column nor the actions bar.
+
+The list screen also always shows the total row count (matching the
+current search/filter) near the pagination controls, for both writable
+and read-only resources.
+
+When `audit` is injected, a confirmed bulk delete records one
+`resource.bulkDelete` audit entry (covering every id in the batch, not
+one entry per row). When `session` is injected, a one-time success banner
+("{count} {label} were deleted successfully.") appears on the next
+screen, same as the single-row delete/create/update banners.
+
+### Success messages after save
+
+Inject `session` (any session accessor's `.use`, e.g. `SessionAccessor#use`
+from `@tknf/oven/session`) to show a one-time success banner
+("The {label} was added/changed successfully.") at the top of the next
+screen after a resource create or update:
+
+```ts
+import { sessionAccessor } from "./lib/session.js";
+
+new AdminPanel({
+  authorize: (c) => accountGuard.use(c).role === "admin",
+  resources: [new PublisherResource()],
+  session: sessionAccessor.use,
+});
+```
+
+The banner is pushed to `session`'s flash storage (consume-once — it
+disappears after being shown, even if the redirect target changes based
+on which save button was pressed) and rendered as a `<ul class="messagelist">`
+between the breadcrumb trail and the screen body. The same banner
+("The {label} was deleted successfully.") appears after a confirmed
+delete. Without `session` injected, no banner is ever shown (backward
+compatible, same opt-in pattern as `csrf`/`audit`).
+
+### Adding a filter sidebar to the list screen
+
+Override `filters()` to declare one or more columns as filterable. Each
+filter lists the exact values it offers via `options`; the sidebar
+renders those values as links, and only a listed value is ever applied
+to the query — an unrecognized value in the URL is silently ignored
+rather than turned into an arbitrary `WHERE` clause:
+
+```ts
+export class PublisherResource extends AdminResource {
+  // ...key/label/model/table/primaryKey/form as above
+
+  filters() {
+    return [
+      {
+        column: "status",
+        label: "Status",
+        options: [
+          { value: "active", label: "Active" },
+          { value: "inactive", label: "Inactive" },
+        ],
+      },
+    ];
+  }
+}
+```
+
+The sidebar (`#changelist-filter`) only renders when `filters()` returns
+at least one entry; resources that don't implement it keep the
+single-column list layout. Selecting a filter combines with an active
+search (`q`) via `AND` and resets pagination back to the first page.
 
 ### Wiring CSRF protection
 
@@ -181,8 +285,9 @@ language), the panel falls back to English.
   leaving `/admin` unauthenticated.
 - **Resources are structural, not tied to a specific dialect.**
   `AdminResource#model` only needs to satisfy the `AdminModel` shape
-  (`paginate`/`retrieve`/`create`/`update`/`delete`), so `SQLiteModel`,
-  `PgModel`, and `MySqlModel` subclasses all work without adapters.
+  (`paginate`/`retrieve`/`create`/`update`/`delete`/`count`), so
+  `SQLiteModel`, `PgModel`, and `MySqlModel` subclasses all work without
+  adapters.
 - **Primary keys are assumed to be strings.** Number-PK tables aren't
   supported by `AdminResource` today.
 - **Column allowlisting on write is your form's job, not the panel's.**

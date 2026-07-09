@@ -35,17 +35,23 @@
  * `MailPreviewHandler` precedent and consistently references `this.panelOptions` at
  * request time (inside a closure).
  */
+import { and } from "drizzle-orm";
+import type { SQL } from "drizzle-orm";
 import type { Context, Env, MiddlewareHandler } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
+import type { FormInput } from "../form/form.js";
 import { RouteHandler } from "../routing/route_handler.js";
 import type { Csrf } from "../security/csrf.js";
+import type { Session } from "../session/session.js";
 import { bindAdminT } from "./admin_catalog.js";
 import type { AdminT } from "./admin_catalog.js";
 import type { AdminResource } from "./admin_resource.js";
 import { AdminAuditView } from "./admin_audit_view.js";
 import { AdminJobsView } from "./admin_jobs_view.js";
-import type { AdminNavItem } from "./admin_layout.js";
+import type { AdminBreadcrumb, AdminNavItem } from "./admin_layout.js";
 import { AdminLayout } from "./admin_layout.js";
+import { AdminResourceBulkDeleteView } from "./admin_resource_bulk_delete_view.js";
+import { AdminResourceDeleteView } from "./admin_resource_delete_view.js";
 import { AdminResourceFormView } from "./admin_resource_form_view.js";
 import { AdminResourceListView } from "./admin_resource_list_view.js";
 import { AdminResourceShowView } from "./admin_resource_show_view.js";
@@ -57,7 +63,28 @@ import type {
 	AdminJobRow,
 	AdminJobsConsole,
 	AdminMaintenanceMode,
+	AdminMessage,
 } from "./admin_types.js";
+
+/**
+ * Reserved session flash key backing the success-message banner (SEC-301-style
+ * reservation, mirroring `form.ts`'s `__oven_form_*__` keys so it can't collide
+ * with the app's own session data).
+ */
+const ADMIN_MESSAGES_FLASH_KEY = "__oven_admin_messages__";
+
+/** Whether `value` has the shape of a single `AdminMessage`. */
+const isAdminMessage = (value: unknown): value is AdminMessage =>
+	typeof value === "object" &&
+	value !== null &&
+	"level" in value &&
+	"text" in value &&
+	(value.level === "success" || value.level === "error" || value.level === "info") &&
+	typeof value.text === "string";
+
+/** Whether `value` has the shape of an `AdminMessage[]`, as flashed by `AdminPanel#flashMessage`. */
+const isAdminMessageArray = (value: unknown): value is AdminMessage[] =>
+	Array.isArray(value) && value.every(isAdminMessage);
 
 /** Number of items per page in the resource list. */
 const PAGE_SIZE = 20;
@@ -88,6 +115,19 @@ const stringify = (value: unknown): string => {
 	if (typeof value === "string") return value;
 	if (typeof value === "number" || typeof value === "bigint") return String(value);
 	return "";
+};
+
+/**
+ * Normalizes `body._selected_action` (the row-selection checkboxes on the list
+ * screen's bulk-action form; absent, a single value, or an array depending on how
+ * many rows were checked) into a `string[]` of selected primary key values. A
+ * `File` entry can never legitimately appear here (the field is a checkbox, not a
+ * file input), so it is dropped rather than stringified.
+ */
+const selectedActionIds = (body: FormInput): string[] => {
+	const raw = body._selected_action;
+	const values = raw === undefined ? [] : Array.isArray(raw) ? raw : [raw];
+	return values.filter((value): value is string => typeof value === "string");
 };
 
 /**
@@ -152,6 +192,14 @@ export type AdminPanelOptions<E extends Env = Env> = {
 	audit?: { log: AdminAuditLog; actor?: (c: Context<E>) => string | Promise<string> };
 	/** Resource CRUD screen (`AdminResource` from `admin_resource.ts`). No rendering or routes if not injected. */
 	resources?: AdminResource[];
+	/**
+	 * Session accessor (e.g. `SessionAccessor#use`), injected the same optional way as
+	 * `csrf`/`audit`. When injected, resource create/update success flashes a
+	 * `message.added`/`message.changed` banner, shown once on the next GET (consume-once,
+	 * same as `Session#flash`). When not injected, no banner is ever shown (backward
+	 * compatible).
+	 */
+	session?: (c: Context<E>) => Session;
 };
 
 /** `RouteHandler` subclass that serves the unified admin panel, mounted explicitly by the app. */
@@ -222,14 +270,56 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 
 			const brand = options.brand ?? "Admin";
 			const t = bindAdminT(c);
+			const resources = options.resources ?? [];
+			const basePath = this.resolveBasePath();
 
 			return c.html(
-				<AdminLayout brand={brand} nav={this.buildNav(t)} lang={c.get("language") ?? "en"}>
-					<h2>{t("dashboard.welcome")}</h2>
-					<p>{t("dashboard.empty")}</p>
+				<AdminLayout
+					brand={brand}
+					nav={this.buildNav(t)}
+					lang={c.get("language") ?? "en"}
+					breadcrumbs={[{ label: t("breadcrumb.home") }]}
+					messages={this.consumeMessages(c)}
+				>
+					{resources.length > 0 ? (
+						<div class="module">
+							<h2>{t("index.resources")}</h2>
+							<table>
+								<tbody>
+									{resources.map((resource) => (
+										<tr>
+											<th>
+												<a href={`${basePath}/resources/${resource.key}`}>{resource.label}</a>
+											</th>
+											<td>
+												{resource.canWrite() ? (
+													<a class="addlink" href={`${basePath}/resources/${resource.key}/new`}>
+														{t("action.add")}
+													</a>
+												) : null}
+											</td>
+											<td>
+												<a href={`${basePath}/resources/${resource.key}`}>{t("action.change")}</a>
+											</td>
+										</tr>
+									))}
+								</tbody>
+							</table>
+						</div>
+					) : (
+						<>
+							<h2>{t("dashboard.welcome")}</h2>
+							<p>{t("dashboard.empty")}</p>
+						</>
+					)}
 				</AdminLayout>,
 			);
 		});
+	}
+
+	/** Builds the leading `[Home]` (or `[Home → …]`) breadcrumb segment shared by every non-dashboard screen. */
+	private homeBreadcrumb(t: AdminT): AdminBreadcrumb {
+		return { href: this.resolveBasePath(), label: t("breadcrumb.home") };
 	}
 
 	/** Resolves `panelOptions.basePath` (default `"/admin"`). Named this way because `basePath` is a Hono-reserved name. */
@@ -242,11 +332,52 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 		return this.panelOptions?.csrf?.csrfToken(c) ?? null;
 	}
 
+	/**
+	 * Pushes one flash message to be shown on the next GET, if `panelOptions.session`
+	 * is injected. Does nothing if not injected (message banners are opt-in, same
+	 * policy as `recordAudit`).
+	 */
+	private flashMessage(c: Context<E>, level: AdminMessage["level"], text: string): void {
+		const session = this.panelOptions?.session;
+		if (!session) return;
+
+		session(c).flash(ADMIN_MESSAGES_FLASH_KEY, [{ level, text }] satisfies AdminMessage[]);
+	}
+
+	/**
+	 * Consumes and returns the flash messages pushed by `flashMessage`, if
+	 * `panelOptions.session` is injected. Returns `[]` when not injected, when nothing
+	 * was flashed (a normal GET), or when the stored value's shape is malformed.
+	 */
+	private consumeMessages(c: Context<E>): AdminMessage[] {
+		const session = this.panelOptions?.session;
+		if (!session) return [];
+
+		const value = session(c).get(ADMIN_MESSAGES_FLASH_KEY);
+		return isAdminMessageArray(value) ? value : [];
+	}
+
+	/**
+	 * Resolves the post-save redirect target from the pressed submit button's `name`,
+	 * matching Django admin's `_save`/`_addanother`/`_continue` convention
+	 * (`submit_line.html`). Any button name other than `_addanother`/`_continue` —
+	 * including `_save` and no button name at all (e.g. a caller posting without one
+	 * of these fields) — falls back to the list, which is the pre-existing behavior.
+	 */
+	private resolveSaveRedirect(body: FormInput, key: string, rowId: string): string {
+		const basePath = this.resolveBasePath();
+		if (body._addanother !== undefined) return `${basePath}/resources/${key}/new`;
+		if (body._continue !== undefined) {
+			return `${basePath}/resources/${key}/${encodeURIComponent(rowId)}/edit`;
+		}
+		return `${basePath}/resources/${key}`;
+	}
+
 	/** Builds the nav item list, including only wired sections (jobs/settings/audit). */
 	private buildNav(t: AdminT): AdminNavItem[] {
 		const options = this.panelOptions;
 		const basePath = this.resolveBasePath();
-		const nav: AdminNavItem[] = [{ href: `${basePath}/`, label: t("nav.dashboard") }];
+		const nav: AdminNavItem[] = [{ href: basePath, label: t("nav.dashboard") }];
 		if (!options) return nav;
 
 		if (options.jobs) nav.push({ href: `${basePath}/jobs`, label: t("nav.jobs") });
@@ -273,6 +404,72 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 
 		const actor = audit.actor ? await audit.actor(c) : "admin";
 		await audit.log.record({ actor, action, target, changes });
+	}
+
+	/**
+	 * Dispatches the list screen's bulk-action form (only `action=delete` is
+	 * supported today). Mirrors the single-row delete's two-step contract:
+	 * - `action=delete` with one or more rows selected, no `post=yes` yet ->
+	 *   renders `AdminResourceBulkDeleteView` so the operator confirms first.
+	 * - `action=delete` with `post=yes` (the confirmation form's own submission) ->
+	 *   deletes each selected id that still exists, flashes a count message, and
+	 *   records one `resource.bulkDelete` audit entry.
+	 * - anything else (an unrecognized action, or nothing selected) -> redirects
+	 *   back to the list without deleting anything.
+	 */
+	private async handleBulkAction(
+		c: Context<E>,
+		target: AdminResource,
+		key: string,
+		body: FormInput,
+	): Promise<Response> {
+		const basePath = this.resolveBasePath();
+		const listUrl = `${basePath}/resources/${key}`;
+		const action = typeof body.action === "string" ? body.action : "";
+		const selected = selectedActionIds(body);
+
+		if (action !== "delete" || selected.length === 0) {
+			return c.redirect(listUrl, 303);
+		}
+
+		if (body.post !== "yes") {
+			const t = bindAdminT(c);
+			return c.html(
+				<AdminLayout
+					brand={this.panelOptions?.brand ?? "Admin"}
+					nav={this.buildNav(t)}
+					lang={c.get("language") ?? "en"}
+					breadcrumbs={[
+						this.homeBreadcrumb(t),
+						{ href: listUrl, label: target.label },
+						{ label: t("action.delete") },
+					]}
+					messages={this.consumeMessages(c)}
+				>
+					<AdminResourceBulkDeleteView
+						basePath={basePath}
+						resourceKey={key}
+						label={target.label}
+						selected={selected}
+						csrfToken={this.csrfToken(c)}
+						t={t}
+					/>
+				</AdminLayout>,
+			);
+		}
+
+		let count = 0;
+		for (const id of selected) {
+			const deleted = await target.model.delete(id);
+			if (deleted) count++;
+		}
+
+		if (count > 0) {
+			await this.recordAudit(c, "resource.bulkDelete", key, { ids: selected, count });
+			const t = bindAdminT(c);
+			this.flashMessage(c, "success", t("message.deletedCount", { count, label: target.label }));
+		}
+		return c.redirect(listUrl, 303);
 	}
 
 	/**
@@ -308,6 +505,8 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 					brand={options.brand ?? "Admin"}
 					nav={this.buildNav(t)}
 					lang={c.get("language") ?? "en"}
+					breadcrumbs={[this.homeBreadcrumb(t), { label: t("nav.jobs") }]}
+					messages={this.consumeMessages(c)}
 				>
 					<AdminJobsView
 						basePath={this.resolveBasePath()}
@@ -364,6 +563,8 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 					brand={options.brand ?? "Admin"}
 					nav={this.buildNav(t)}
 					lang={c.get("language") ?? "en"}
+					breadcrumbs={[this.homeBreadcrumb(t), { label: t("nav.settings") }]}
+					messages={this.consumeMessages(c)}
 				>
 					<AdminSettingsView
 						basePath={this.resolveBasePath()}
@@ -425,6 +626,8 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 					brand={options.brand ?? "Admin"}
 					nav={this.buildNav(t)}
 					lang={c.get("language") ?? "en"}
+					breadcrumbs={[this.homeBreadcrumb(t), { label: t("nav.audit") }]}
+					messages={this.consumeMessages(c)}
 				>
 					<AdminAuditView
 						basePath={this.resolveBasePath()}
@@ -461,13 +664,26 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 
 				const cursor = c.req.query("cursor") || undefined;
 				const query = c.req.query("q") ?? "";
-				const where = query ? target.searchWhere(query) : undefined;
-				const { rows, nextCursor, hasMore } = await target.model.paginate({
-					limit: PAGE_SIZE,
-					cursor,
-					direction: "desc",
-					where,
-				});
+				const filterDefs = target.filters?.() ?? [];
+				const selected: Record<string, string | undefined> = {};
+				for (const def of filterDefs) {
+					selected[def.column] = c.req.query(def.column) || undefined;
+				}
+
+				const search = query ? target.searchWhere(query) : undefined;
+				const filter = target.filterWhere(selected);
+				const conditions = [search, filter].filter((value): value is SQL => value !== undefined);
+				const where =
+					conditions.length === 0
+						? undefined
+						: conditions.length === 1
+							? conditions[0]
+							: and(...conditions);
+
+				const [{ rows, nextCursor, hasMore }, total] = await Promise.all([
+					target.model.paginate({ limit: PAGE_SIZE, cursor, direction: "desc", where }),
+					target.model.count(where),
+				]);
 				const t = bindAdminT(c);
 
 				return c.html(
@@ -475,6 +691,8 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 						brand={options.brand ?? "Admin"}
 						nav={this.buildNav(t)}
 						lang={c.get("language") ?? "en"}
+						breadcrumbs={[this.homeBreadcrumb(t), { label: target.label }]}
+						messages={this.consumeMessages(c)}
 					>
 						<AdminResourceListView
 							basePath={this.resolveBasePath()}
@@ -486,8 +704,11 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 							canWrite={target.canWrite()}
 							searchEnabled={(target.searchColumns?.() ?? []).length > 0}
 							query={query}
+							filters={filterDefs}
+							activeFilters={selected}
 							nextCursor={nextCursor}
 							hasMore={hasMore}
+							total={total}
 							csrfToken={this.csrfToken(c)}
 							t={t}
 						/>
@@ -510,6 +731,12 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 							brand={options.brand ?? "Admin"}
 							nav={this.buildNav(t)}
 							lang={c.get("language") ?? "en"}
+							breadcrumbs={[
+								this.homeBreadcrumb(t),
+								{ href: `${this.resolveBasePath()}/resources/${key}`, label: target.label },
+								{ label: t("action.add") },
+							]}
+							messages={this.consumeMessages(c)}
 						>
 							<AdminResourceFormView
 								basePath={this.resolveBasePath()}
@@ -540,6 +767,12 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 						brand={options.brand ?? "Admin"}
 						nav={this.buildNav(t)}
 						lang={c.get("language") ?? "en"}
+						breadcrumbs={[
+							this.homeBreadcrumb(t),
+							{ href: `${this.resolveBasePath()}/resources/${key}`, label: target.label },
+							{ label: t("resource.showTitle", { label: target.label }) },
+						]}
+						messages={this.consumeMessages(c)}
 					>
 						<AdminResourceShowView
 							basePath={this.resolveBasePath()}
@@ -556,6 +789,15 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 			});
 
 			if (resource.canWrite()) {
+				/**
+				 * Serves both the create form's submission and the list screen's bulk-action
+				 * form (`AdminResourceListView`'s `changelist-form`), since both post to this
+				 * same URL. Distinguished by the presence of `action` in the body: the create
+				 * form has no such field, while the bulk-action form always includes
+				 * `<select name="action">` (empty string when nothing is chosen). `{ all: true }`
+				 * is required so repeated `_selected_action` checkboxes survive as an array
+				 * (Hono's default `parseBody` keeps only the last value of a repeated field).
+				 */
 				this.post(`/resources/${key}`, async (c) => {
 					const options = this.panelOptions;
 					const target = resolve();
@@ -563,7 +805,10 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 					const form = target.form?.();
 					if (!form) return c.notFound();
 
-					const result = await form.validate(await c.req.parseBody());
+					const body = await c.req.parseBody({ all: true });
+					if (typeof body.action === "string") return this.handleBulkAction(c, target, key, body);
+
+					const result = await form.validate(body);
 					if (!result.ok) {
 						const binding = form.bind({ errors: result.errors, values: result.values });
 						const t = bindAdminT(c);
@@ -572,6 +817,11 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 								brand={options.brand ?? "Admin"}
 								nav={this.buildNav(t)}
 								lang={c.get("language") ?? "en"}
+								breadcrumbs={[
+									this.homeBreadcrumb(t),
+									{ href: `${this.resolveBasePath()}/resources/${key}`, label: target.label },
+									{ label: t("action.add") },
+								]}
 							>
 								<AdminResourceFormView
 									basePath={this.resolveBasePath()}
@@ -589,12 +839,12 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 					}
 
 					const created = await target.model.create(result.value);
-					await this.recordAudit(
-						c,
-						"resource.create",
-						`${key}/${stringify(created[target.primaryKey])}`,
-					);
-					return c.redirect(`${this.resolveBasePath()}/resources/${key}`, 303);
+					const createdId = stringify(created[target.primaryKey]);
+					await this.recordAudit(c, "resource.create", `${key}/${createdId}`);
+
+					const t = bindAdminT(c);
+					this.flashMessage(c, "success", t("message.added", { label: target.label }));
+					return c.redirect(this.resolveSaveRedirect(body, key, createdId), 303);
 				});
 
 				this.get(`/resources/${key}/:id/edit`, async (c) => {
@@ -615,6 +865,12 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 							brand={options.brand ?? "Admin"}
 							nav={this.buildNav(t)}
 							lang={c.get("language") ?? "en"}
+							breadcrumbs={[
+								this.homeBreadcrumb(t),
+								{ href: `${this.resolveBasePath()}/resources/${key}`, label: target.label },
+								{ label: t("action.change") },
+							]}
+							messages={this.consumeMessages(c)}
 						>
 							<AdminResourceFormView
 								basePath={this.resolveBasePath()}
@@ -642,7 +898,8 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 					const existing = await target.model.retrieve(id);
 					if (!existing) return c.notFound();
 
-					const result = await form.validate(await c.req.parseBody());
+					const body = await c.req.parseBody();
+					const result = await form.validate(body);
 					if (!result.ok) {
 						const binding = form.bind({ errors: result.errors, values: result.values });
 						const t = bindAdminT(c);
@@ -651,6 +908,11 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 								brand={options.brand ?? "Admin"}
 								nav={this.buildNav(t)}
 								lang={c.get("language") ?? "en"}
+								breadcrumbs={[
+									this.homeBreadcrumb(t),
+									{ href: `${this.resolveBasePath()}/resources/${key}`, label: target.label },
+									{ label: t("action.change") },
+								]}
 							>
 								<AdminResourceFormView
 									basePath={this.resolveBasePath()}
@@ -680,19 +942,76 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 					 */
 					await target.model.update(id, withoutKey(result.value, target.primaryKey));
 					await this.recordAudit(c, "resource.update", `${key}/${id}`);
-					return c.redirect(`${this.resolveBasePath()}/resources/${key}`, 303);
+
+					const t = bindAdminT(c);
+					this.flashMessage(c, "success", t("message.changed", { label: target.label }));
+					return c.redirect(this.resolveSaveRedirect(body, key, id), 303);
 				});
 
+				this.get(`/resources/${key}/:id/delete`, async (c) => {
+					const options = this.panelOptions;
+					const target = resolve();
+					if (!options || !target) return c.notFound();
+
+					const id = c.req.param("id");
+					const row = await target.model.retrieve(id);
+					if (!row) return c.notFound();
+
+					const t = bindAdminT(c);
+					const basePath = this.resolveBasePath();
+					const listHref = `${basePath}/resources/${key}`;
+					return c.html(
+						<AdminLayout
+							brand={options.brand ?? "Admin"}
+							nav={this.buildNav(t)}
+							lang={c.get("language") ?? "en"}
+							breadcrumbs={[
+								this.homeBreadcrumb(t),
+								{ href: listHref, label: target.label },
+								{ href: `${listHref}/${encodeURIComponent(id)}`, label: id },
+								{ label: t("action.delete") },
+							]}
+							messages={this.consumeMessages(c)}
+						>
+							<AdminResourceDeleteView
+								basePath={basePath}
+								resourceKey={key}
+								label={target.label}
+								columns={target.columns().map((column) => column.name)}
+								row={row}
+								primaryKey={target.primaryKey}
+								csrfToken={this.csrfToken(c)}
+								t={t}
+							/>
+						</AdminLayout>,
+					);
+				});
+
+				/**
+				 * Requires the confirmation screen's hidden `post=yes` field (a familiar
+				 * admin-console's delete-confirmation contract), so a bare `POST` (without
+				 * having gone through the confirmation screen first) does not delete the
+				 * row; it simply redirects back to the list, same as pressing "No, take me
+				 * back".
+				 */
 				this.post(`/resources/${key}/:id/delete`, async (c) => {
 					const target = resolve();
 					if (!target) return c.notFound();
 
 					const id = c.req.param("id");
-					const deleted = await target.model.delete(id);
-					await this.recordAudit(c, "resource.delete", `${key}/${id}`, {
-						ok: deleted !== undefined,
-					});
-					return c.redirect(`${this.resolveBasePath()}/resources/${key}`, 303);
+					const existing = await target.model.retrieve(id);
+					if (!existing) return c.notFound();
+
+					const listUrl = `${this.resolveBasePath()}/resources/${key}`;
+					const body = await c.req.parseBody();
+					if (body.post !== "yes") return c.redirect(listUrl, 303);
+
+					await target.model.delete(id);
+					await this.recordAudit(c, "resource.delete", `${key}/${id}`);
+
+					const t = bindAdminT(c);
+					this.flashMessage(c, "success", t("message.deleted", { label: target.label }));
+					return c.redirect(listUrl, 303);
 				});
 			}
 		}

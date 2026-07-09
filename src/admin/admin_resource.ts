@@ -14,7 +14,7 @@
  *   argument bivariance. This assignability is covered by Step 3b's real-class
  *   injection integration tests)
  */
-import { getTableColumns, or, sql } from "drizzle-orm";
+import { and, eq, getTableColumns, or, sql } from "drizzle-orm";
 import type { Column, SQL, Table } from "drizzle-orm";
 import type { StandardSchemaV1 } from "@standard-schema/spec";
 import type { FieldDef, Form } from "../form/form.js";
@@ -41,6 +41,8 @@ export type AdminModel = {
 	create(input: unknown): Promise<Record<string, unknown>>;
 	update(pk: string, patch: unknown): Promise<Record<string, unknown> | undefined>;
 	delete(pk: string): Promise<Record<string, unknown> | undefined>;
+	/** Total row count matching `where` (or the whole table when omitted), for the list screen's result count and bulk-action confirmation. */
+	count(where?: SQL): Promise<number>;
 };
 
 /**
@@ -48,6 +50,16 @@ export type AdminModel = {
  * from `getTableColumns`, `column` = the Drizzle `Column` instance).
  */
 export type AdminResourceColumn = { name: string; column: Column };
+
+/** One option offered for a filter (the value stored in the URL query and the label shown in the sidebar). */
+export type AdminFilterOption = { value: string; label: string };
+
+/**
+ * One filterable column declared by `AdminResource#filters`. `options` is the
+ * closed set of values the sidebar offers and `filterWhere` accepts; there is no
+ * way to filter by a value outside this set (see `filterWhere`).
+ */
+export type AdminFilter = { column: string; label?: string; options: AdminFilterOption[] };
 
 /**
  * Escapes LIKE pattern wildcard characters (`%`/`_`) and the escape character itself
@@ -98,6 +110,14 @@ export abstract class AdminResource {
 
 	/** String column names to search. `searchWhere` is only active when specified. */
 	searchColumns?(): string[];
+
+	/**
+	 * Declares filterable columns for the list screen's sidebar. Each filter lists
+	 * the allowed values explicitly via `options` (only these values are accepted;
+	 * `filterWhere` ignores anything else). No sidebar is rendered unless this is
+	 * implemented.
+	 */
+	filters?(): AdminFilter[];
 
 	/**
 	 * Resolves the display columns. Uses `listColumns()`'s order and names if
@@ -153,6 +173,36 @@ export abstract class AdminResource {
 			return sql`${column} like ${pattern} escape '\\'`;
 		});
 		return or(...conditions);
+	}
+
+	/**
+	 * Builds an `AND` of `eq()` clauses, one per filter in `filters()` that has a
+	 * selected value in `selected[def.column]`. A selected value is only honored
+	 * when it is one of that filter's declared `options` — an unknown column or a
+	 * value outside the declared options is silently ignored, so a crafted query
+	 * parameter can't force an arbitrary `WHERE` clause. Returns `undefined` when no
+	 * filter is declared or none of the selections apply.
+	 */
+	filterWhere(selected: Record<string, string | undefined>): SQL | undefined {
+		const defs = this.filters?.() ?? [];
+		if (defs.length === 0) return undefined;
+
+		const tableColumns = getTableColumns(this.table);
+		const conditions: SQL[] = [];
+		for (const def of defs) {
+			const value = selected[def.column];
+			if (value === undefined || value === "") continue;
+			if (!def.options.some((option) => option.value === value)) continue;
+
+			const column = tableColumns[def.column];
+			if (!column) {
+				throw new Error(
+					`AdminResource "${this.key}": filters() specified a nonexistent column name "${def.column}"`,
+				);
+			}
+			conditions.push(eq(column, value));
+		}
+		return conditions.length > 0 ? and(...conditions) : undefined;
 	}
 
 	/** Whether create/edit/delete routes may appear (whether `form()` is implemented). */

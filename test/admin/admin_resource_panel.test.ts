@@ -7,6 +7,7 @@
  */
 import type { StandardSchemaV1 } from "@standard-schema/spec";
 import { eq } from "drizzle-orm";
+import type { Env } from "hono";
 import { Hono } from "hono";
 import { afterEach, beforeEach, describe, expect, test } from "vite-plus/test";
 import { AdminPanel } from "../../src/admin/admin_panel.js";
@@ -15,10 +16,22 @@ import { SQLiteAuditLog } from "../../src/audit/sqlite_audit_log.js";
 import type { FieldDef } from "../../src/form/form.js";
 import { Form } from "../../src/form/form.js";
 import { SQLiteModel } from "../../src/model/sqlite_model.js";
+import { InMemorySessionStorage } from "../../src/session/in_memory_session_storage.js";
+import { SessionAccessor } from "../../src/session/session_accessor.js";
+import type { Session } from "../../src/session/session.js";
 import { createTestDb } from "../../src/test/db.js";
 import * as schema from "../test_support/fixtures/schema.js";
 
 const migrationsFolder = new URL("../test_support/fixtures/migrations", import.meta.url).pathname;
+
+type SessionEnv = Env & { Variables: { session: Session } };
+
+/** Extracts only the cookie name=value pair from a `Set-Cookie` header value (same convention as `test/security/csrf.test.ts`). */
+const toCookieHeader = (setCookieValue: string): string => {
+	const [pair] = setCookieValue.split(";");
+	if (!pair) throw new Error("Set-Cookie value is empty");
+	return pair;
+};
 
 /** Minimal Standard Schema implementation for tests. Same convention as `defineStubSchema` in `test/form/form.test.ts`. */
 const defineStubSchema = <Output>(
@@ -101,6 +114,18 @@ class PublisherResource extends AdminResource {
 	}
 	searchColumns() {
 		return ["name"];
+	}
+	filters() {
+		return [
+			{
+				column: "status",
+				label: "Status",
+				options: [
+					{ value: "active", label: "Active" },
+					{ value: "inactive", label: "Inactive" },
+				],
+			},
+		];
 	}
 }
 
@@ -208,6 +233,56 @@ describe("AdminPanel resource CRUD", () => {
 		expect(res.status).toBe(200);
 		expect(body).not.toContain("TKNF Books");
 		expect(body).not.toContain("Another Press");
+	});
+
+	test("filter: a declared status value includes only the matching rows", async () => {
+		await insertPublisher(ctx.db, { id: "pub-1", name: "TKNF Books", status: "active" });
+		await insertPublisher(ctx.db, { id: "pub-2", name: "Another Press", status: "inactive" });
+
+		const resource = new PublisherResource(new PublisherModel(ctx.db));
+		const app = new Hono();
+		app.route("/admin", new AdminPanel({ authorize: () => true, resources: [resource] }));
+
+		const res = await app.request("/admin/resources/publishers?status=inactive");
+		const body = await res.text();
+
+		expect(res.status).toBe(200);
+		expect(body).not.toContain("TKNF Books");
+		expect(body).toContain("Another Press");
+	});
+
+	test("filter: a value outside the declared options is ignored and every row is returned", async () => {
+		await insertPublisher(ctx.db, { id: "pub-1", name: "TKNF Books", status: "active" });
+		await insertPublisher(ctx.db, { id: "pub-2", name: "Another Press", status: "inactive" });
+
+		const resource = new PublisherResource(new PublisherModel(ctx.db));
+		const app = new Hono();
+		app.route("/admin", new AdminPanel({ authorize: () => true, resources: [resource] }));
+
+		const res = await app.request("/admin/resources/publishers?status=bogus");
+		const body = await res.text();
+
+		expect(res.status).toBe(200);
+		expect(body).toContain("TKNF Books");
+		expect(body).toContain("Another Press");
+	});
+
+	test("filter: the sidebar renders only for a resource that declares filters", async () => {
+		await insertPublisher(ctx.db, { id: "pub-1", name: "TKNF Books" });
+
+		const withFilters = new PublisherResource(new PublisherModel(ctx.db));
+		const withoutFilters = new ReadonlyPublisherResource(new PublisherModel(ctx.db));
+		const app = new Hono();
+		app.route(
+			"/admin",
+			new AdminPanel({ authorize: () => true, resources: [withFilters, withoutFilters] }),
+		);
+
+		const withRes = await app.request("/admin/resources/publishers");
+		const withoutRes = await app.request("/admin/resources/ro-publishers");
+
+		expect(await withRes.text()).toContain('id="changelist-filter"');
+		expect(await withoutRes.text()).not.toContain('id="changelist-filter"');
 	});
 
 	test("new form: GET includes the name input etc.", async () => {
@@ -320,7 +395,51 @@ describe("AdminPanel resource CRUD", () => {
 		expect(row?.name).toBe("Renamed Publisher");
 	});
 
-	test("delete: POST removes the row from the DB and returns 303", async () => {
+	test("delete confirmation: GET renders the confirm text, the object summary, and the post=yes hidden field", async () => {
+		await insertPublisher(ctx.db, { id: "pub-1", name: "TKNF Books" });
+		const resource = new PublisherResource(new PublisherModel(ctx.db));
+		const app = new Hono();
+		app.route("/admin", new AdminPanel({ authorize: () => true, resources: [resource] }));
+
+		const res = await app.request("/admin/resources/publishers/pub-1/delete");
+		const body = await res.text();
+
+		expect(res.status).toBe(200);
+		expect(body).toContain("Are you sure you want to delete this Publisher?");
+		expect(body).toContain("TKNF Books");
+		expect(body).toContain('name="post"');
+		expect(body).toContain('value="yes"');
+	});
+
+	test("delete confirmation: GET for a nonexistent id returns 404", async () => {
+		const resource = new PublisherResource(new PublisherModel(ctx.db));
+		const app = new Hono();
+		app.route("/admin", new AdminPanel({ authorize: () => true, resources: [resource] }));
+
+		const res = await app.request("/admin/resources/publishers/missing/delete");
+
+		expect(res.status).toBe(404);
+	});
+
+	test("delete: POST with post=yes removes the row from the DB and returns 303", async () => {
+		await insertPublisher(ctx.db, { id: "pub-1", name: "TKNF Books" });
+		const resource = new PublisherResource(new PublisherModel(ctx.db));
+		const app = new Hono();
+		app.route("/admin", new AdminPanel({ authorize: () => true, resources: [resource] }));
+
+		const res = await app.request("/admin/resources/publishers/pub-1/delete", {
+			method: "POST",
+			headers: { "content-type": "application/x-www-form-urlencoded" },
+			body: new URLSearchParams({ post: "yes" }).toString(),
+		});
+
+		expect(res.status).toBe(303);
+		expect(res.headers.get("location")).toBe("/admin/resources/publishers");
+		const rows = await ctx.db.select().from(schema.publishers);
+		expect(rows).toHaveLength(0);
+	});
+
+	test("delete: POST without post=yes does not delete the row", async () => {
 		await insertPublisher(ctx.db, { id: "pub-1", name: "TKNF Books" });
 		const resource = new PublisherResource(new PublisherModel(ctx.db));
 		const app = new Hono();
@@ -329,9 +448,22 @@ describe("AdminPanel resource CRUD", () => {
 		const res = await app.request("/admin/resources/publishers/pub-1/delete", { method: "POST" });
 
 		expect(res.status).toBe(303);
-		expect(res.headers.get("location")).toBe("/admin/resources/publishers");
 		const rows = await ctx.db.select().from(schema.publishers);
-		expect(rows).toHaveLength(0);
+		expect(rows).toHaveLength(1);
+	});
+
+	test("delete: POST with post=yes for a nonexistent id returns 404", async () => {
+		const resource = new PublisherResource(new PublisherModel(ctx.db));
+		const app = new Hono();
+		app.route("/admin", new AdminPanel({ authorize: () => true, resources: [resource] }));
+
+		const res = await app.request("/admin/resources/publishers/missing/delete", {
+			method: "POST",
+			headers: { "content-type": "application/x-www-form-urlencoded" },
+			body: new URLSearchParams({ post: "yes" }).toString(),
+		});
+
+		expect(res.status).toBe(404);
 	});
 
 	test("read-only: list/show return 200 but new/create/edit/delete return 404 (route not registered)", async () => {
@@ -349,6 +481,7 @@ describe("AdminPanel resource CRUD", () => {
 			body: new URLSearchParams({ name: "x" }).toString(),
 		});
 		const editRes = await app.request("/admin/resources/ro-publishers/pub-1/edit");
+		const deleteConfirmRes = await app.request("/admin/resources/ro-publishers/pub-1/delete");
 		const deleteRes = await app.request("/admin/resources/ro-publishers/pub-1/delete", {
 			method: "POST",
 		});
@@ -358,6 +491,7 @@ describe("AdminPanel resource CRUD", () => {
 		expect(newRes.status).toBe(404);
 		expect(createRes.status).toBe(404);
 		expect(editRes.status).toBe(404);
+		expect(deleteConfirmRes.status).toBe(404);
 		expect(deleteRes.status).toBe(404);
 	});
 
@@ -398,6 +532,432 @@ describe("AdminPanel resource CRUD", () => {
 		expect(res.status).toBe(200);
 		expect(body).toContain("/admin/resources/publishers");
 		expect(body).toContain("Publisher");
+	});
+});
+
+describe("AdminPanel resource CRUD save button variants and success messages", () => {
+	let ctx: Awaited<ReturnType<typeof createTestDb<typeof schema>>>;
+
+	beforeEach(async () => {
+		ctx = await createTestDb({ schema, migrationsFolder });
+	});
+
+	afterEach(() => {
+		ctx.client.close();
+	});
+
+	/** Builds an `AdminPanel` test app wired with session (no CSRF) + the `publishers` resource. */
+	const buildSessionWiredApp = (resource: PublisherResource) => {
+		const storage = new InMemorySessionStorage();
+		const sessionAccessor = new SessionAccessor<SessionEnv, "session">("session", storage);
+		const app = new Hono<SessionEnv>();
+		app.use(sessionAccessor.register);
+		app.route(
+			"/admin",
+			new AdminPanel<SessionEnv>({
+				authorize: () => true,
+				resources: [resource],
+				session: sessionAccessor.use,
+			}),
+		);
+		return app;
+	};
+
+	test("create: pressing '_addanother' redirects to the resource's new-form URL", async () => {
+		const resource = new PublisherResource(new PublisherModel(ctx.db));
+		const app = new Hono();
+		app.route("/admin", new AdminPanel({ authorize: () => true, resources: [resource] }));
+
+		const res = await app.request("/admin/resources/publishers", {
+			method: "POST",
+			headers: { "content-type": "application/x-www-form-urlencoded" },
+			body: new URLSearchParams({
+				name: "New Publisher",
+				contactEmail: "new@example.com",
+				status: "active",
+				_addanother: "1",
+			}).toString(),
+		});
+
+		expect(res.status).toBe(303);
+		expect(res.headers.get("location")).toBe("/admin/resources/publishers/new");
+	});
+
+	test("create: pressing '_continue' redirects to the created row's edit URL", async () => {
+		const resource = new PublisherResource(new PublisherModel(ctx.db));
+		const app = new Hono();
+		app.route("/admin", new AdminPanel({ authorize: () => true, resources: [resource] }));
+
+		const res = await app.request("/admin/resources/publishers", {
+			method: "POST",
+			headers: { "content-type": "application/x-www-form-urlencoded" },
+			body: new URLSearchParams({
+				name: "New Publisher",
+				contactEmail: "new@example.com",
+				status: "active",
+				_continue: "1",
+			}).toString(),
+		});
+
+		expect(res.status).toBe(303);
+
+		/**
+		 * `PublisherForm`'s schema does not pass `id` through, so `SQLiteModel#create`
+		 * generates it; the redirect target is asserted against the row actually
+		 * persisted rather than a hand-picked id.
+		 */
+		const rows = await ctx.db.select().from(schema.publishers);
+		expect(rows).toHaveLength(1);
+		expect(res.headers.get("location")).toBe(`/admin/resources/publishers/${rows[0]?.id}/edit`);
+	});
+
+	test("create: pressing plain '_save' redirects to the list, same as sending no button name (backward compatible)", async () => {
+		const resource = new PublisherResource(new PublisherModel(ctx.db));
+		const app = new Hono();
+		app.route("/admin", new AdminPanel({ authorize: () => true, resources: [resource] }));
+
+		const res = await app.request("/admin/resources/publishers", {
+			method: "POST",
+			headers: { "content-type": "application/x-www-form-urlencoded" },
+			body: new URLSearchParams({
+				name: "New Publisher",
+				contactEmail: "new@example.com",
+				status: "active",
+				_save: "1",
+			}).toString(),
+		});
+
+		expect(res.status).toBe(303);
+		expect(res.headers.get("location")).toBe("/admin/resources/publishers");
+	});
+
+	test("messages: a success banner appears on the next GET after create, when session is injected", async () => {
+		const resource = new PublisherResource(new PublisherModel(ctx.db));
+		const app = buildSessionWiredApp(resource);
+
+		const createRes = await app.request("/admin/resources/publishers", {
+			method: "POST",
+			headers: { "content-type": "application/x-www-form-urlencoded" },
+			body: new URLSearchParams({
+				name: "New Publisher",
+				contactEmail: "new@example.com",
+				status: "active",
+			}).toString(),
+		});
+		expect(createRes.status).toBe(303);
+		const cookie = createRes.headers.get("set-cookie");
+		if (!cookie) throw new Error("expected Set-Cookie on the create response");
+
+		const listRes = await app.request(createRes.headers.get("location") ?? "", {
+			headers: { cookie: toCookieHeader(cookie) },
+		});
+		const body = await listRes.text();
+
+		expect(listRes.status).toBe(200);
+		expect(body).toContain('class="messagelist"');
+		expect(body).toContain("successfully");
+
+		/**
+		 * Flash messages are consume-once (`Session#get`): a second GET with the same
+		 * session cookie must not show the banner again.
+		 */
+		const secondRes = await app.request(createRes.headers.get("location") ?? "", {
+			headers: { cookie: toCookieHeader(cookie) },
+		});
+		const secondBody = await secondRes.text();
+		expect(secondBody).not.toContain('class="messagelist"');
+	});
+
+	test("messages: a success banner appears on the next GET after delete, when session is injected", async () => {
+		await insertPublisher(ctx.db, { id: "pub-1", name: "TKNF Books" });
+		const resource = new PublisherResource(new PublisherModel(ctx.db));
+		const app = buildSessionWiredApp(resource);
+
+		const deleteRes = await app.request("/admin/resources/publishers/pub-1/delete", {
+			method: "POST",
+			headers: { "content-type": "application/x-www-form-urlencoded" },
+			body: new URLSearchParams({ post: "yes" }).toString(),
+		});
+		expect(deleteRes.status).toBe(303);
+		const cookie = deleteRes.headers.get("set-cookie");
+		if (!cookie) throw new Error("expected Set-Cookie on the delete response");
+
+		const listRes = await app.request(deleteRes.headers.get("location") ?? "", {
+			headers: { cookie: toCookieHeader(cookie) },
+		});
+		const body = await listRes.text();
+
+		expect(listRes.status).toBe(200);
+		expect(body).toContain('class="messagelist"');
+		expect(body).toContain("deleted successfully");
+	});
+
+	test("messages: no banner appears when session is not injected (backward compatible)", async () => {
+		const resource = new PublisherResource(new PublisherModel(ctx.db));
+		const app = new Hono();
+		app.route("/admin", new AdminPanel({ authorize: () => true, resources: [resource] }));
+
+		const createRes = await app.request("/admin/resources/publishers", {
+			method: "POST",
+			headers: { "content-type": "application/x-www-form-urlencoded" },
+			body: new URLSearchParams({
+				name: "New Publisher",
+				contactEmail: "new@example.com",
+				status: "active",
+			}).toString(),
+		});
+		expect(createRes.status).toBe(303);
+		expect(createRes.headers.get("set-cookie")).toBeNull();
+
+		const listRes = await app.request("/admin/resources/publishers");
+		const body = await listRes.text();
+
+		/**
+		 * `ADMIN_CSS`'s `.messagelist` rule is always inlined regardless of whether any
+		 * message is shown, so the negative assertion targets the rendered `<ul>` markup
+		 * specifically rather than the bare class name.
+		 */
+		expect(body).not.toContain('<ul class="messagelist">');
+	});
+});
+
+describe("AdminPanel resource CRUD bulk delete", () => {
+	let ctx: Awaited<ReturnType<typeof createTestDb<typeof schema>>>;
+
+	beforeEach(async () => {
+		ctx = await createTestDb({ schema, migrationsFolder });
+	});
+
+	afterEach(() => {
+		ctx.client.close();
+	});
+
+	test("list: shows the total row count and a checkbox column for a writable resource", async () => {
+		await insertPublisher(ctx.db, { id: "pub-1", name: "TKNF Books" });
+		await insertPublisher(ctx.db, { id: "pub-2", name: "Another Press" });
+		const resource = new PublisherResource(new PublisherModel(ctx.db));
+		const app = new Hono();
+		app.route("/admin", new AdminPanel({ authorize: () => true, resources: [resource] }));
+
+		const res = await app.request("/admin/resources/publishers");
+		const body = await res.text();
+
+		expect(res.status).toBe(200);
+		expect(body).toContain("2 Publisher");
+		expect(body).toContain('id="changelist-form"');
+		expect(body).toContain('class="action-select"');
+		expect(body).toContain('name="action"');
+	});
+
+	test("list: a read-only resource shows the total row count but no checkbox column or actions bar", async () => {
+		await insertPublisher(ctx.db, { id: "pub-1", name: "TKNF Books" });
+		const resource = new ReadonlyPublisherResource(new PublisherModel(ctx.db));
+		const app = new Hono();
+		app.route("/admin", new AdminPanel({ authorize: () => true, resources: [resource] }));
+
+		const res = await app.request("/admin/resources/ro-publishers");
+		const body = await res.text();
+
+		expect(res.status).toBe(200);
+		expect(body).toContain("1 Publisher (read-only)");
+		expect(body).not.toContain('id="changelist-form"');
+		expect(body).not.toContain('class="action-select"');
+	});
+
+	test("bulk action: POST with action=delete and multiple _selected_action renders the confirmation page", async () => {
+		await insertPublisher(ctx.db, { id: "pub-1", name: "TKNF Books" });
+		await insertPublisher(ctx.db, { id: "pub-2", name: "Another Press" });
+		const resource = new PublisherResource(new PublisherModel(ctx.db));
+		const app = new Hono();
+		app.route("/admin", new AdminPanel({ authorize: () => true, resources: [resource] }));
+
+		const res = await app.request("/admin/resources/publishers", {
+			method: "POST",
+			headers: { "content-type": "application/x-www-form-urlencoded" },
+			body: new URLSearchParams([
+				["action", "delete"],
+				["_selected_action", "pub-1"],
+				["_selected_action", "pub-2"],
+			]).toString(),
+		});
+		const body = await res.text();
+
+		expect(res.status).toBe(200);
+		expect(body).toContain("Are you sure you want to delete the selected Publisher?");
+		expect(body).toContain('name="post"');
+		expect(body).toContain('value="yes"');
+		expect(body).toContain('name="action"');
+		expect(body).toContain('value="delete"');
+		expect(body).toContain('value="pub-1"');
+		expect(body).toContain('value="pub-2"');
+
+		const rows = await ctx.db.select().from(schema.publishers);
+		expect(rows).toHaveLength(2);
+	});
+
+	test("bulk action: confirmed POST (post=yes) deletes every selected row and redirects to the list with 303", async () => {
+		await insertPublisher(ctx.db, { id: "pub-1", name: "TKNF Books" });
+		await insertPublisher(ctx.db, { id: "pub-2", name: "Another Press" });
+		await insertPublisher(ctx.db, { id: "pub-3", name: "Untouched Press" });
+		const resource = new PublisherResource(new PublisherModel(ctx.db));
+		const app = new Hono();
+		app.route("/admin", new AdminPanel({ authorize: () => true, resources: [resource] }));
+
+		const res = await app.request("/admin/resources/publishers", {
+			method: "POST",
+			headers: { "content-type": "application/x-www-form-urlencoded" },
+			body: new URLSearchParams([
+				["action", "delete"],
+				["post", "yes"],
+				["_selected_action", "pub-1"],
+				["_selected_action", "pub-2"],
+			]).toString(),
+		});
+
+		expect(res.status).toBe(303);
+		expect(res.headers.get("location")).toBe("/admin/resources/publishers");
+
+		const rows = await ctx.db.select().from(schema.publishers);
+		expect(rows).toHaveLength(1);
+		expect(rows[0]?.id).toBe("pub-3");
+	});
+
+	test("bulk action: confirmed POST records one resource.bulkDelete audit entry", async () => {
+		await insertPublisher(ctx.db, { id: "pub-1", name: "TKNF Books" });
+		await insertPublisher(ctx.db, { id: "pub-2", name: "Another Press" });
+		const resource = new PublisherResource(new PublisherModel(ctx.db));
+		const auditLog = new SQLiteAuditLog(ctx.db, schema.audits);
+		const app = new Hono();
+		app.route(
+			"/admin",
+			new AdminPanel({ authorize: () => true, resources: [resource], audit: { log: auditLog } }),
+		);
+
+		await app.request("/admin/resources/publishers", {
+			method: "POST",
+			headers: { "content-type": "application/x-www-form-urlencoded" },
+			body: new URLSearchParams([
+				["action", "delete"],
+				["post", "yes"],
+				["_selected_action", "pub-1"],
+				["_selected_action", "pub-2"],
+			]).toString(),
+		});
+
+		const auditRows = await auditLog.list({ action: "resource.bulkDelete" });
+		expect(auditRows).toHaveLength(1);
+	});
+
+	test("bulk action: no action selected redirects to the list without deleting anything", async () => {
+		await insertPublisher(ctx.db, { id: "pub-1", name: "TKNF Books" });
+		const resource = new PublisherResource(new PublisherModel(ctx.db));
+		const app = new Hono();
+		app.route("/admin", new AdminPanel({ authorize: () => true, resources: [resource] }));
+
+		const res = await app.request("/admin/resources/publishers", {
+			method: "POST",
+			headers: { "content-type": "application/x-www-form-urlencoded" },
+			body: new URLSearchParams([
+				["action", ""],
+				["_selected_action", "pub-1"],
+			]).toString(),
+		});
+
+		expect(res.status).toBe(303);
+		expect(res.headers.get("location")).toBe("/admin/resources/publishers");
+		const rows = await ctx.db.select().from(schema.publishers);
+		expect(rows).toHaveLength(1);
+	});
+
+	test("bulk action: action=delete with no rows selected redirects to the list without deleting anything", async () => {
+		await insertPublisher(ctx.db, { id: "pub-1", name: "TKNF Books" });
+		const resource = new PublisherResource(new PublisherModel(ctx.db));
+		const app = new Hono();
+		app.route("/admin", new AdminPanel({ authorize: () => true, resources: [resource] }));
+
+		const res = await app.request("/admin/resources/publishers", {
+			method: "POST",
+			headers: { "content-type": "application/x-www-form-urlencoded" },
+			body: new URLSearchParams([["action", "delete"]]).toString(),
+		});
+
+		expect(res.status).toBe(303);
+		expect(res.headers.get("location")).toBe("/admin/resources/publishers");
+		const rows = await ctx.db.select().from(schema.publishers);
+		expect(rows).toHaveLength(1);
+	});
+
+	test("create: a normal create-form POST (no action field) still creates a row, unaffected by the bulk-action dispatch", async () => {
+		const resource = new PublisherResource(new PublisherModel(ctx.db));
+		const app = new Hono();
+		app.route("/admin", new AdminPanel({ authorize: () => true, resources: [resource] }));
+
+		const res = await app.request("/admin/resources/publishers", {
+			method: "POST",
+			headers: { "content-type": "application/x-www-form-urlencoded" },
+			body: new URLSearchParams({
+				name: "New Publisher",
+				contactEmail: "new@example.com",
+				status: "active",
+			}).toString(),
+		});
+
+		expect(res.status).toBe(303);
+		const rows = await ctx.db.select().from(schema.publishers);
+		expect(rows).toHaveLength(1);
+	});
+});
+
+describe("AdminPanel resource CRUD bulk delete success message", () => {
+	let ctx: Awaited<ReturnType<typeof createTestDb<typeof schema>>>;
+
+	beforeEach(async () => {
+		ctx = await createTestDb({ schema, migrationsFolder });
+	});
+
+	afterEach(() => {
+		ctx.client.close();
+	});
+
+	test("messages: a success banner with the deleted count appears on the next GET, when session is injected", async () => {
+		await insertPublisher(ctx.db, { id: "pub-1", name: "TKNF Books" });
+		await insertPublisher(ctx.db, { id: "pub-2", name: "Another Press" });
+		const resource = new PublisherResource(new PublisherModel(ctx.db));
+		const storage = new InMemorySessionStorage();
+		const sessionAccessor = new SessionAccessor<SessionEnv, "session">("session", storage);
+		const app = new Hono<SessionEnv>();
+		app.use(sessionAccessor.register);
+		app.route(
+			"/admin",
+			new AdminPanel<SessionEnv>({
+				authorize: () => true,
+				resources: [resource],
+				session: sessionAccessor.use,
+			}),
+		);
+
+		const deleteRes = await app.request("/admin/resources/publishers", {
+			method: "POST",
+			headers: { "content-type": "application/x-www-form-urlencoded" },
+			body: new URLSearchParams([
+				["action", "delete"],
+				["post", "yes"],
+				["_selected_action", "pub-1"],
+				["_selected_action", "pub-2"],
+			]).toString(),
+		});
+		expect(deleteRes.status).toBe(303);
+		const cookie = deleteRes.headers.get("set-cookie");
+		if (!cookie) throw new Error("expected Set-Cookie on the bulk-delete response");
+
+		const listRes = await app.request(deleteRes.headers.get("location") ?? "", {
+			headers: { cookie: toCookieHeader(cookie) },
+		});
+		const body = await listRes.text();
+
+		expect(listRes.status).toBe(200);
+		expect(body).toContain('class="messagelist"');
+		expect(body).toContain("2 Publisher were deleted successfully.");
 	});
 });
 
