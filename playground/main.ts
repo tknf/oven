@@ -43,7 +43,7 @@ import { FeatureFlags } from "../src/kv/feature_flags.js";
 import { InMemoryKeyValueStore } from "../src/kv/in_memory_key_value_store.js";
 import { SQLiteModel } from "../src/model/sqlite_model.js";
 import { MaintenanceMode } from "../src/security/maintenance_mode.js";
-import { InMemorySessionStorage } from "../src/session/in_memory_session_storage.js";
+import { CookieSessionStorage } from "../src/session/cookie_session_storage.js";
 import { SessionAccessor } from "../src/session/session_accessor.js";
 import type { Session } from "../src/session/session.js";
 import { createTestDb } from "../src/test/db.js";
@@ -350,9 +350,19 @@ await featureFlags.disable("new-dashboard");
 
 const publisherResource = new PublisherResource(new PublisherModel(ctx.db), new BookModel(ctx.db));
 
+/**
+ * Signed-cookie session storage (data lives in the cookie itself, not in a
+ * server-side map). This is deliberate for the playground: Vite's dev server
+ * re-imports this module on every file change, which would wipe an in-memory
+ * store and log you out each time you tweak a style. A cookie-backed session
+ * survives those reloads (and restarts), so you stay logged in while iterating.
+ * The secret is a fixed dev-only value — this harness is never deployed.
+ */
 const sessionAccessor = new SessionAccessor<PreviewEnv, "session">(
 	"session",
-	new InMemorySessionStorage(),
+	new CookieSessionStorage({
+		secrets: ["oven-playground-dev-only-session-secret-9f3c1a7e5b2d8046"],
+	}),
 );
 
 const app = new Hono<PreviewEnv>();
