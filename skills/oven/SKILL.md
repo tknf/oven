@@ -165,6 +165,13 @@ area, example-first). Consult them for depth.
   rows. Concurrency uses `updateLocked` + a `lockVersion` column (`StaleRecordError`).
 - **CSRF is not automatic on `AdminPanel`** — inject a `Csrf` instance so write
   routes are verified.
+- **`AdminPanel`'s header user-tools block is opt-in** — inject
+  `userTools: (c) => ({ greeting?, links? })` to render a greeting plus links
+  (e.g. "View site" / "Log out") in the header; omit it and nothing renders
+  (authentication is outside admin's scope). A link with `method: "post"`
+  renders as a `<form>` + submit button (needed for logout) and picks up the
+  CSRF hidden input automatically when `csrf` is also injected; other links
+  render as plain `<a>`.
 - **`AdminResource#filters()` is a closed allowlist** — declare each filter's
   `options` explicitly; a query value outside that list is silently ignored
   rather than applied. The sidebar (`#changelist-filter`) only renders once
@@ -173,6 +180,11 @@ area, example-first). Consult them for depth.
   inject `resources`, the dashboard shows a module list of every resource
   (with `Add`/`Change` links) instead of the plain welcome message. Every
   screen but the dashboard also renders a breadcrumb trail below the header.
+- **Navigation is a left sidebar (`#nav-sidebar`), not a header nav bar** —
+  every screen renders a vertical, JS-free link list (dashboard/jobs/
+  settings/audit, then a resources heading and one link per `AdminResource`)
+  so it stays a single scrollable column no matter how many resources you
+  register.
 - **`AdminPanel`'s create/edit forms have three submit buttons** —
   `_save`/`_addanother`/`_continue` (list / new-form / just-saved row's edit
   URL, respectively; a missing or unrecognized button name falls back to

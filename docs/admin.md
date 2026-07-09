@@ -41,9 +41,13 @@ With only `authorize` supplied, the panel renders a dashboard at
 `GET /admin` and nothing else — every other section below is opt-in. The
 dashboard shows a welcome message until you inject `resources`; once you
 do, it becomes a module list of every registered resource (with `Add`/
-`Change` links) instead. Every screen except the dashboard itself also
-renders a breadcrumb trail (e.g. `Home › Publisher › Add`) below the
-header, built from the same `authorize`-gated nav.
+`Change` links) instead. Every screen renders a left-hand sidebar
+(`#nav-sidebar`, a vertical link list built from the same `authorize`-gated
+nav) rather than a horizontal header nav, so it stays a single scrollable
+column regardless of how many resources you register — a header nav would
+grow sideways and eventually overflow. Every screen except the dashboard
+itself also renders a breadcrumb trail (e.g. `Home › Publisher › Add`)
+below the header.
 
 ## Common tasks
 
@@ -252,6 +256,36 @@ new AdminPanel({
   csrf,
 });
 ```
+
+### Adding a user-tools block to the header
+
+Authentication is outside admin's scope, so the header's user-tools block
+(a greeting plus links such as "View site" or "Log out") is entirely
+opt-in: inject `userTools` to build it from `Context`, or omit it to
+render nothing:
+
+```ts
+new AdminPanel({
+  authorize: (c) => accountGuard.use(c).role === "admin",
+  csrf,
+  userTools: (c) => ({
+    greeting: `Welcome, ${accountGuard.use(c).name}.`,
+    links: [
+      { label: "View site", href: "/" },
+      { label: "Change password", href: "/account/password" },
+      { label: "Log out", href: "/logout", method: "post" },
+    ],
+  }),
+});
+```
+
+`greeting` is rendered as-is (admin does not prepend any wording of its
+own), and each link renders as a plain `<a>` unless `method: "post"` is
+set, in which case it renders as a `<form method="post">` with a submit
+button — the shape a logout link needs, since logging out must not be a
+plain `GET`. When `csrf` is also injected, every `method: "post"` link's
+form automatically embeds the CSRF hidden input, same as every other
+form in the panel.
 
 ### Adding job operations, settings, and audit log sections
 

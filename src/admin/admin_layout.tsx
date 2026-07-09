@@ -13,13 +13,21 @@
  */
 import { raw } from "hono/html";
 import type { PropsWithChildren } from "hono/jsx";
-import type { AdminMessage } from "./admin_types.js";
+import { CSRF_FORM_FIELD_NAME } from "../security/csrf.js";
+import type { AdminMessage, AdminUserTools } from "./admin_types.js";
 import { ADMIN_CSS } from "./admin_styles.js";
 
 /** A single navigation item (link target and label). */
 export type AdminNavItem = {
 	href: string;
 	label: string;
+	/**
+	 * Which group of the sidebar the item belongs to: `"section"` for the
+	 * dashboard and built-in screens (jobs/settings/audit), `"resource"` for a
+	 * mounted `AdminResource`. Defaults to `"section"` when omitted, so callers
+	 * that don't care about grouping (e.g. existing tests) still work.
+	 */
+	group?: "section" | "resource";
 };
 
 /**
@@ -36,6 +44,8 @@ export type AdminLayoutProps = PropsWithChildren<{
 	brand: string;
 	/** List of nav links to wired sections (unwired sections are not included). */
 	nav: AdminNavItem[];
+	/** Heading text shown above the sidebar's resource links, when `nav` contains any `group: "resource"` items. */
+	resourcesLabel: string;
 	/** `<html lang>` attribute value; the resolved admin UI language (`c.get("language") ?? "en"`). */
 	lang: string;
 	/** Breadcrumb trail shown below the header. Omitted or empty renders nothing (backward compatible). */
@@ -46,20 +56,56 @@ export type AdminLayoutProps = PropsWithChildren<{
 	 * `AdminPanelOptions.session` is injected.
 	 */
 	messages?: AdminMessage[];
+	/**
+	 * Header user-tools block content (greeting + links, e.g. "View site" /
+	 * "Log out"). Omitted renders nothing; only populated when
+	 * `AdminPanelOptions.userTools` is injected.
+	 */
+	userTools?: AdminUserTools;
+	/**
+	 * CSRF token to embed as a hidden input in any `method: "post"` user-tools
+	 * link's form (e.g. logout). `null`/omitted emits no hidden input, same
+	 * convention as every other form in the panel.
+	 */
+	csrfToken?: string | null;
 }>;
 
-/** Renders the nav link list. An empty array leaves just the `<ul>` (no section wired). */
-const AdminNav = ({ nav }: { nav: AdminNavItem[] }) => (
-	<nav id="nav-header">
-		<ul>
-			{nav.map((item) => (
-				<li>
-					<a href={item.href}>{item.label}</a>
-				</li>
-			))}
-		</ul>
-	</nav>
-);
+/**
+ * Renders the left-hand sidebar nav (Django admin's `#nav-sidebar` equivalent):
+ * a vertical link list, no JS. Items are split into two groups by
+ * `AdminNavItem#group` — `"section"` items (dashboard, jobs, settings, audit)
+ * render first, followed by a `resourcesLabel` heading and the `"resource"`
+ * items (one per mounted `AdminResource`), if any. This keeps the sidebar
+ * scrollable rather than growing a header sideways as resources are added.
+ */
+const AdminNav = ({ nav, resourcesLabel }: { nav: AdminNavItem[]; resourcesLabel: string }) => {
+	const sections = nav.filter((item) => (item.group ?? "section") === "section");
+	const resources = nav.filter((item) => item.group === "resource");
+
+	return (
+		<nav id="nav-sidebar" aria-label="Sections">
+			<ul>
+				{sections.map((item) => (
+					<li>
+						<a href={item.href}>{item.label}</a>
+					</li>
+				))}
+			</ul>
+			{resources.length > 0 ? (
+				<>
+					<h2>{resourcesLabel}</h2>
+					<ul>
+						{resources.map((item) => (
+							<li>
+								<a href={item.href}>{item.label}</a>
+							</li>
+						))}
+					</ul>
+				</>
+			) : null}
+		</nav>
+	);
+};
 
 /** Renders the breadcrumb trail. Renders nothing when `breadcrumbs` is empty or omitted. */
 const AdminBreadcrumbs = ({ breadcrumbs }: { breadcrumbs: AdminBreadcrumb[] }) => {
@@ -71,6 +117,44 @@ const AdminBreadcrumbs = ({ breadcrumbs }: { breadcrumbs: AdminBreadcrumb[] }) =
 				<>
 					{index > 0 ? " › " : null}
 					{crumb.href ? <a href={crumb.href}>{crumb.label}</a> : crumb.label}
+				</>
+			))}
+		</div>
+	);
+};
+
+/**
+ * Renders the header's user-tools block (Django admin's `#user-tools`
+ * equivalent: a greeting plus links such as "View site" / "Log out").
+ * Renders nothing when `userTools` is `undefined` (not injected), so the
+ * block is fully backward compatible.
+ */
+const AdminUserToolsBar = ({
+	userTools,
+	csrfToken,
+}: {
+	userTools: AdminUserTools | undefined;
+	csrfToken: string | null | undefined;
+}) => {
+	if (!userTools) return null;
+
+	const links = userTools.links ?? [];
+	return (
+		<div id="user-tools">
+			{userTools.greeting ? <>{userTools.greeting} </> : null}
+			{links.map((link, index) => (
+				<>
+					{index > 0 ? " / " : null}
+					{link.method === "post" ? (
+						<form method="post" action={link.href}>
+							{csrfToken ? (
+								<input type="hidden" name={CSRF_FORM_FIELD_NAME} value={csrfToken} />
+							) : null}
+							<button type="submit">{link.label}</button>
+						</form>
+					) : (
+						<a href={link.href}>{link.label}</a>
+					)}
 				</>
 			))}
 		</div>
@@ -94,10 +178,13 @@ const AdminMessages = ({ messages }: { messages: AdminMessage[] }) => {
 export const AdminLayout = ({
 	brand,
 	nav,
+	resourcesLabel,
 	children,
 	lang,
 	breadcrumbs,
 	messages,
+	userTools,
+	csrfToken,
 }: AdminLayoutProps) => (
 	<html lang={lang}>
 		<head>
@@ -114,11 +201,16 @@ export const AdminLayout = ({
 				<div id="branding">
 					<h1>{brand}</h1>
 				</div>
-				<AdminNav nav={nav} />
+				<AdminUserToolsBar userTools={userTools} csrfToken={csrfToken} />
 			</header>
 			<AdminBreadcrumbs breadcrumbs={breadcrumbs ?? []} />
-			<AdminMessages messages={messages ?? []} />
-			<main id="content">{children}</main>
+			<div class="main" id="main">
+				<AdminNav nav={nav} resourcesLabel={resourcesLabel} />
+				<main id="content">
+					<AdminMessages messages={messages ?? []} />
+					{children}
+				</main>
+			</div>
 		</body>
 	</html>
 );

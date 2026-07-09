@@ -94,3 +94,29 @@ export type AdminMessage = {
 	level: "success" | "error" | "info";
 	text: string;
 };
+
+/**
+ * One link rendered in the header's user-tools block (e.g. "View site", "Log
+ * out"). `method: "post"` renders as a `<form method="post">` + submit button
+ * (needed for a logout link, which must not be a plain `GET`); omitted or
+ * `"get"` renders as a plain `<a>`.
+ */
+export type AdminUserToolLink = {
+	label: string;
+	href: string;
+	method?: "get" | "post";
+};
+
+/**
+ * The header's user-tools block content (Django admin's `#user-tools`
+ * equivalent). Authentication is out of admin's scope, so the app supplies
+ * this entirely via `AdminPanelOptions.userTools` (same optional-injection
+ * pattern as `csrf`/`audit`/`session`); when not injected, the block renders
+ * nothing.
+ */
+export type AdminUserTools = {
+	/** Full greeting text to show first (e.g. `"Welcome, admin."`). Rendered as-is; admin does not prepend any wording of its own. */
+	greeting?: string;
+	/** Links shown after the greeting (e.g. "View site", "Change password", "Log out"). */
+	links?: AdminUserToolLink[];
+};

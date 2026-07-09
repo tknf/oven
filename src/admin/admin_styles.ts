@@ -16,7 +16,7 @@
  * Rules are a mix of element selectors (so unstyled markup still looks
  * reasonable) and the small set of view-side classes/ids assigned in
  * `admin_layout.tsx` and the `admin_*_view.tsx` files (`#header`,
- * `#branding`, `#nav-header`, `#breadcrumbs`, `.messagelist`, `#content`,
+ * `#branding`, `#user-tools`, `#main`, `#nav-sidebar`, `#breadcrumbs`, `.messagelist`, `#content`,
  * `#toolbar`, `.module`, `.object-tools`, `.addlink`, `.submit-row`,
  * `.default`, `.deletelink`, `.cancel-link`, `.button`, `.change-list`,
  * `#changelist-filter`, `.actions`, `.action-checkbox-column`,
@@ -167,12 +167,16 @@ body {
 	padding: 10px 40px;
 	display: flex;
 	align-items: center;
-	justify-content: space-between;
+	gap: 20px;
 }
 
 #header a {
 	color: var(--header-link-color);
 	text-decoration: none;
+}
+
+#branding {
+	flex: 1;
 }
 
 #branding h1 {
@@ -181,12 +185,84 @@ body {
 	font-weight: 300;
 }
 
-#nav-header ul {
+#user-tools {
+	font-size: 0.6875rem;
+	font-weight: 300;
+	letter-spacing: 0.5px;
+	text-transform: uppercase;
+	text-align: right;
+	color: var(--header-link-color);
+}
+
+#user-tools a {
+	color: var(--header-link-color);
+	text-decoration: none;
+	border-bottom: 1px solid rgba(255, 255, 255, 0.5);
+}
+
+#user-tools a:hover {
+	color: var(--header-link-color);
+}
+
+#user-tools form {
+	display: inline;
+}
+
+#user-tools button {
+	background: none;
+	border: 0;
+	padding: 0;
+	color: var(--header-link-color);
+	text-transform: uppercase;
+	font: inherit;
+	letter-spacing: 0.5px;
+	cursor: pointer;
+	border-bottom: 1px solid rgba(255, 255, 255, 0.5);
+}
+
+.main {
 	display: flex;
-	gap: 16px;
+	align-items: flex-start;
+}
+
+#nav-sidebar {
+	flex: 0 0 240px;
+	background: var(--darkened-bg);
+	border-right: 1px solid var(--hairline-color);
+	padding: 12px 0;
+	align-self: stretch;
+}
+
+#nav-sidebar h2 {
+	font-size: 0.75rem;
+	text-transform: uppercase;
+	letter-spacing: 0.5px;
+	color: var(--body-quiet-color);
+	margin: 12px 16px 6px;
+	font-weight: 600;
+	background: none;
+	padding: 0;
+}
+
+#nav-sidebar ul {
+	list-style: none;
 	margin: 0;
 	padding: 0;
-	list-style: none;
+}
+
+#nav-sidebar li {
+	margin: 0;
+}
+
+#nav-sidebar a {
+	display: block;
+	padding: 6px 16px;
+	color: var(--link-fg);
+	text-decoration: none;
+}
+
+#nav-sidebar a:hover {
+	background: var(--selected-bg);
 }
 
 #breadcrumbs {
@@ -206,6 +282,8 @@ body {
 }
 
 #content {
+	flex: 1;
+	min-width: 0;
 	padding: 20px 40px;
 }
 

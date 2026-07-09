@@ -533,6 +533,20 @@ describe("AdminPanel resource CRUD", () => {
 		expect(body).toContain("/admin/resources/publishers");
 		expect(body).toContain("Publisher");
 	});
+
+	test("navigation: the left sidebar lists the resource under the resources heading", async () => {
+		const resource = new PublisherResource(new PublisherModel(ctx.db));
+		const app = new Hono();
+		app.route("/admin", new AdminPanel({ authorize: () => true, resources: [resource] }));
+
+		const res = await app.request("/admin");
+		const body = await res.text();
+
+		expect(body).toContain('id="nav-sidebar"');
+		const sidebar = body.slice(body.indexOf('id="nav-sidebar"'), body.indexOf("</nav>"));
+		expect(sidebar).toContain('href="/admin/resources/publishers"');
+		expect(sidebar).toContain("Publisher");
+	});
 });
 
 describe("AdminPanel resource CRUD save button variants and success messages", () => {

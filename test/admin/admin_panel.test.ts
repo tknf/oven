@@ -236,7 +236,7 @@ describe("AdminPanel", () => {
 		const body = await res.text();
 
 		expect(body).toContain("<style>");
-		expect(body).toContain("#nav-header ul");
+		expect(body).toContain("#nav-sidebar ul");
 	});
 
 	test("inline styles keep raw double quotes instead of being HTML-escaped", async () => {
@@ -508,6 +508,101 @@ describe("AdminPanel", () => {
 			expect(body).toContain("/admin/jobs");
 			expect(body).not.toContain("/admin/settings");
 			expect(body).not.toContain("/admin/audit");
+		});
+	});
+
+	describe("user tools", () => {
+		test("renders nothing when userTools is not injected (backward compatibility)", async () => {
+			const app = new Hono();
+			app.route("/admin", new AdminPanel({ authorize: () => true }));
+
+			const res = await app.request("/admin");
+			const body = await res.text();
+
+			expect(body).not.toContain('id="user-tools"');
+		});
+
+		test("renders the greeting and links when userTools is injected", async () => {
+			const app = new Hono();
+			app.route(
+				"/admin",
+				new AdminPanel({
+					authorize: () => true,
+					userTools: () => ({
+						greeting: "Welcome, admin.",
+						links: [
+							{ label: "View site", href: "/" },
+							{ label: "Log out", href: "/logout", method: "post" },
+						],
+					}),
+				}),
+			);
+
+			const res = await app.request("/admin");
+			const body = await res.text();
+
+			expect(body).toContain('id="user-tools"');
+			expect(body).toContain("Welcome, admin.");
+			expect(body).toContain('<a href="/">View site</a>');
+			expect(body).toContain('<form method="post" action="/logout">');
+			expect(body).toContain('<button type="submit">Log out</button>');
+		});
+
+		test("a get link renders as a plain anchor, not a form", async () => {
+			const app = new Hono();
+			app.route(
+				"/admin",
+				new AdminPanel({
+					authorize: () => true,
+					userTools: () => ({ links: [{ label: "View site", href: "/" }] }),
+				}),
+			);
+
+			const res = await app.request("/admin");
+			const body = await res.text();
+
+			expect(body).toContain('<a href="/">View site</a>');
+			expect(body).not.toContain("<form");
+		});
+
+		test("embeds a CSRF hidden input in a post link's form when csrf is injected", async () => {
+			const storage = new InMemorySessionStorage();
+			const sessionAccessor = new SessionAccessor<SessionEnv, "session">("session", storage);
+			const csrf = new Csrf<SessionEnv>({ session: sessionAccessor.use });
+
+			const app = new Hono<SessionEnv>();
+			app.use(sessionAccessor.register);
+			app.route(
+				"/admin",
+				new AdminPanel<SessionEnv>({
+					authorize: () => true,
+					csrf,
+					userTools: () => ({ links: [{ label: "Log out", href: "/logout", method: "post" }] }),
+				}),
+			);
+
+			const res = await app.request("/admin");
+			const body = await res.text();
+
+			expect(body).toContain('<form method="post" action="/logout">');
+			expect(() => extractCsrfToken(body)).not.toThrow();
+		});
+
+		test("a post link's form has no hidden input when csrf is not injected", async () => {
+			const app = new Hono();
+			app.route(
+				"/admin",
+				new AdminPanel({
+					authorize: () => true,
+					userTools: () => ({ links: [{ label: "Log out", href: "/logout", method: "post" }] }),
+				}),
+			);
+
+			const res = await app.request("/admin");
+			const body = await res.text();
+
+			expect(body).toContain('<form method="post" action="/logout">');
+			expect(body).not.toContain("csrf_token");
 		});
 	});
 

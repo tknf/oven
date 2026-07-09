@@ -65,6 +65,7 @@ import type {
 	AdminJobsConsole,
 	AdminMaintenanceMode,
 	AdminMessage,
+	AdminUserTools,
 } from "./admin_types.js";
 
 /**
@@ -225,6 +226,15 @@ export type AdminPanelOptions<E extends Env = Env> = {
 	 * compatible).
 	 */
 	session?: (c: Context<E>) => Session;
+	/**
+	 * Header user-tools block (Django admin's `#user-tools`: a greeting plus
+	 * links such as "View site" / "Log out"), injected the same optional way
+	 * as `csrf`/`audit`/`session`. Authentication/session details are the
+	 * app's responsibility, not admin's, so the app builds the greeting text
+	 * and link list itself from `Context`. When not injected, no user-tools
+	 * block is rendered (backward compatible).
+	 */
+	userTools?: (c: Context<E>) => AdminUserTools;
 };
 
 /** `RouteHandler` subclass that serves the unified admin panel, mounted explicitly by the app. */
@@ -302,9 +312,12 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 				<AdminLayout
 					brand={brand}
 					nav={this.buildNav(t)}
+					resourcesLabel={t("index.resources")}
 					lang={c.get("language") ?? "en"}
 					breadcrumbs={[{ label: t("breadcrumb.home") }]}
 					messages={this.consumeMessages(c)}
+					userTools={this.resolveUserTools(c)}
+					csrfToken={this.csrfToken(c)}
 				>
 					{resources.length > 0 ? (
 						<div class="module">
@@ -368,6 +381,11 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 		return this.panelOptions?.csrf?.csrfToken(c) ?? null;
 	}
 
+	/** Resolves the header's user-tools block content via `panelOptions.userTools`. `undefined` when not injected (no block rendered). */
+	private resolveUserTools(c: Context<E>): AdminUserTools | undefined {
+		return this.panelOptions?.userTools?.(c);
+	}
+
 	/**
 	 * Pushes one flash message to be shown on the next GET, if `panelOptions.session`
 	 * is injected. Does nothing if not injected (message banners are opt-in, same
@@ -420,7 +438,11 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 		if (options.settings) nav.push({ href: `${basePath}/settings`, label: t("nav.settings") });
 		if (options.audit) nav.push({ href: `${basePath}/audit`, label: t("nav.audit") });
 		for (const resource of options.resources ?? []) {
-			nav.push({ href: `${basePath}/resources/${resource.key}`, label: resource.label });
+			nav.push({
+				href: `${basePath}/resources/${resource.key}`,
+				label: resource.label,
+				group: "resource",
+			});
 		}
 		return nav;
 	}
@@ -474,6 +496,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 				<AdminLayout
 					brand={this.panelOptions?.brand ?? "Admin"}
 					nav={this.buildNav(t)}
+					resourcesLabel={t("index.resources")}
 					lang={c.get("language") ?? "en"}
 					breadcrumbs={[
 						this.homeBreadcrumb(t),
@@ -481,6 +504,8 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 						{ label: t("action.delete") },
 					]}
 					messages={this.consumeMessages(c)}
+					userTools={this.resolveUserTools(c)}
+					csrfToken={this.csrfToken(c)}
 				>
 					<AdminResourceBulkDeleteView
 						basePath={basePath}
@@ -540,9 +565,12 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 				<AdminLayout
 					brand={options.brand ?? "Admin"}
 					nav={this.buildNav(t)}
+					resourcesLabel={t("index.resources")}
 					lang={c.get("language") ?? "en"}
 					breadcrumbs={[this.homeBreadcrumb(t), { label: t("nav.jobs") }]}
 					messages={this.consumeMessages(c)}
+					userTools={this.resolveUserTools(c)}
+					csrfToken={this.csrfToken(c)}
 				>
 					<AdminJobsView
 						basePath={this.resolveBasePath()}
@@ -598,9 +626,12 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 				<AdminLayout
 					brand={options.brand ?? "Admin"}
 					nav={this.buildNav(t)}
+					resourcesLabel={t("index.resources")}
 					lang={c.get("language") ?? "en"}
 					breadcrumbs={[this.homeBreadcrumb(t), { label: t("nav.settings") }]}
 					messages={this.consumeMessages(c)}
+					userTools={this.resolveUserTools(c)}
+					csrfToken={this.csrfToken(c)}
 				>
 					<AdminSettingsView
 						basePath={this.resolveBasePath()}
@@ -661,9 +692,12 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 				<AdminLayout
 					brand={options.brand ?? "Admin"}
 					nav={this.buildNav(t)}
+					resourcesLabel={t("index.resources")}
 					lang={c.get("language") ?? "en"}
 					breadcrumbs={[this.homeBreadcrumb(t), { label: t("nav.audit") }]}
 					messages={this.consumeMessages(c)}
+					userTools={this.resolveUserTools(c)}
+					csrfToken={this.csrfToken(c)}
 				>
 					<AdminAuditView
 						basePath={this.resolveBasePath()}
@@ -735,9 +769,12 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 					<AdminLayout
 						brand={options.brand ?? "Admin"}
 						nav={this.buildNav(t)}
+						resourcesLabel={t("index.resources")}
 						lang={c.get("language") ?? "en"}
 						breadcrumbs={[this.homeBreadcrumb(t), { label: target.label }]}
 						messages={this.consumeMessages(c)}
+						userTools={this.resolveUserTools(c)}
+						csrfToken={this.csrfToken(c)}
 					>
 						<AdminResourceListView
 							basePath={this.resolveBasePath()}
@@ -776,6 +813,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 						<AdminLayout
 							brand={options.brand ?? "Admin"}
 							nav={this.buildNav(t)}
+							resourcesLabel={t("index.resources")}
 							lang={c.get("language") ?? "en"}
 							breadcrumbs={[
 								this.homeBreadcrumb(t),
@@ -783,6 +821,8 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 								{ label: t("action.add") },
 							]}
 							messages={this.consumeMessages(c)}
+							userTools={this.resolveUserTools(c)}
+							csrfToken={this.csrfToken(c)}
 						>
 							<AdminResourceFormView
 								basePath={this.resolveBasePath()}
@@ -812,6 +852,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 					<AdminLayout
 						brand={options.brand ?? "Admin"}
 						nav={this.buildNav(t)}
+						resourcesLabel={t("index.resources")}
 						lang={c.get("language") ?? "en"}
 						breadcrumbs={[
 							this.homeBreadcrumb(t),
@@ -819,6 +860,8 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 							{ label: t("resource.showTitle", { label: target.label }) },
 						]}
 						messages={this.consumeMessages(c)}
+						userTools={this.resolveUserTools(c)}
+						csrfToken={this.csrfToken(c)}
 					>
 						<AdminResourceShowView
 							basePath={this.resolveBasePath()}
@@ -862,12 +905,15 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 							<AdminLayout
 								brand={options.brand ?? "Admin"}
 								nav={this.buildNav(t)}
+								resourcesLabel={t("index.resources")}
 								lang={c.get("language") ?? "en"}
 								breadcrumbs={[
 									this.homeBreadcrumb(t),
 									{ href: `${this.resolveBasePath()}/resources/${key}`, label: target.label },
 									{ label: t("action.add") },
 								]}
+								userTools={this.resolveUserTools(c)}
+								csrfToken={this.csrfToken(c)}
 							>
 								<AdminResourceFormView
 									basePath={this.resolveBasePath()}
@@ -910,6 +956,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 						<AdminLayout
 							brand={options.brand ?? "Admin"}
 							nav={this.buildNav(t)}
+							resourcesLabel={t("index.resources")}
 							lang={c.get("language") ?? "en"}
 							breadcrumbs={[
 								this.homeBreadcrumb(t),
@@ -917,6 +964,8 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 								{ label: t("action.change") },
 							]}
 							messages={this.consumeMessages(c)}
+							userTools={this.resolveUserTools(c)}
+							csrfToken={this.csrfToken(c)}
 						>
 							<AdminResourceFormView
 								basePath={this.resolveBasePath()}
@@ -953,12 +1002,15 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 							<AdminLayout
 								brand={options.brand ?? "Admin"}
 								nav={this.buildNav(t)}
+								resourcesLabel={t("index.resources")}
 								lang={c.get("language") ?? "en"}
 								breadcrumbs={[
 									this.homeBreadcrumb(t),
 									{ href: `${this.resolveBasePath()}/resources/${key}`, label: target.label },
 									{ label: t("action.change") },
 								]}
+								userTools={this.resolveUserTools(c)}
+								csrfToken={this.csrfToken(c)}
 							>
 								<AdminResourceFormView
 									basePath={this.resolveBasePath()}
@@ -1010,6 +1062,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 						<AdminLayout
 							brand={options.brand ?? "Admin"}
 							nav={this.buildNav(t)}
+							resourcesLabel={t("index.resources")}
 							lang={c.get("language") ?? "en"}
 							breadcrumbs={[
 								this.homeBreadcrumb(t),
@@ -1018,6 +1071,8 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 								{ label: t("action.delete") },
 							]}
 							messages={this.consumeMessages(c)}
+							userTools={this.resolveUserTools(c)}
+							csrfToken={this.csrfToken(c)}
 						>
 							<AdminResourceDeleteView
 								basePath={basePath}
