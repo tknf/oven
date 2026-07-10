@@ -122,7 +122,7 @@ it depends on the `vite` package itself — it has no hard dependency on it).
 | `@tknf/oven/session`    | `Session` (server-side + flash), `SessionAccessor`, `SessionStorage` + Cookie/InMemory/KeyValue/DB adapters (`KeyValueSessionStorage` + a DB-backed `KeyValueStore` is the default for DB-backed sessions; `*DatabaseSessionStorage` is for a dedicated `sessions` table)                                                                                                 |
 | `@tknf/oven/auth`       | `Guard`, `Policy`, `hashPassword`/`verifyPassword`, `ApiToken`, `RememberToken`, `EmailVerification`, `PasswordReset`, `OAuthClient`                                                                                                                                                                                                                                      |
 | `@tknf/oven/security`   | `Csrf`, `SecureHeaders`, `RateLimiter`, `TrustedHost`, `Encrypter`, `UrlSigner`, `MaintenanceMode`                                                                                                                                                                                                                                                                        |
-| `@tknf/oven/storage`    | `Storage` + `S3Storage`/`GoogleCloudStorage`/`InMemoryStorage`, `S3UrlSigner`                                                                                                                                                                                                                                                                                             |
+| `@tknf/oven/storage`    | `Storage` + `S3Storage`/`GoogleCloudStorage`/`InMemoryStorage`, `S3UrlSigner`, `GcsUrlSigner`                                                                                                                                                                                                                                                                             |
 | `@tknf/oven/kv`         | `KeyValueStore` + InMemory/DB/`UpstashRedisStore`, `FeatureFlags`                                                                                                                                                                                                                                                                                                         |
 | `@tknf/oven/cache`      | `Cache` (JSON + `remember`), `CacheControl`                                                                                                                                                                                                                                                                                                                               |
 | `@tknf/oven/jobs`       | `Job`, `JobQueue`, `JobRegistry`, `InlineJobQueue`, DB queue/worker, `{SQLite,Pg,MySql}PruneExpiredRecordsJob`, `Schedule`                                                                                                                                                                                                                                                |
@@ -438,6 +438,20 @@ bodyLimitBytes })`) as the panel's very first middleware, ahead of CSRF
   that since the adapter retries on its own.
 - **Sanitize user-derived `Storage`/`KeyValueStore` keys** (no `..` or path
   separators) at the application boundary.
+- **Every `Storage` adapter's `put` auto-switches to a multi-request upload
+  above 100 MiB, but the protocol and streaming story differ per backend.**
+  `S3Storage` buffers a `ReadableStream` fully first (SigV4 needs the whole
+  body), then multiparts a `Blob`/`ArrayBuffer` above the threshold.
+  `GoogleCloudStorage` switches a `Blob`/`ArrayBuffer` above the threshold to
+  a resumable upload, but a `ReadableStream` always stays on the simple
+  upload regardless of size. `R2Storage` (`@tknf/oven/cloudflare`)
+  multiparts all three body types above the threshold, including a
+  `ReadableStream` (chunked on the fly, no full buffering).
+- **`GcsUrlSigner` signs with a service account's RSA key, not a shared
+  secret.** `clientEmail`/`privateKeyPem` come from a service account JSON
+  key's `client_email`/`private_key` fields — treat `privateKeyPem` like any
+  other credential (Worker secret, not checked-in config); it can sign a
+  download URL for anything in the bucket.
 - **Job delivery is at-least-once** — make `Job#perform` idempotent.
   `InlineJobQueue` is for dev/tests only.
 - **DB-backed `KeyValueStore`/`SessionStorage` tables never GC themselves** —

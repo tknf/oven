@@ -15,9 +15,11 @@ core stays deployable to any runtime.
   API — AWS S3, R2, MinIO), `GoogleCloudStorage` (GCS JSON API), and
   `R2Storage` (Cloudflare binding, under `@tknf/oven/cloudflare`). Issuing a
   time-limited download URL is a separate capability, `Presigner`
-  (`presignGet`), implemented by `S3UrlSigner` — separate because not every
-  `Storage` backend can presign with the credentials it already has (an
-  `R2Bucket` binding, for instance, cannot presign on its own).
+  (`presignGet`), implemented by `S3UrlSigner` (S3-compatible APIs, HMAC-SHA256
+  via aws4fetch) and `GcsUrlSigner` (GCS, RSA-signed V4 URLs via a service
+  account key) — separate because not every `Storage` backend can presign with
+  the credentials it already has (an `R2Bucket` binding, for instance, cannot
+  presign on its own).
 - **`KeyValueStore`** (`get`/`set` with an optional TTL/`delete`) stores a
   single string value under a string key. Adapters: `InMemoryKeyValueStore`
   (dev/test), `UpstashRedisStore`, `{Pg,SQLite,MySql}DatabaseKeyValueStore`
@@ -122,6 +124,47 @@ const signer = new S3UrlSigner({
 const url = await signer.presignGet("reports/2026-07.pdf", 300); // expires in 5 minutes
 ```
 
+For GCS, `GcsUrlSigner` issues V4 (`GOOG4-RSA-SHA256`) signed URLs, signed
+with a service account's RSA private key via Web Crypto (no third-party JWT
+library). `clientEmail`/`privateKeyPem` are the `client_email`/`private_key`
+fields of a downloaded service account JSON key:
+
+```ts
+import { GcsUrlSigner } from "@tknf/oven/storage";
+
+const signer = new GcsUrlSigner({
+  bucket: "uploads",
+  clientEmail: env.GCS_CLIENT_EMAIL, // service account JSON key's "client_email"
+  privateKeyPem: env.GCS_PRIVATE_KEY, // service account JSON key's "private_key"
+});
+
+const url = await signer.presignGet("reports/2026-07.pdf", 300); // expires in 5 minutes (1..604800s)
+```
+
+**Uploading large objects** — every `Storage` adapter switches to a
+multi-request upload API once a `put` body crosses 100 MiB, but the protocol
+and the streaming story differ per backend, so pick the adapter with your
+upload shape in mind:
+
+- **`S3Storage`** buffers a `ReadableStream` fully into memory first (SigV4
+  signing needs the whole body up front — see the class doc), then, once the
+  buffered size is known, switches a `Blob`/`ArrayBuffer` above 100 MiB to
+  S3's Multipart Upload API (`CreateMultipartUpload`/`UploadPart`/
+  `CompleteMultipartUpload`, aborting via `AbortMultipartUpload` on failure).
+- **`GoogleCloudStorage`** switches a `Blob`/`ArrayBuffer` above 100 MiB to
+  GCS's resumable upload protocol (initiate, then PUT fixed-size chunks to
+  the returned session URI). A `ReadableStream` always stays on the simple
+  `uploadType=media` upload, passed through to `fetch` unbuffered, regardless
+  of size — this is the one adapter where a stream never triggers the
+  large-object path.
+- **`R2Storage`** (under `@tknf/oven/cloudflare`) switches to R2's Multipart
+  Upload API above 100 MiB for all three body types, including a
+  `ReadableStream` (chunked on the fly via a lookahead reader, so it need not
+  be buffered first the way `S3Storage`'s does).
+
+None of this changes the call site — `storage.put(key, data, contentType)`
+looks the same either way.
+
 **Reading and writing a KV entry with a TTL:**
 
 ```ts
@@ -177,11 +220,11 @@ const report = await cache.remember(
 
 - **Sanitize user-supplied `Storage`/`KeyValueStore` keys yourself.**
   Neither abstraction rejects `..` or path separators in a key by default.
-  `S3Storage`/`S3UrlSigner` do reject `..` path segments internally (to
-  stop bucket-prefix traversal through their signing/URL logic), but that
-  is a backend-specific safety net, not a substitute for validating input
-  at the application boundary — apply the same discipline to
-  `KeyValueStore` keys, which have no such built-in check at all.
+  `S3Storage`/`S3UrlSigner`/`GcsUrlSigner` do reject `..` path segments
+  internally (to stop bucket-prefix traversal through their signing/URL
+  logic), but that is a backend-specific safety net, not a substitute for
+  validating input at the application boundary — apply the same discipline
+  to `KeyValueStore` keys, which have no such built-in check at all.
 - **`Cache` values must be JSON-serializable, and `null`/`undefined` can't
   be cached.** `put` throws if `JSON.stringify` would produce `undefined`.
   `remember`'s `compute` returning `null`/`undefined` is not stored — the
@@ -209,6 +252,8 @@ const report = await cache.remember(
   your platform's secret store (e.g. Worker secrets), not from checked-in
   config. `GoogleCloudStorage` does no key management or JWT signing
   itself; obtaining and refreshing the token is your application's job.
+  `GcsUrlSigner`'s `privateKeyPem` is equally sensitive (it can sign a
+  download URL for anything in the bucket) — same rule applies.
 
 ## See also
 
