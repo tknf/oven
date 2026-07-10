@@ -166,6 +166,45 @@ The same `ScheduledDispatcher` entry can drive a database-backed job worker's
 `runOnce()` instead of (or alongside) a `Schedule` — see
 [Jobs § Running a DB-backed queue](./jobs.md#common-tasks).
 
+### Email Sending
+
+A Worker sends mail through a `send_email` binding, configured in
+`wrangler.jsonc`:
+
+```jsonc
+{
+  "send_email": [{ "name": "SEND_EMAIL" }],
+}
+```
+
+`CloudflareEmailMailer` wraps that binding as a `Mailer`, so the rest of the
+app (`MailTemplate`, `DeliverMailJob`) talks to the same abstraction used on
+any other platform — see [Mailer](./mailer.md) for those layers:
+
+```ts
+// src/lib/mailer.ts
+import { CloudflareEmailMailer } from "@tknf/oven/cloudflare";
+
+export const makeMailer = (binding: SendEmail) => new CloudflareEmailMailer(binding);
+```
+
+```ts
+// src/worker.ts
+import app from "./main.js";
+import { makeMailer } from "./lib/mailer.js";
+
+export default {
+  fetch: app.fetch,
+  // wire makeMailer(env.SEND_EMAIL) into a request-scoped ContextAccessor,
+  // the same way as the KV/R2/Queue adapters above.
+} satisfies ExportedHandler<CloudflareBindings>;
+```
+
+`CloudflareEmailMailer` calls the binding's `EmailMessageBuilder` overload of
+`SendEmail.send()` (plain `to`/`from`/`subject`/`text`/`html`/`attachments`
+fields), so it never constructs raw MIME itself — the binding composes the
+outgoing message.
+
 ### Wiring a Node deployment
 
 A Node deployment is a long-running process, typically behind a load balancer
@@ -321,3 +360,5 @@ responsibility, not oven's.
   picture.
 - [Realtime](./realtime.md) — `Broadcaster` and its transports, another
   backend-agnostic abstraction with its own adapter set.
+- [Mailer](./mailer.md) — the `Mailer` abstraction `CloudflareEmailMailer`
+  implements, plus `MailTemplate`/`DeliverMailJob` layered on top of it.
