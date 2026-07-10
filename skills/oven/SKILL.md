@@ -109,21 +109,23 @@ per request (per-request state, e.g. bindings); `scope: "app"` memoizes once
 ## Where things live (subpath cheat-sheet)
 
 Import from the specific subpath. The root `@tknf/oven` re-exports everything
-except `cloudflare`, `node`, and `test`.
+except `cloudflare`, `node`, `test`, and `vite` (the last is opt-in because
+it's specific to apps that bundle client-side assets with Vite, not because
+it depends on the `vite` package itself — it has no hard dependency on it).
 
 | Subpath                 | Key exports                                                                                                                                                                                                                                                                                                                               |
 | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `@tknf/oven/routing`    | `RouteHandler`, `ContextAccessor`, `ValueAccessor`, `ScopedValueAccessor`, `NamedRoutes`, `ErrorPages`, `healthCheck`                                                                                                                                                                                                                     |
 | `@tknf/oven/view`       | `View` (Accept-negotiated multi-format), `renderSnippet`/`renderSnippetStream` (htmx/Turbo), `ViewHelpers`, `cacheFragment`, `LayoutComponent`/`LayoutProps`                                                                                                                                                                              |
 | `@tknf/oven/model`      | `SQLiteModel`/`PgModel`/`MySqlModel` (thin Drizzle base), `StaleRecordError`                                                                                                                                                                                                                                                              |
-| `@tknf/oven/form`       | `Form` (Standard Schema), `FormView`, `validateUploadedFile`, `localizeUploadedFileError`                                                                                                                                                                                                                                                 |
-| `@tknf/oven/session`    | `Session` (server-side + flash), `SessionAccessor`, `SessionStorage` + Cookie/InMemory/KeyValue/DB adapters                                                                                                                                                                                                                               |
+| `@tknf/oven/form`       | `Form` (Standard Schema), `FormView`, `validateUploadedFile`/`validateUploadedFiles`, `localizeUploadedFileError`                                                                                                                                                                                                                         |
+| `@tknf/oven/session`    | `Session` (server-side + flash), `SessionAccessor`, `SessionStorage` + Cookie/InMemory/KeyValue/DB adapters (`KeyValueSessionStorage` + a DB-backed `KeyValueStore` is the default for DB-backed sessions; `*DatabaseSessionStorage` is for a dedicated `sessions` table)                                                                 |
 | `@tknf/oven/auth`       | `Guard`, `Policy`, `hashPassword`/`verifyPassword`, `ApiToken`, `RememberToken`, `EmailVerification`, `PasswordReset`, `OAuthClient`                                                                                                                                                                                                      |
 | `@tknf/oven/security`   | `Csrf`, `SecureHeaders`, `RateLimiter`, `TrustedHost`, `Encrypter`, `UrlSigner`, `MaintenanceMode`                                                                                                                                                                                                                                        |
 | `@tknf/oven/storage`    | `Storage` + `S3Storage`/`GoogleCloudStorage`/`InMemoryStorage`, `S3UrlSigner`                                                                                                                                                                                                                                                             |
 | `@tknf/oven/kv`         | `KeyValueStore` + InMemory/DB/`UpstashRedisStore`, `FeatureFlags`                                                                                                                                                                                                                                                                         |
 | `@tknf/oven/cache`      | `Cache` (JSON + `remember`), `CacheControl`                                                                                                                                                                                                                                                                                               |
-| `@tknf/oven/jobs`       | `Job`, `JobQueue`, `JobRegistry`, `InlineJobQueue`, DB queue/worker, `Schedule`                                                                                                                                                                                                                                                           |
+| `@tknf/oven/jobs`       | `Job`, `JobQueue`, `JobRegistry`, `InlineJobQueue`, DB queue/worker, `{SQLite,Pg,MySql}PruneExpiredRecordsJob`, `Schedule`                                                                                                                                                                                                                |
 | `@tknf/oven/realtime`   | `Broadcaster`, `broadcastSse`, `BroadcastWebSocket`, `ChannelAuthorizer`                                                                                                                                                                                                                                                                  |
 | `@tknf/oven/mailer`     | `Mailer`, `ConsoleMailer`, `FetchMailer`, `MailTemplate`, `DeliverMailJob`, `MailPreviewHandler`                                                                                                                                                                                                                                          |
 | `@tknf/oven/i18n`       | `Translator` (wraps Hono `languageDetector`)                                                                                                                                                                                                                                                                                              |
@@ -134,11 +136,11 @@ except `cloudflare`, `node`, and `test`.
 | `@tknf/oven/datasource` | `Datasource` (low-level `fetch` base), `RestDatasource` (retrieve/list/create/update/delete), `DatasourceError`, `DatasourceParseError`, `DatasourceValidationError`                                                                                                                                                                      |
 | `@tknf/oven/logging`    | `Logger`, `ConsoleLogger`, `NullLogger`                                                                                                                                                                                                                                                                                                   |
 | `@tknf/oven/helpers`    | CSV, `formatCurrency`/`formatDateTime`, `domId`                                                                                                                                                                                                                                                                                           |
-| `@tknf/oven/support`    | `IdGenerator` variants, `CookieAccessor`/`SignedCookieAccessor`, base64url, `validateEnv`, `constantTimeEqual`                                                                                                                                                                                                                            |
+| `@tknf/oven/support`    | `IdGenerator` variants, `CookieAccessor` (`SignedCookieAccessor` is deprecated), base64url, `validateEnv`, `constantTimeEqual`                                                                                                                                                                                                            |
 | `@tknf/oven/vite`       | `ViteAssets`, `parseViteManifest`                                                                                                                                                                                                                                                                                                         |
 | `@tknf/oven/cloudflare` | `CloudflareKVStore`, `R2Storage`, `CloudflareCacheStore`, `CloudflareJobQueue`, `QueueConsumer`, `ScheduledDispatcher`, `CloudflareEmailMailer`, `DurableObjectBroadcaster`, `BroadcasterDurableObject`                                                                                                                                   |
 | `@tknf/oven/node`       | `FileKeyValueStore`, `FileStorage`                                                                                                                                                                                                                                                                                                        |
-| `@tknf/oven/test`       | `createTestDb`, `defineFactory`, `actingAs`, `TestJobQueue`, `TestMailer`, `stubBinding`                                                                                                                                                                                                                                                  |
+| `@tknf/oven/test`       | `createTestDb`, `defineFactory`, `actingAs`, `TestJobQueue`, `TestMailer`, `TestBroadcaster`, `stubBinding`                                                                                                                                                                                                                               |
 
 The full narrative guides live in the package repo under `docs/` (one guide per
 area, example-first). Consult them for depth.
@@ -186,6 +188,22 @@ area, example-first). Consult them for depth.
   method that can leak); see the "Tenant-scoped models" recipe in
   `docs/models.md` for the full pattern, including `with(tx)` and the
   INSERT-side pitfall.
+- **`Csrf#verify` and `validateUploadedFile` both act only after the body is
+  already fully buffered** — `Csrf#verify` calls `c.req.parseBody()` to read
+  the submitted token (including on a multipart request), and
+  `validateUploadedFile`'s `maxSizeBytes` (`@tknf/oven/form`) only rejects an
+  already-buffered `File`. Neither one bounds how large a request the server
+  will actually receive into memory; apply Hono's own `bodyLimit`
+  (`hono/body-limit`) upstream of both if that matters.
+- **`widget: "file"` has no `value`** — browsers refuse to pre-populate
+  `input[type=file]`'s selection, so `Form#toInput` never sets a key for it
+  either; render a previously uploaded file separately if you need to show it.
+  The older `widget: "input"` + `type: "file"` spelling still works.
+- **`validateUploadedFiles` (`@tknf/oven/form`) shares one
+  `UploadedFileConstraints` across every file in a `multiple: true` field** —
+  there's no per-file override. Convert a failure with
+  `toUploadedFileFormErrors(result, field)` into `FormError[]`;
+  `localizeUploadedFileError` accepts each batch entry directly.
 - **CSRF is not automatic on `AdminPanel`** — inject a `Csrf` instance so write
   routes are verified.
 - **`AdminPanel`'s header user-tools block is opt-in** — inject
@@ -209,6 +227,37 @@ username, password }) => Promise<AdminIdentity | null>` (verify however
   on every logged-in request; `auth` only answers "who is this", not "are
   they allowed in here". Omit `auth` and nothing changes (no login routes,
   no redirect gate — `authorize` alone gates access, as before).
+- **`AdminPanel`'s built-in `/login` is not rate-limited unless you inject
+  `rateLimiter`** — a `RateLimiter` (`@tknf/oven/security`), applied to
+  `POST /login` before `auth.authenticate` runs (5 attempts per submitted
+  username per 5 minutes, key `` `admin-login:${username}` ``); a rejected
+  attempt re-renders the login screen with a generic message and `429`
+  without calling `authenticate` at all, and a successful login resets the
+  counter. Only meaningful when login is wired (`auth`/`accounts`); when it
+  is and `rateLimiter` is omitted, a one-time `console.warn` fires at
+  construction (`/login` still serves every submission — no fail-closed
+  default).
+- **`AdminPanel` has no request body size limit unless you inject
+  `bodyLimitBytes`** — wires `hono/body-limit` (`bodyLimit({ maxSize:
+bodyLimitBytes })`) as the panel's very first middleware, ahead of CSRF
+  verification and any of the panel's own `parseBody` calls, so an oversized
+  request (e.g. against an `AdminResource` form with a `File` field) is
+  rejected before it's buffered rather than after. Omitting it keeps the
+  previous unlimited-body behavior and, unlike `csrf`/`rateLimiter`, emits no
+  one-time warning (not every panel accepts uploads).
+- **`AdminPanel` sends a strict `Content-Security-Policy` header on every
+  response by default — no wiring needed.** The default is
+  `default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`
+  (the panel's screens are script-free SSR HTML with only an inlined
+  `<style>`). Pass `contentSecurityPolicy: "<policy>"` to replace it, or
+  `contentSecurityPolicy: false` to omit the header (e.g. if you've
+  customized the layout with a script or an external image). `SecureHeaders`
+  (`@tknf/oven/security`) sets no CSP of its own — this is unrelated to it.
+- **`FetchMailer` ships no vendor implementation on purpose.** Subclass it and
+  implement `buildRequest` (`MailMessage` → `Request`) for your provider; `send`,
+  timeout, and header-injection validation are inherited. See `docs/mailer.md`'s
+  complete `ResendMailer` example for a copy-paste starting point (field
+  mapping, Base64 attachment encoding, `ScopedValueAccessor` API-key wiring).
 - **`@tknf/oven/admin` also ships operator accounts to back `auth`** —
   `SQLiteAdminAccounts`/`PgAdminAccounts`/`MySqlAdminAccounts` over a shipped
   users table (`sqliteAdminUsersTable()` etc., or spread
@@ -240,7 +289,16 @@ username, password }) => Promise<AdminIdentity | null>` (verify however
   the gate); requires both `session` and `csrf` (constructor throws
   otherwise); re-validates the operator row against the DB on **every
   request**, so `isActive: false` or a deleted row revokes access
-  immediately; and lets superusers bypass every permission check. When
+  immediately; and lets superusers bypass every permission check. A
+  password change ends every outstanding session too: at login the panel
+  stores a short `passwordStamp` fingerprint of `passwordHash` alongside
+  the identity, re-derives it from the current row on every later request,
+  and signs the session out on a mismatch — `setPassword`'s fresh PBKDF2
+  salt guarantees a mismatch after any change. A session with no stamp at
+  all (issued before this existed) is rejected the same way, so upgrading
+  asks every logged-in operator to log back in once. This applies only to
+  the `accounts` option — a hand-rolled `authorize`/`auth` gets neither
+  behavior (see `docs/admin-accounts.md`'s Gotchas section). When
   omitted, `audit.actor` defaults to the logged-in identity's label
   (falling back to its id), falling back further to the literal `"admin"`
   when there's no login wiring or no logged-in identity.
@@ -353,10 +411,21 @@ username, password }) => Promise<AdminIdentity | null>` (verify however
 - **`BroadcastWebSocket` needs an Origin check + connection authorization** in
   the `authorize` hook / `channels` callback (prevents Cross-Site WebSocket
   Hijacking).
+- **`DurableObjectBroadcaster` reconnects automatically with exponential
+  backoff** (`reconnectInitialDelayMs`/`reconnectMaxDelayMs`, `reconnect: false`
+  to opt out) — still at-most-once: a `publish` while the socket is down (or
+  reconnecting) is never redelivered. `onDisconnect`/`onReconnect` are
+  observability-only hooks (logging/metrics); there's nothing to act on beyond
+  that since the adapter retries on its own.
 - **Sanitize user-derived `Storage`/`KeyValueStore` keys** (no `..` or path
   separators) at the application boundary.
 - **Job delivery is at-least-once** — make `Job#perform` idempotent.
   `InlineJobQueue` is for dev/tests only.
+- **DB-backed `KeyValueStore`/`SessionStorage` tables never GC themselves** —
+  expiry is checked lazily on `get` only. Sweep them with
+  `{SQLite,Pg,MySql}PruneExpiredRecordsJob`, invoked directly
+  (`job.perform()`) from a `Schedule` entry / `ScheduledDispatcher` (see
+  `docs/jobs.md`'s "Pruning expired rows" task).
 - **`Datasource`/`RestDatasource` treat every response body as untrusted** —
   always pass a `schema`; a failed validation throws
   `DatasourceValidationError` (distinct from `DatasourceError`, which covers
@@ -380,6 +449,7 @@ envelopeSchema })` directly; `toArray` only fits a list that's a bare array
 
 `@tknf/oven/test` provides `createTestDb({ schema, migrationsFolder })` (throwaway
 libSQL DB), `defineFactory(persist, defaults)`, `actingAs(storage, { identityKey,
-identity })` (auth cookie), and `TestJobQueue`/`TestMailer` (record instead of
-performing) — the fakes still run real validation. Drive the app via
-`app.request(...)`.
+identity })` (auth cookie), and `TestJobQueue`/`TestMailer`/`TestBroadcaster`
+(record instead of performing) — the fakes still run real validation, and
+`TestBroadcaster` also delivers to its own `subscribe`d listeners like
+`InMemoryBroadcaster`. Drive the app via `app.request(...)`.
