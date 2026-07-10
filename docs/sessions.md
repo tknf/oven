@@ -64,7 +64,7 @@ production, pick one of the backends below.
 | Class | Where data lives | Notes |
 | --- | --- | --- |
 | `CookieSessionStorage` | The cookie itself (HMAC-SHA256 signed) | No server-side storage, but data is only Base64URL-encoded, not encrypted — never put secrets in it (see Gotchas). Limited by the browser's ~4KB cookie size. |
-| `KeyValueSessionStorage` | A `KeyValueStore` (`@tknf/oven/kv`) | Only a session id is kept in the cookie. Supports TTL and best-effort sliding-TTL refresh. |
+| `KeyValueSessionStorage` | A `KeyValueStore` (`@tknf/oven/kv`) | Only a session id is kept in the cookie. Supports TTL and best-effort sliding-TTL refresh. Store keys are prefixed with `keyPrefix` (default `"oven_session:"`) — override it to namespace multiple session purposes on the same store, or to match an existing key scheme when migrating from another system. |
 | `PgDatabaseSessionStorage` / `SQLiteDatabaseSessionStorage` / `MySqlDatabaseSessionStorage` | A Drizzle-backed table | Use when you already have a SQL database and want sessions queryable/auditable there. |
 | `InMemorySessionStorage` | An in-process `Map` | Development/tests only — no TTL, no persistence across restarts. |
 

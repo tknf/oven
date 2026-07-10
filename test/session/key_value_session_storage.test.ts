@@ -65,6 +65,38 @@ describe("KeyValueSessionStorage", () => {
 		expect(setSpy).toHaveBeenCalledWith(expect.any(String), expect.any(String), 30);
 	});
 
+	test("commit stores the record under the default oven_session: key prefix", async () => {
+		const store = new InMemoryKeyValueStore();
+		const storage = new KeyValueSessionStorage(store);
+		const session = new Session("");
+		session.set("userId", "u_1");
+
+		const setCookie = await storage.commit(session);
+		const id = toCookieHeader(setCookie).split("=")[1];
+
+		expect(await store.get(`oven_session:${id}`)).not.toBeNull();
+	});
+
+	test("a custom keyPrefix is used for commit, get, and destroy", async () => {
+		const store = new InMemoryKeyValueStore();
+		const storage = new KeyValueSessionStorage(store, { keyPrefix: "admin_session:" });
+		const session = new Session("");
+		session.set("userId", "u_1");
+
+		const setCookie = await storage.commit(session);
+		const cookieHeader = toCookieHeader(setCookie);
+		const id = cookieHeader.split("=")[1];
+
+		expect(await store.get(`admin_session:${id}`)).not.toBeNull();
+		expect(await store.get(`oven_session:${id}`)).toBeNull();
+
+		const restored = await storage.get(cookieHeader);
+		expect(restored.get("userId")).toBe("u_1");
+
+		await storage.destroy(restored);
+		expect(await store.get(`admin_session:${id}`)).toBeNull();
+	});
+
 	test("a re-get within the threshold does not put to extend the TTL", async () => {
 		const store = new InMemoryKeyValueStore();
 		const storage = new KeyValueSessionStorage(store, { refreshThresholdMs: 1000 * 60 * 60 });
