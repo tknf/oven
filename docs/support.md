@@ -62,6 +62,12 @@ const value = await rememberToken.get(c); // string | undefined | false (false =
 Use the plain `CookieAccessor` instead when the value doesn't need
 integrity protection (e.g. a UI preference).
 
+> **`SignedCookieAccessor`/`SignedCookieDefinition` are deprecated** and
+> scheduled for removal in the next major. Prefer `CookieAccessor` combined
+> with explicit signing (the pattern used internally by `UrlSigner` and
+> `CookieSessionStorage`), or call Hono's `getSignedCookie`/`setSignedCookie`
+> (`hono/cookie`) directly.
+
 **Validating `c.env` once at startup, then distributing a typed config**
 (via `ScopedValueAccessor` from `@tknf/oven/routing`, with `scope: "app"`
 so the validated `Promise` is memoized and every request after the first

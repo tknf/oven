@@ -18,6 +18,7 @@
  */
 import { decodeBase64Url, encodeBase64Url } from "../support/base64url.js";
 import { constantTimeEqual } from "../support/constant_time.js";
+import { HMAC_ALGORITHM, importHmacKey } from "../support/hmac.js";
 import { warnWeakSecrets } from "../support/secret_strength_warning.js";
 
 export type DataTokenOptions = {
@@ -43,14 +44,6 @@ type DataTokenPayload = {
 	purpose: string;
 	expiresAt: number;
 };
-
-const HMAC_ALGORITHM = { name: "HMAC", hash: "SHA-256" } as const;
-
-const importHmacKey = (secret: string): Promise<CryptoKey> =>
-	crypto.subtle.importKey("raw", new TextEncoder().encode(secret), HMAC_ALGORITHM, false, [
-		"sign",
-		"verify",
-	]);
 
 /** Builds the canonical string to be signed from `payloadB64` and `fingerprint`. */
 const canonicalTarget = (payloadB64: string, fingerprint: string): string =>
@@ -88,14 +81,6 @@ export class DataToken {
 	private readonly purpose: string;
 	private readonly expiresInSeconds: number;
 
-	/**
-	 * In-instance memoization of the `importHmacKey` result. Since the
-	 * constructor cannot `await` asynchronous work, key import is deferred to
-	 * first access and its `Promise` itself is cached (the same pattern used by
-	 * `UrlSigner`'s `keyCache`).
-	 */
-	private readonly keyCache = new Map<string, Promise<CryptoKey>>();
-
 	constructor(options: DataTokenOptions) {
 		if (options.secrets.length === 0) {
 			throw new Error("DataToken requires at least one secret in `secrets`");
@@ -113,19 +98,9 @@ export class DataToken {
 		this.expiresInSeconds = options.expiresInSeconds;
 	}
 
-	/** Returns the `CryptoKey` corresponding to `secret`, memoized. */
-	private importKeyCached(secret: string): Promise<CryptoKey> {
-		const cached = this.keyCache.get(secret);
-		if (cached) return cached;
-
-		const promise = importHmacKey(secret);
-		this.keyCache.set(secret, promise);
-		return promise;
-	}
-
 	/** Returns the HMAC signature bytes for `canonical`, signed with `secret`. */
 	private async computeSignature(canonical: string, secret: string): Promise<Uint8Array> {
-		const key = await this.importKeyCached(secret);
+		const key = await importHmacKey(secret);
 		const signature = await crypto.subtle.sign(
 			HMAC_ALGORITHM.name,
 			key,

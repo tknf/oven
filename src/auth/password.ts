@@ -14,6 +14,7 @@
  * Storage format: `pbkdf2$<iterations>$<salt(base64)>$<hash(base64)>`
  */
 import { decodeBase64, encodeBase64 } from "hono/utils/encode";
+import { constantTimeEqual } from "../support/constant_time.js";
 
 const ITERATIONS = 100_000;
 const SALT_BYTES = 16;
@@ -62,16 +63,6 @@ export const hashPassword = async (
 	return `pbkdf2$${iterations}$${encodeBase64(salt.buffer)}$${encodeBase64(hash.buffer)}`;
 };
 
-/** Constant-time comparison (a hand-rolled XOR-accumulation loop). Does not short-circuit on length mismatch, scanning the whole input to reduce timing differences. */
-const timingSafeEqual = (a: Uint8Array, b: Uint8Array): boolean => {
-	const length = Math.max(a.length, b.length);
-	let diff = a.length === b.length ? 0 : 1;
-	for (let i = 0; i < length; i++) {
-		diff |= (a[i] ?? 0) ^ (b[i] ?? 0);
-	}
-	return diff === 0;
-};
-
 /**
  * Verifies a match against a stored hash. Malformed input (wrong number of
  * segments, non-numeric iteration count, invalid base64, etc.) returns false
@@ -96,7 +87,7 @@ export const verifyPassword = async (password: string, stored: string): Promise<
 		const salt = decodeBase64(saltB64);
 		const expected = decodeBase64(hashB64);
 		const actual = await deriveBits(password, salt, iterations);
-		return timingSafeEqual(actual, expected);
+		return constantTimeEqual(actual, expected);
 	} catch {
 		return false;
 	}

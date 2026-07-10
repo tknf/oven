@@ -27,11 +27,17 @@
  */
 import type { Context, Env } from "hono";
 import type { CookieOptions } from "hono/utils/cookie";
-import { decodeBase64Url, encodeBase64Url } from "../support/base64url.js";
+import { decodeBase64Url } from "../support/base64url.js";
 import { constantTimeEqual } from "../support/constant_time.js";
 import { CookieAccessor } from "../support/cookie.js";
 import { warnInsecureCookieInProduction } from "../support/cookie_security_warning.js";
 import type { KeyValueStore } from "../kv/key_value_store.js";
+import {
+	hashValidator,
+	randomToken,
+	SELECTOR_BYTE_LENGTH,
+	VALIDATOR_BYTE_LENGTH,
+} from "./selector_validator.js";
 
 export type RememberTokenOptions = {
 	/** The `KeyValueStore` that stores the token hash. */
@@ -63,21 +69,9 @@ type StoredToken = {
 	expiresAt: number;
 };
 
-const SELECTOR_BYTE_LENGTH = 16;
-const VALIDATOR_BYTE_LENGTH = 32;
 const DEFAULT_TTL_SECONDS = 30 * 24 * 60 * 60;
 const DEFAULT_COOKIE_NAME = "remember_token";
 const DEFAULT_PREFIX = "remember:";
-
-/** Returns a random value of `byteLength` bytes as a base64url string. */
-const randomToken = (byteLength: number): string =>
-	encodeBase64Url(crypto.getRandomValues(new Uint8Array(byteLength)));
-
-/** Returns the SHA-256 hash of `validator` as a base64url string. */
-const hashValidator = async (validator: string): Promise<string> => {
-	const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(validator));
-	return encodeBase64Url(new Uint8Array(digest));
-};
 
 /** Validates the raw value read back from the store as a `StoredToken` and returns it. Returns `null` if malformed. */
 const parseStoredToken = (raw: string | null): StoredToken | null => {

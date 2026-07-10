@@ -18,6 +18,7 @@
  */
 import { decodeBase64Url, encodeBase64Url } from "../support/base64url.js";
 import { constantTimeEqual } from "../support/constant_time.js";
+import { HMAC_ALGORITHM, importHmacKey } from "../support/hmac.js";
 import { warnWeakSecrets } from "../support/secret_strength_warning.js";
 
 export type UrlSignerOptions = {
@@ -35,28 +36,14 @@ export type UrlSignOptions = {
 	expiresInSeconds?: number;
 };
 
-const HMAC_ALGORITHM = { name: "HMAC", hash: "SHA-256" } as const;
 const SIGNATURE_PARAM = "signature";
 const EXPIRES_PARAM = "expires";
-
-const importHmacKey = (secret: string): Promise<CryptoKey> =>
-	crypto.subtle.importKey("raw", new TextEncoder().encode(secret), HMAC_ALGORITHM, false, [
-		"sign",
-		"verify",
-	]);
 
 /** The canonicalized string that gets signed. See the module JSDoc for why origin is excluded. */
 const canonicalTarget = (url: URL): string => `${url.pathname}?${url.searchParams.toString()}`;
 
 export class UrlSigner {
 	private readonly secrets: string[];
-
-	/**
-	 * Instance-level memoization of `importHmacKey` results. Since a constructor cannot `await`
-	 * async work, key import is deferred to first access and its `Promise` itself is cached
-	 * (the same convention used by `keyCache` in `CookieSessionStorage`).
-	 */
-	private readonly keyCache = new Map<string, Promise<CryptoKey>>();
 
 	constructor(options: UrlSignerOptions) {
 		if (options.secrets.length === 0) {
@@ -66,19 +53,9 @@ export class UrlSigner {
 		this.secrets = options.secrets;
 	}
 
-	/** Returns the `CryptoKey` for `secret`, memoizing the result. */
-	private importKeyCached(secret: string): Promise<CryptoKey> {
-		const cached = this.keyCache.get(secret);
-		if (cached) return cached;
-
-		const promise = importHmacKey(secret);
-		this.keyCache.set(secret, promise);
-		return promise;
-	}
-
 	/** Returns the HMAC signature bytes for `canonical` using `secret`. */
 	private async computeSignature(canonical: string, secret: string): Promise<Uint8Array> {
-		const key = await this.importKeyCached(secret);
+		const key = await importHmacKey(secret);
 		const signature = await crypto.subtle.sign(
 			HMAC_ALGORITHM.name,
 			key,
