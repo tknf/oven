@@ -110,6 +110,14 @@ new AdminPanel({
 });
 ```
 
+You can scaffold a resource skeleton with `oven generate admin-resource
+<Name>` (default output `src/admin/<name>_resource.ts`). The generated
+class takes its `Model` instance and Drizzle table via the constructor —
+fill in the `key`/`label`/`primaryKey` TODOs and register it with
+`resources: [new BookResource(bookModel, book)]`. `--dialect` does not
+apply to this template (the `AdminModel` contract is dialect-agnostic)
+and is rejected if passed.
+
 Leaving `form()` unimplemented makes a resource view-only: no create/
 edit/delete routes are registered for it (`AdminResource#canWrite()`
 governs this). Override `listColumns()`/`exclude()` to control which
@@ -455,6 +463,10 @@ Once `auth` is injected:
   `authorize`/`accounts` decide "is this operator allowed in here".
 - On successful login, the session id is reissued (`Session#regenerate`)
   before the identity is stored, as a defense against session-fixation.
+- `POST /login` is not brute-force protected by default — inject
+  `rateLimiter` (a `RateLimiter` from `@tknf/oven/security`) to bound
+  attempts before `authenticate` even runs; see
+  [Admin accounts § Rate-limit the built-in login](./admin-accounts.md#gotchas--security-notes).
 - If `userTools` is not separately injected, the header's user-tools block
   defaults to a greeting built from the identity (`label` falling back to
   `id`) plus a working "Log out" link — so `auth` alone is enough to get a
@@ -555,6 +567,58 @@ wiring at all, or a write that somehow reaches the handler while logged
 out. Job retry/delete, flag toggles, and maintenance toggles are all
 recorded to `audit.log` automatically once `audit` is injected.
 
+### Limiting request body size
+
+Pass `bodyLimitBytes` to bound how large a request the panel will accept,
+across every route:
+
+```ts
+new AdminPanel({
+  authorize: (c) => accountGuard.use(c).role === "admin",
+  csrf,
+  resources: [new PublisherResource()], // e.g. a resource with a File field
+  bodyLimitBytes: 10 * 1024 * 1024, // 10 MB
+});
+```
+
+This wires `hono/body-limit` (`bodyLimit({ maxSize: bodyLimitBytes })`) as
+the very first middleware — ahead of CSRF verification and any
+`c.req.parseBody()` call the panel itself makes — so an oversized request is
+rejected before it's buffered, not after. A request over the limit gets
+Hono's own default `413 Payload Too Large`; a request with no body (e.g.
+`GET`) is unaffected. This is unrelated to (and stricter than) `AdminResource`
+field-level `File` validation (`maxSizeBytes` via `validateUploadedFile` —
+see [Forms](./forms.md#validating-an-uploaded-files-size-and-mime-type)),
+which only rejects an already-fully-buffered file after the fact.
+`bodyLimitBytes` is optional and has no default — omitting it keeps the
+existing unlimited-body behavior, and (unlike `csrf`/`rateLimiter`) omitting
+it does not log a warning, since not every panel accepts uploads.
+
+### Content Security Policy
+
+The panel sends a strict `Content-Security-Policy` header on every response
+it produces, on by default — no wiring needed. The panel's own screens are
+self-contained SSR HTML with no script and no external resource of any
+kind (only an inlined `<style>`), so the default closes as tightly as:
+
+```
+default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'
+```
+
+Pass a string to replace it outright (e.g. if you've customized the layout
+to add your own script or an image), or `false` to omit the header
+entirely:
+
+```ts
+new AdminPanel({
+  authorize: (c) => accountGuard.use(c).role === "admin",
+  contentSecurityPolicy: false, // or a custom policy string
+});
+```
+
+This is unrelated to `hono/secure-headers` — see
+[Security](./security.md#secureheaders) for the app-wide CSP story.
+
 ### Localizing the admin UI
 
 The panel's own chrome (nav labels, headings, buttons, column headers —
@@ -576,6 +640,11 @@ language), the panel falls back to English.
 
 ## Gotchas / Security notes
 
+- **The Content-Security-Policy header is on by default and needs no
+  wiring**, unlike `csrf`/`bodyLimitBytes`/`rateLimiter` above. Pass
+  `contentSecurityPolicy: false` only if you've customized the layout in a
+  way the strict default can't accommodate (e.g. added a script or an
+  external image); see "Content Security Policy" above.
 - **CSRF is not enforced unless you inject `csrf`.** This mirrors the
   general CSRF guidance in [Security](./security.md) and
   [`SECURITY.md`](../SECURITY.md): wire CSRF verification into the
@@ -583,6 +652,18 @@ language), the panel falls back to English.
   or by verifying upstream. Without it, the panel logs a one-time
   `console.warn` on the first unsafe-method request, but still serves it
   — it does not fail closed on its own.
+- **The panel imposes no request body size limit unless you inject
+  `bodyLimitBytes`.** Without it, every route — including any
+  `AdminResource` form with a `File` field — buffers a request body of any
+  size before `validateUploadedFile`'s `maxSizeBytes` ever gets a chance to
+  reject it. See "Limiting request body size" above.
+- **`/login` is not rate-limited unless you inject `rateLimiter`.** Pass a
+  `RateLimiter` (`@tknf/oven/security`) so brute-force credential guessing
+  is bounded; see [Admin accounts](./admin-accounts.md#gotchas--security-notes)
+  for the full example. Without it, and only when login is wired
+  (`auth`/`accounts`), the panel logs a one-time `console.warn` at
+  construction, but `/login` still serves every submission — it does not
+  fail closed on its own.
 - **An access gate is mandatory and the panel assumes nothing about
   roles.** At least one of `authorize` or `accounts` must be injected —
   the constructor throws otherwise. Without `accounts`, there's no

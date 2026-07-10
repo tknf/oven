@@ -467,9 +467,40 @@ then.
   The list/show/form screens render the columns you give them —
   including `passwordHash` — and form-based writes would bypass the
   service's normalization and validation.
-- **Rate-limit `authenticate`.** The service bounds cost per attempt
-  but does not count attempts — put `RateLimiter`
-  (`@tknf/oven/security`) in front of it:
+- **Rate-limit the built-in login.** The service bounds cost per attempt
+  but does not count attempts — pass `rateLimiter` (a `RateLimiter` from
+  `@tknf/oven/security`) straight to `AdminPanel` instead of wrapping
+  `authenticate` by hand. It is applied to `POST /login` **before**
+  `auth.authenticate` runs, keyed by the submitted username
+  (`` `admin-login:${username}` ``), so a request over the limit never
+  reaches the credential check at all:
+
+  ```ts
+  import { RateLimiter } from "@tknf/oven/security";
+
+  new AdminPanel({
+    // ...
+    auth: {
+      authenticate: async (_c, credentials) => {
+        const user = await accounts.authenticate(credentials);
+        return user ? { id: user.id, label: user.label ?? user.username } : null;
+      },
+    },
+    rateLimiter: new RateLimiter(kvStore),
+  });
+  ```
+
+  This allows 5 attempts per username per 5 minutes. A rejected attempt
+  re-renders the login screen with a generic "too many attempts" message
+  and `429` (rather than the `401` an invalid credential gets), and a
+  successful login resets the counter, so an operator who mistypes their
+  password once and then logs in correctly is not penalized on their next
+  attempt. Omitting `rateLimiter` while login is wired (`auth`/`accounts`)
+  logs a one-time `console.warn` at construction — the panel still starts,
+  but `/login` is unprotected against brute-forcing until you wire it.
+
+  If you need a different limit/window, fold rate limiting into
+  `auth.authenticate` by hand instead:
 
   ```ts
   const limiter = new RateLimiter(kvStore);
@@ -484,14 +515,39 @@ then.
   `consume(key, limit, windowSeconds)` increments the counter and
   returns `true` while under `limit`; once at the limit it returns
   `false` without counting, and here that maps to the same `null` as a
-  failed login. This allows 5 attempts per username per 5 minutes.
-- **Deactivation and password changes do not end existing sessions.**
-  `isActive: false` blocks the next login, but with the minimal wiring
-  above an already-logged-in session stays valid until it expires, and
-  `setPassword` does not invalidate existing sessions either. If access
-  must be cut immediately, re-read the row per request in `authorize`
-  and check `isActive` there (the permission-check example above does
-  exactly that).
+  failed login (a plain `401`, not the built-in gate's dedicated `429`).
+- **With `accounts` injected, both deactivation and a password change end
+  every outstanding session on its very next request** — no extra wiring
+  needed. Deactivation works through the per-request re-validation
+  described in
+  [Let the panel enforce permissions](#let-the-panel-enforce-permissions):
+  `isActive: false` fails the row re-read on the very next request. A
+  password change works through a `passwordStamp`: at login, `AdminPanel`
+  derives a short fingerprint of the row's `passwordHash` and stores it
+  alongside the identity in the session; every later request re-derives
+  the fingerprint from the row's *current* `passwordHash` and rejects the
+  session on a mismatch. Because `setPassword` always produces a
+  different hash (PBKDF2 with a fresh random salt), any password change —
+  through [the panel's own accounts screen](#manage-operators-from-the-panel)
+  or a script calling `setPassword` directly — signs out every session
+  logged in under the old password, including the one that made the
+  change. **A session with no stamp at all (issued by an app that hasn't
+  upgraded to this behavior yet) is treated the same as a mismatch and
+  rejected**, so upgrading asks every currently-logged-in operator to log
+  back in once; after that they stay logged in as usual until they change
+  their password again.
+- **This protection is scoped to the `accounts` option.** Wiring your own
+  `authorize`/`auth` instead — the [minimal example](#minimal-example)
+  above, or checking `userPermissions` by hand inside `authorize` — gets
+  neither the per-request re-validation nor `passwordStamp`: a session
+  issued before a deactivation or a password change stays valid until it
+  expires or your own `authorize` rejects it. If you need the same
+  guarantee without `accounts` (e.g. your own end-user auth from
+  [Authentication](./auth.md)), re-read the current row from inside your
+  `authorize`/middleware on every request and build a similar fingerprint
+  yourself (a hash of the stored password hash, compared to one saved in
+  the session at login) — `accounts` has no monopoly on the technique, it
+  just does it for you.
 - **The duplicate-username pre-check is advisory.** `createUser`/
   `updateUser` pre-check with `findByUsername` and throw a clear
   "already taken" error, but the table's UNIQUE index is the

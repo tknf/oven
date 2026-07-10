@@ -24,8 +24,14 @@ export type AdminLoginViewProps = {
 	csrfToken: string | null;
 	/** Validated `?next=`/submitted `next` redirect target (already confined to `basePath` by the caller). */
 	next: string;
-	/** Whether the previous submission failed authentication (renders the `auth.invalid` error note). */
-	error: boolean;
+	/**
+	 * Whether and why the previous submission did not log the operator in: `"invalid"`
+	 * for a failed credential check (renders `auth.invalid`), `"tooManyAttempts"` for
+	 * the `rateLimiter` gate rejecting the submission before `authenticate` even runs
+	 * (renders `auth.tooManyAttempts`; see `AdminPanel`'s `POST /login`), or `false`
+	 * for a fresh, error-free screen.
+	 */
+	error: false | "invalid" | "tooManyAttempts";
 	/** The submitted username, re-shown on a failed attempt. Never pre-filled with the password. */
 	username: string;
 	lang: string;
@@ -57,7 +63,10 @@ export const AdminLoginView = ({
 			<form class="login-form" method="post" action={`${basePath}/login`}>
 				<h1>{brand}</h1>
 				<div class="login-body">
-					{error ? <p class="errornote">{t("auth.invalid")}</p> : null}
+					{error === "invalid" ? <p class="errornote">{t("auth.invalid")}</p> : null}
+					{error === "tooManyAttempts" ? (
+						<p class="errornote">{t("auth.tooManyAttempts")}</p>
+					) : null}
 					{csrfToken !== null ? (
 						<input type="hidden" name={CSRF_FORM_FIELD_NAME} value={csrfToken} />
 					) : null}

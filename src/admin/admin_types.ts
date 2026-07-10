@@ -127,13 +127,20 @@ export type AdminUserTools = {
  * dialects (`sqliteAdminUsersTable`/`pgAdminUsersTable`/`mysqlAdminUsersTable`;
  * every timestamp is an epoch-millisecond number on each dialect, so the row
  * shape is uniform). A service may return rows that are a SUPERSET of this
- * shape (e.g. `passwordHash`, or an extended table's app-specific columns) —
- * that is the ordinary covariant-return direction and the extra properties are
- * simply ignored by the panel.
+ * shape (e.g. an extended table's app-specific columns) — that is the
+ * ordinary covariant-return direction and the extra properties are simply
+ * ignored by the panel.
+ *
+ * `passwordHash` is part of the contract (not just an incidental extra
+ * column): `AdminPanel`'s accounts gate re-derives a `passwordStamp`
+ * fingerprint from it on every request to invalidate a session whose
+ * password changed since it was issued (see `admin_panel.tsx`'s
+ * `derivePasswordStamp`). It is never rendered by any built-in view.
  */
 export type AdminAccountsUserRow = {
 	id: string;
 	username: string;
+	passwordHash: string;
 	label: string | null;
 	isActive: boolean;
 	isSuperuser: boolean;

@@ -13,13 +13,15 @@ concern and is wired in individually:
   per-session secret and verifies a submitted token against it, with
   BREACH-resistant one-time-pad masking on every issuance.
 - **`SecureHeaders`** — a thin preset over `hono/secure-headers` (no header
-  logic of its own), strengthening only `xFrameOptions` to `"DENY"`.
+  logic of its own), strengthening only `xFrameOptions` to `"DENY"`. It does
+  not set a `Content-Security-Policy` — see the Gotchas note below.
 - **`RateLimiter`** — fixed-window rate limiting backed by a
   `KeyValueStore` (`@tknf/oven/kv`), suitable for coarse-grained use cases
-  like login-attempt throttling.
+  like login-attempt throttling. Not an IP allow/deny list either — it
+  throttles by whatever `key` you pass, not by network address.
 - **`TrustedHost`** — fail-closed `Host` header validation against an allow
   list, guarding against Host header spoofing behind misconfigured
-  proxies.
+  proxies. This is **not** an IP allow/deny list — see below.
 - **`Encrypter`** — reversible AES-256-GCM encryption for values you need
   to recover later (e.g. a stored third-party API key). Never use this for
   passwords — see [Auth](./auth.md) for password hashing.
@@ -128,6 +130,51 @@ app.get("/verify-email", async (c) => {
 });
 ```
 
+**Restricting access by client IP.** oven has no IP allow/deny list of its
+own — `TrustedHost` validates the `Host` header (which domain the request
+claims to be for), not the connecting address, and `RateLimiter` throttles
+by whatever `key` you give it, not by network address specifically. For an
+actual IP allow/deny list, use Hono's own `hono/ip-restriction`, paired
+with the `getConnInfo` helper for your runtime (`hono/cloudflare-workers`,
+`@hono/node-server/conninfo`, ...):
+
+```ts
+import { ipRestriction } from "hono/ip-restriction";
+import { getConnInfo } from "hono/cloudflare-workers";
+
+app.use(
+  "/admin/*",
+  ipRestriction(getConnInfo, {
+    allowList: ["203.0.113.0/24"],
+  }),
+);
+```
+
+As with `RateLimiter`'s IP-derived keys, only trust an address if
+`getConnInfo` (or an upstream proxy header you've explicitly validated) is
+actually the client's real address for your deployment — a client-supplied
+header like `X-Forwarded-For` taken at face value can be spoofed.
+
+**Limiting request body size.** oven has no request-size-limiting primitive
+of its own — apply Hono's own `hono/body-limit` upstream of anything that
+buffers the body, most importantly `Csrf#verify` (it reads the CSRF token
+from the form body via `c.req.parseBody()`) and any handler that does the
+same for a file upload:
+
+```ts
+import { bodyLimit } from "hono/body-limit";
+
+app.use(bodyLimit({ maxSize: 10 * 1024 * 1024 })); // before csrf.verify
+app.use(csrf.verify);
+```
+
+Without this, `Csrf#verify` (and any multipart handler downstream of it)
+buffers the full request body before any size check runs — see
+[Forms](./forms.md#validating-an-uploaded-files-size-and-mime-type) for why
+`validateUploadedFile`'s `maxSizeBytes` does not substitute for this.
+`AdminPanel` exposes the same protection as its `bodyLimitBytes` option (see
+the [admin guide](./admin.md)).
+
 **Toggling maintenance mode:**
 
 ```ts
@@ -159,6 +206,19 @@ await maintenanceMode.disable();
 - **When mounting `AdminPanel`, wire CSRF verification into its write
   routes yourself** (via the panel's CSRF option, or by applying
   `csrf.verify` upstream of it) — it is not automatic.
+- **`SecureHeaders` sets no `Content-Security-Policy`.** For your app's own
+  routes, pass `hono/secure-headers`'s own `contentSecurityPolicy` option
+  directly (`SecureHeaders` only wraps that middleware and doesn't add
+  CSP logic of its own). `AdminPanel` (`@tknf/oven/admin`) is the
+  exception: it sends a strict default CSP on its own mounted routes
+  regardless of whether `SecureHeaders` is wired elsewhere — see [Admin
+  panel](./admin.md#content-security-policy).
+- **`Csrf#verify` calls `c.req.parseBody()` to read the submitted token**,
+  which buffers the whole request body — including any multipart file
+  upload — before CSRF verification even runs. Neither `Csrf` nor `Form`
+  imposes a cap on that buffering; apply `hono/body-limit` ahead of
+  `csrf.verify` if unbounded body buffering is a concern for your
+  deployment (see "Limiting request body size" above).
 - **`BroadcastWebSocket` needs its own Origin check and connection
   authorization**, performed in the `authorize` hook or inside the
   `channels` callback, to prevent Cross-Site WebSocket Hijacking. This is
