@@ -296,6 +296,51 @@ describe("FormField", () => {
 		expect(html).toContain("multiple");
 	});
 
+	test("widget: 'file': renders label + input[type=file], reflecting accept/multiple, with no value attribute", async () => {
+		class DedicatedFileForm extends Form<
+			StandardSchemaV1<unknown, Record<string, unknown>>,
+			"avatar"
+		> {
+			protected schema() {
+				return defineStubSchema<Record<string, unknown>>();
+			}
+			protected fields(): Record<"avatar", FieldDef> {
+				return { avatar: { label: "Avatar", widget: "file", accept: "image/*", multiple: true } };
+			}
+		}
+		const field = new DedicatedFileForm().bind().field("avatar");
+		const html = (await FormField({ field })).toString();
+
+		expect(html).toContain('<label for="avatar">Avatar</label>');
+		expect(html).toContain('type="file"');
+		expect(html).toContain('name="avatar"');
+		expect(html).toContain('accept="image/*"');
+		expect(html).toContain("multiple");
+		expect(html).not.toContain("value=");
+	});
+
+	test("widget: 'file': when there is an error, emits aria-invalid/aria-describedby/role=alert like other widgets", async () => {
+		class DedicatedFileForm extends Form<
+			StandardSchemaV1<unknown, Record<string, unknown>>,
+			"avatar"
+		> {
+			protected schema() {
+				return defineStubSchema<Record<string, unknown>>();
+			}
+			protected fields(): Record<"avatar", FieldDef> {
+				return { avatar: { label: "Avatar", widget: "file" } };
+			}
+		}
+		const field = new DedicatedFileForm()
+			.bind({ errors: [{ field: "avatar", message: "Please select a file" }] })
+			.field("avatar");
+		const html = (await FormField({ field })).toString();
+
+		expect(html).toContain('aria-invalid="true"');
+		expect(html).toContain('aria-describedby="avatar-error"');
+		expect(html).toContain('<p id="avatar-error" role="alert">Please select a file</p>');
+	});
+
 	test("textarea: minlength/maxlength/cols are reflected", async () => {
 		class TextareaConstraintsForm extends Form<
 			StandardSchemaV1<unknown, Record<string, unknown>>,

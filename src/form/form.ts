@@ -216,7 +216,7 @@ type InputConstraints = {
 	step?: string | number;
 	pattern?: string;
 	inputmode?: InputMode;
-	/** For `type: "file"`. */
+	/** For `type: "file"`. Also reused by `widget: "file"` (see `FieldDef`). */
 	accept?: string;
 	multiple?: boolean;
 };
@@ -226,8 +226,12 @@ type InputConstraints = {
  * `Form#fields()` returns a record of this type, and `bind()` bundles it with
  * validation results to build a `BoundField`. It's a discriminated union on
  * `widget`, carrying type-safe `textarea`/`select`/`checkbox`/`radio-group`/
- * `checkbox-group`/`hidden`-specific info (`options`/`multiple`/`rows`, etc.).
- * When `widget` is omitted, it's treated as `"input"` (for backward compatibility).
+ * `checkbox-group`/`file`/`hidden`-specific info (`options`/`multiple`/`rows`, etc.).
+ * When `widget` is omitted, it's treated as `"input"` (for backward compatibility) —
+ * so `{ widget: "input", type: "file" }` (or `{ type: "file" }` alone) still works
+ * for a file input; `widget: "file"` is the dedicated, more explicit spelling and
+ * only carries the axes that actually apply to a file input (`accept`/`multiple`),
+ * rather than the full `InputConstraints` (min/max/pattern/... don't apply to files).
  */
 export type FieldDef =
 	| (FieldDefBase & ({ widget?: "input"; type?: string } & InputConstraints))
@@ -247,6 +251,7 @@ export type FieldDef =
 	| (FieldDefBase & { widget: "checkbox" })
 	| (FieldDefBase & { widget: "radio-group"; options: SelectOption[] })
 	| (FieldDefBase & { widget: "checkbox-group"; options: SelectOption[] })
+	| (FieldDefBase & { widget: "file" } & Pick<InputConstraints, "accept" | "multiple">)
 	| (FieldDefBase & { widget: "hidden" });
 
 /**
@@ -334,6 +339,10 @@ export abstract class Form<S extends StandardSchemaV1, FieldName extends string 
 	 * - `checkbox-group` and `select` (`multiple: true`): if an array, keeps
 	 *   only string elements as `string[]`; if a scalar, wraps it as a
 	 *   single-element `string[]`. null/undefined omit the key.
+	 * - `file`: never sets a key. A `BoundField` for `widget: "file"` carries no
+	 *   `value` at all (browsers refuse to pre-populate `input[type=file]` from
+	 *   a `value` attribute, the same reasoning `toOldFormInput` uses to drop
+	 *   `File` values), so there is nothing for the resulting key to feed.
 	 * - Everything else (`select` single/`radio-group`/`hidden`/`input`/
 	 *   `textarea`, and `widget` omitted meaning `"input"`): sets the key only
 	 *   when `scalarToString` can produce a single string; otherwise (object,
@@ -353,6 +362,8 @@ export abstract class Form<S extends StandardSchemaV1, FieldName extends string 
 				if (raw) result[name] = "on";
 				continue;
 			}
+
+			if (def.widget === "file") continue;
 
 			if (def.widget === "checkbox-group" || (def.widget === "select" && def.multiple)) {
 				if (raw === null || raw === undefined) continue;
@@ -534,6 +545,7 @@ export type BoundField =
 	| (BoundFieldBase & { widget: "checkbox"; checked: boolean })
 	| (BoundFieldBase & { widget: "radio-group"; options: SelectOption[]; value: string })
 	| (BoundFieldBase & { widget: "checkbox-group"; options: SelectOption[]; values: string[] })
+	| (BoundFieldBase & { widget: "file"; accept: string | undefined; multiple: boolean | undefined })
 	| (BoundFieldBase & { widget: "hidden"; value: string });
 
 /**
@@ -582,9 +594,10 @@ export class FormBinding<FieldName extends string> {
 	 * callers (templates) may pass it around by reference. Branches on
 	 * `def.widget` and applies the per-widget value resolution rule (checkbox:
 	 * checked; checkbox-group/multiple select: values; radio-group/single
-	 * select/hidden: value). `values` lookup and name/id display use the
-	 * prefixed name, while `errors` matching uses the raw name (see the module
-	 * JSDoc "The prefix round trip between validate/bind").
+	 * select/hidden: value; file: no value at all — see `toInput`). `values`
+	 * lookup and name/id display use the prefixed name, while `errors` matching
+	 * uses the raw name (see the module JSDoc "The prefix round trip between
+	 * validate/bind").
 	 */
 	field = (name: FieldName): BoundField => {
 		const def = this.declarations[name];
@@ -650,6 +663,9 @@ export class FormBinding<FieldName extends string> {
 			case "checkbox-group": {
 				const values = hasValue ? arrayStringValuesOf(rawValue) : initialArrayValueOf(def.initial);
 				return { ...base, widget: "checkbox-group", options: def.options, values };
+			}
+			case "file": {
+				return { ...base, widget: "file", accept: def.accept, multiple: def.multiple };
 			}
 			case "hidden": {
 				const value = hasValue ? singleStringValueOf(rawValue) : initialStringValueOf(def.initial);

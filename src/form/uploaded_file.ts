@@ -7,7 +7,29 @@
  * `sniffMimeType` (magic-byte detection) are provided as two orthogonal pure
  * functions (not classes, since they hold no state or dependencies — the
  * "single idiom = class" rule targets things that do).
+ *
+ * ## Batch validation (`validateUploadedFiles`)
+ * A `widget: "file"` field declared with `multiple: true` submits several
+ * `File`s under one form key, and each needs the same per-file checks as a
+ * single upload. `validateUploadedFiles` applies `validateUploadedFile` to
+ * every element and returns a result **symmetric with `UploadedFileValidation`**:
+ * `{ ok: true; files: File[] }` on full success, or `{ ok: false; results }`
+ * where `results` is every input file's own `UploadedFileValidation` tagged
+ * with its original `index` (success and failure entries both — HTML gives no
+ * way to remove a single item from a multi-file selection, so a caller that
+ * needs to know "which of the N files failed and why" for a custom message
+ * still has that available, even though the common path is just re-rendering
+ * the field and asking the user to reselect all of them).
+ * `toUploadedFileFormErrors` then narrows `results` down to the failing
+ * entries and converts them into `form.ts`'s `FormError[]` vocabulary,
+ * addressed to a single field name (a multi-file input is one HTML `name`,
+ * matching how `toFormErrors` also collapses a whole field to one entry per
+ * issue). `localizeUploadedFileError` (`upload_validation_messages.ts`)
+ * accepts a batch entry as-is wherever it accepts a plain
+ * `UploadedFileValidationFailure`, since a batch entry is a superset (it only
+ * adds `index`).
  */
+import type { FormError } from "./form.js";
 
 /** Constraints imposed by `validateUploadedFile`. Omitted axes are not validated. */
 export type UploadedFileConstraints = {
@@ -86,6 +108,58 @@ export const validateUploadedFile = (
 
 	return { ok: true, file: value };
 };
+
+/** One file's result within `validateUploadedFiles`, tagged with its position in the original array. */
+export type UploadedFileBatchResult = UploadedFileValidation & { index: number };
+
+/**
+ * The result of `validateUploadedFiles`. See the module JSDoc ("Batch
+ * validation") for the design rationale.
+ */
+export type UploadedFilesValidation =
+	| { ok: true; files: File[] }
+	| { ok: false; results: UploadedFileBatchResult[] };
+
+/**
+ * Applies `validateUploadedFile` to every element of `files` (an empty array
+ * trivially succeeds with `files: []`). `constraints` is shared across all
+ * files, mirroring `validateUploadedFile`'s own single-constraints-object
+ * signature (a multi-file input validates every file against the same rule,
+ * not a per-file one).
+ */
+export const validateUploadedFiles = (
+	files: File[],
+	constraints?: UploadedFileConstraints,
+): UploadedFilesValidation => {
+	const results: UploadedFileBatchResult[] = files.map((file, index) => ({
+		...validateUploadedFile(file, constraints),
+		index,
+	}));
+
+	const okFiles: File[] = [];
+	for (const result of results) {
+		if (result.ok) okFiles.push(result.file);
+	}
+
+	if (okFiles.length === files.length) return { ok: true, files: okFiles };
+	return { ok: false, results };
+};
+
+/**
+ * Converts a failed `validateUploadedFiles` result into `form.ts`'s
+ * `FormError[]` vocabulary, addressed to `field` (this file input's form field
+ * name). Only the failing entries of `result.results` produce a `FormError`
+ * (successful entries carry no error message); every failure is addressed to
+ * the same `field`, since a multi-file input is one HTML `name` and there is
+ * no way to point an error at "just the third file" in the rendered form.
+ */
+export const toUploadedFileFormErrors = (
+	result: Extract<UploadedFilesValidation, { ok: false }>,
+	field: string,
+): FormError[] =>
+	result.results
+		.filter((entry): entry is Extract<UploadedFileBatchResult, { ok: false }> => !entry.ok)
+		.map((entry) => ({ field, message: entry.message }));
 
 /**
  * Detection table (leading-byte magic numbers). `bytes` is the leading byte

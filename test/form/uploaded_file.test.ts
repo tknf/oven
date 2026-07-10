@@ -5,7 +5,12 @@ import { Hono } from "hono";
 import { languageDetector } from "hono/language";
 import { describe, expect, test } from "vite-plus/test";
 import { localizeUploadedFileError } from "../../src/form/upload_validation_messages.js";
-import { sniffMimeType, validateUploadedFile } from "../../src/form/uploaded_file.js";
+import {
+	sniffMimeType,
+	toUploadedFileFormErrors,
+	validateUploadedFile,
+	validateUploadedFiles,
+} from "../../src/form/uploaded_file.js";
 
 describe("validateUploadedFile", () => {
 	test("a non-File value becomes not-a-file", () => {
@@ -84,6 +89,104 @@ describe("validateUploadedFile", () => {
 		const result = validateUploadedFile(file, { allowedMimeTypes: [] });
 		expect(result.ok).toBe(false);
 		if (!result.ok) expect(result.reason).toBe("unsupported-type");
+	});
+});
+
+describe("validateUploadedFiles", () => {
+	test("an empty array trivially succeeds with files: []", () => {
+		expect(validateUploadedFiles([])).toEqual({ ok: true, files: [] });
+	});
+
+	test("when every file passes, returns ok: true with all files in original order", () => {
+		const a = new File(["a"], "a.png", { type: "image/png" });
+		const b = new File(["b"], "b.jpg", { type: "image/jpeg" });
+
+		const result = validateUploadedFiles([a, b], { allowedMimeTypes: ["image/*"] });
+
+		expect(result).toEqual({ ok: true, files: [a, b] });
+	});
+
+	test("when some files fail, returns ok: false with one indexed result per input file", () => {
+		const okFile = new File(["ok"], "ok.png", { type: "image/png" });
+		const badFile = new File(["bad"], "bad.pdf", { type: "application/pdf" });
+
+		const result = validateUploadedFiles([okFile, badFile], { allowedMimeTypes: ["image/*"] });
+
+		expect(result.ok).toBe(false);
+		if (result.ok) throw new Error("unreachable");
+		expect(result.results).toHaveLength(2);
+		expect(result.results[0]).toEqual({ ok: true, file: okFile, index: 0 });
+		expect(result.results[1]?.ok).toBe(false);
+		expect(result.results[1]?.index).toBe(1);
+		if (result.results[1]?.ok !== false) throw new Error("unreachable");
+		expect(result.results[1].reason).toBe("unsupported-type");
+	});
+
+	test("when every file fails, returns ok: false with a failing result for each", () => {
+		const first = new File(["x"], "a.pdf", { type: "application/pdf" });
+		const second = new File(["y"], "b.pdf", { type: "application/pdf" });
+
+		const result = validateUploadedFiles([first, second], { allowedMimeTypes: ["image/*"] });
+
+		expect(result.ok).toBe(false);
+		if (result.ok) throw new Error("unreachable");
+		expect(result.results.every((entry) => !entry.ok)).toBe(true);
+		expect(result.results.map((entry) => entry.index)).toEqual([0, 1]);
+	});
+
+	test("constraints are shared across every file in the batch", () => {
+		const small = new File(["a"], "small.txt", { type: "text/plain" });
+		const large = new File(["0123456789"], "large.txt", { type: "text/plain" });
+
+		const result = validateUploadedFiles([small, large], { maxSizeBytes: 5 });
+
+		expect(result.ok).toBe(false);
+		if (result.ok) throw new Error("unreachable");
+		expect(result.results[0]).toEqual({ ok: true, file: small, index: 0 });
+		expect(result.results[1]?.ok).toBe(false);
+		if (result.results[1]?.ok !== false) throw new Error("unreachable");
+		expect(result.results[1].reason).toBe("too-large");
+	});
+});
+
+describe("toUploadedFileFormErrors", () => {
+	test("converts only the failing entries into FormError[] addressed to the given field", () => {
+		const okFile = new File(["ok"], "ok.png", { type: "image/png" });
+		const badFile = new File(["bad"], "bad.pdf", { type: "application/pdf" });
+		const result = validateUploadedFiles([okFile, badFile], { allowedMimeTypes: ["image/*"] });
+		if (result.ok) throw new Error("unreachable");
+
+		const errors = toUploadedFileFormErrors(result, "attachments");
+
+		expect(errors).toHaveLength(1);
+		expect(errors[0]?.field).toBe("attachments");
+		expect(errors[0]?.message).toContain("application/pdf");
+	});
+
+	test("when every file fails, produces one FormError per file", () => {
+		const first = new File(["x"], "a.pdf", { type: "application/pdf" });
+		const second = new File(["y"], "b.pdf", { type: "application/pdf" });
+		const result = validateUploadedFiles([first, second], { allowedMimeTypes: ["image/*"] });
+		if (result.ok) throw new Error("unreachable");
+
+		const errors = toUploadedFileFormErrors(result, "attachments");
+
+		expect(errors).toHaveLength(2);
+		expect(errors.every((error) => error.field === "attachments")).toBe(true);
+	});
+
+	test("localizeUploadedFileError accepts a batch failure entry directly (no shape conversion needed)", async () => {
+		const badFile = new File(["bad"], "bad.pdf", { type: "application/pdf" });
+		const result = validateUploadedFiles([badFile], { allowedMimeTypes: ["image/*"] });
+		if (result.ok) throw new Error("unreachable");
+		const [failure] = result.results;
+		if (failure?.ok !== false) throw new Error("unreachable");
+
+		const app = new Hono();
+		app.get("/", (c) => c.text(localizeUploadedFileError(c, failure)));
+
+		const res = await app.request("/");
+		expect(await res.text()).toContain("application/pdf");
 	});
 });
 

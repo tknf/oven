@@ -40,6 +40,13 @@
  *   the same `name` (`checkbox-group` submits multiple values under one
  *   name). `id` is uniquified as `${field.id}-${option.value}` and used for
  *   the matching `label`'s `for`.
+ * - `file`: label + `input[type=file]` (reflecting `accept`/`multiple`) + hint
+ *   + error message. The dedicated widget for a file input (see `FieldDef` in
+ *   `form.ts`); `widget: "input"` + `type: "file"` still renders through
+ *   `InputField` for backward compatibility. Unlike `InputField`, there is no
+ *   `value`/`readonly`/`autocomplete` attribute — browsers refuse to
+ *   pre-populate a file input's selection from a `value` attribute, and
+ *   `readonly`/`autocomplete` have no meaning for `type=file`.
  * - `hidden`: renders only `input[type=hidden]`. No label, hint, error
  *   message, or wrapper div (labeling/describing an invisible field would be
  *   meaningless).
@@ -243,6 +250,31 @@ const OptionGroupField = ({
 	</fieldset>
 );
 
+/**
+ * Renders `widget: "file"`. No `value` (browsers refuse to pre-populate a file
+ * input's selection) and no `readonly`/`autocomplete` (meaningless for
+ * `type=file`); everything else mirrors `InputField`.
+ */
+const FileField = ({ field }: { field: Extract<BoundField, { widget: "file" }> }) => (
+	<div>
+		<label for={field.id}>{field.label}</label>
+		<input
+			type="file"
+			id={field.id}
+			name={field.name}
+			required={field.required}
+			disabled={field.disabled}
+			autofocus={field.autofocus}
+			accept={field.accept}
+			multiple={field.multiple}
+			aria-invalid={field.error ? "true" : undefined}
+			aria-describedby={field.describedBy}
+			{...field.attrs}
+		/>
+		<FieldMessages field={field} />
+	</div>
+);
+
 /** Renders `widget: "hidden"`. Has no label, hint, error message, or wrapper div (see module JSDoc). */
 const HiddenField = ({ field }: { field: Extract<BoundField, { widget: "hidden" }> }) => (
 	<input type="hidden" id={field.id} name={field.name} value={field.value} {...field.attrs} />
@@ -279,6 +311,8 @@ export const FormField = ({ field }: FormFieldProps) => {
 					attrs={field.attrs}
 				/>
 			);
+		case "file":
+			return <FileField field={field} />;
 		case "hidden":
 			return <HiddenField field={field} />;
 		default:
