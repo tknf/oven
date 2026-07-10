@@ -4,6 +4,7 @@
  * (`src/index.ts`) has no Cloudflare dependency.
  */
 export * from "./cloudflare_cache_store.js";
+export * from "./cloudflare_email_mailer.js";
 export * from "./cloudflare_job_queue.js";
 export * from "./cloudflare_kv_store.js";
 export * from "./queue_consumer.js";
