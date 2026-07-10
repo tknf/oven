@@ -369,6 +369,40 @@ describe.skipIf(!OVEN_MYSQL_TEST_URL)("MySqlModel", () => {
 		await expect(model.retrieve(created.id)).resolves.toMatchObject({ count: 4 });
 	});
 
+	/**
+	 * Live verification of the bare-identifier assumption documented on
+	 * `MySqlModel#increment`'s JSDoc: that the left-hand side of `SET` in
+	 * `column = column + delta` must be an unqualified, bare column name on
+	 * MySQL. If `sql.identifier(column.name)` produced anything MySQL rejected
+	 * as an assignment target (or resolved to the wrong column), every call
+	 * below would throw or leave `count` unchanged instead of updating it
+	 * relative to its current DB value.
+	 */
+	test("increment/decrement apply as relative updates read from the current DB value across repeated calls, and accept negative deltas", async () => {
+		const created = await model.create({ name: "Counter", count: 10 });
+
+		await model.increment(created.id, items.count);
+		await model.increment(created.id, items.count);
+		await model.increment(created.id, items.count);
+		await expect(model.retrieve(created.id)).resolves.toMatchObject({ count: 13 });
+
+		/** `increment` accepts a negative delta directly; `decrement` is only a sign-flipped convenience wrapper around it. */
+		await model.increment(created.id, items.count, -5);
+		await expect(model.retrieve(created.id)).resolves.toMatchObject({ count: 8 });
+
+		/** There is no floor: repeated decrements can drive the column negative. */
+		await model.decrement(created.id, items.count, 20);
+		await expect(model.retrieve(created.id)).resolves.toMatchObject({ count: -12 });
+	});
+
+	test("increment issues an atomic column = column + delta update in SQL, so concurrent increments are not lost", async () => {
+		const created = await model.create({ name: "Concurrent Counter", count: 0 });
+
+		await Promise.all(Array.from({ length: 10 }, () => model.increment(created.id, items.count)));
+
+		await expect(model.retrieve(created.id)).resolves.toMatchObject({ count: 10 });
+	});
+
 	test("upsert updates with the set contents on a primary-key conflict, and creates a new row otherwise", async () => {
 		const created = await model.upsert(
 			{ id: "fixed-id", name: "First Created" },

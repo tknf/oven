@@ -400,6 +400,48 @@ test("SQLiteModel's public surface hasn't grown past what TenantItemModel scopes
   than the value actually written; running inside `with(tx)` mitigates this
   within that transaction's isolation level but doesn't fully close the gap.
   SQLite and Postgres don't have this caveat (both support `RETURNING`).
+- **`rowsAffectedFrom` only understands the mysql2 driver by default.**
+  `updateWhere`/`updateLocked`/`delete` read the affected-row count from
+  `update()`/`delete()`'s execution result through the protected
+  `rowsAffectedFrom` hook. The default implementation reads mysql2's
+  `[ResultSetHeader, FieldPacket[]]` shape (`affectedRows`); on any other
+  driver it throws with a message telling you to override it, instead of
+  silently returning `0`. A driver like PlanetScale
+  (`drizzle-orm/planetscale-serverless`) returns a different shape —
+  `@planetscale/database`'s `ExecutedQuery`, whose row count lives on
+  `rowsAffected` — so a `PlanetScaleModel` base class would override the hook
+  once for every subclass to use:
+
+  ```ts
+  import type { MySqlColumn, MySqlTable } from "drizzle-orm/mysql-core";
+  import type {
+    PlanetScalePreparedQueryHKT,
+    PlanetscaleQueryResultHKT,
+  } from "drizzle-orm/planetscale-serverless";
+  import { MySqlModel } from "@tknf/oven/model";
+
+  abstract class PlanetScaleModel<
+    TTable extends MySqlTable,
+    TPk extends MySqlColumn,
+    TSchema extends Record<string, unknown> = Record<string, never>,
+  > extends MySqlModel<TTable, TPk, PlanetscaleQueryResultHKT, PlanetScalePreparedQueryHKT, TSchema> {
+    protected override rowsAffectedFrom(result: unknown): number {
+      if (
+        typeof result === "object" &&
+        result !== null &&
+        "rowsAffected" in result &&
+        typeof result.rowsAffected === "number"
+      ) {
+        return result.rowsAffected;
+      }
+      throw new Error("PlanetScaleModel#rowsAffectedFrom: unexpected execution result shape.");
+    }
+  }
+  ```
+
+  For a driver other than mysql2/PlanetScale, check that driver's own
+  types/docs for the equivalent field before writing the override — don't
+  assume the shape.
 
 ## See also
 

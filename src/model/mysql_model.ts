@@ -686,12 +686,16 @@ export abstract class MySqlModel<
 	 *
 	 * The constraint that the left-hand side of `SET` (the assignment target) must be
 	 * an unqualified, bare column name has been confirmed on SQLite (real database) and
-	 * Postgres (PGlite), and is expected to hold the same way on MySQL, but this is
-	 * unverified since there's no Docker environment available to test against (this
-	 * will be confirmed once a live test with `OVEN_MYSQL_TEST_URL` set —
-	 * `test/model/mysql_model.test.ts` — passes). Only the left side uses
-	 * `sql.identifier(column.name)` to produce a bare identifier, while the right-hand
-	 * side reference stays as `${column}` (table-qualified).
+	 * Postgres (PGlite), and is expected to hold the same way on MySQL. This is now
+	 * covered by live tests in `test/model/mysql_model.test.ts` (relative updates
+	 * across repeated calls, negative deltas, and concurrent increments), gated behind
+	 * `OVEN_MYSQL_TEST_URL` and run against the `mysql:8` service container in
+	 * `.github/workflows/ci.yml`; `test/test_support/mysql_ci_guard.test.ts` fails
+	 * loudly instead of silently skipping if that variable is ever missing in CI. This
+	 * note is kept until a follow-up change removes it once those tests have been
+	 * observed green in CI. Only the left side uses `sql.identifier(column.name)` to
+	 * produce a bare identifier, while the right-hand side reference stays as
+	 * `${column}` (table-qualified).
 	 */
 	async increment(pk: GetColumnData<TPk, "raw">, column: MySqlColumn, delta = 1): Promise<void> {
 		await this.db.execute(
