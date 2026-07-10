@@ -153,6 +153,36 @@ describe("planGeneration: seed", () => {
 	});
 });
 
+describe("planGeneration: admin-resource", () => {
+	test("returns a scaffold that extends AdminResource and injects the model/table via the constructor", () => {
+		const plan = planGeneration({ type: "admin-resource", name: "book" });
+		expect(plan.filePath).toBe("src/admin/book_resource.ts");
+		expect(plan.content).toContain('import type { Table } from "drizzle-orm";');
+		expect(plan.content).toContain('import type { AdminModel } from "@tknf/oven/admin";');
+		expect(plan.content).toContain('import { AdminResource } from "@tknf/oven/admin";');
+		expect(plan.content).toContain("export class BookResource extends AdminResource {");
+		expect(plan.content).toContain(
+			"private readonly bookModel: AdminModel,\n\t\tprivate readonly book: Table,",
+		);
+		expect(plan.content).toContain("get key(): string {");
+		expect(plan.content).toContain("get label(): string {");
+		expect(plan.content).toContain("get model(): AdminModel {");
+		expect(plan.content).toContain("get table(): Table {");
+		expect(plan.content).toContain("get primaryKey(): string {");
+	});
+
+	test("does not double-attach the suffix for a name that already ends with it", () => {
+		expect(classNameFor("admin-resource", "BookResource")).toBe("BookResource");
+	});
+
+	test("does not brand the template with a dialect (AdminModel is dialect-agnostic)", () => {
+		const plan = planGeneration({ type: "admin-resource", name: "book" });
+		expect(plan.content).not.toContain("sqlite");
+		expect(plan.content).not.toContain("pg-core");
+		expect(plan.content).not.toContain("mysql");
+	});
+});
+
 describe("planGeneration: unknown type", () => {
 	test("throws when passed an unknown type", () => {
 		expect(() =>
@@ -161,5 +191,23 @@ describe("planGeneration: unknown type", () => {
 				name: "book",
 			}),
 		).toThrow(/Unknown type/);
+	});
+});
+
+describe("planGeneration: --dialect misuse", () => {
+	test("does not throw when dialect is given for the model type", () => {
+		expect(() => planGeneration({ type: "model", name: "book", dialect: "pg" })).not.toThrow();
+	});
+
+	test("throws when dialect is given for a type that does not use it", () => {
+		expect(() => planGeneration({ type: "handler", name: "books", dialect: "pg" })).toThrow(
+			/--dialect only applies to the model template/,
+		);
+	});
+
+	test("throws when dialect is given for the admin-resource type", () => {
+		expect(() =>
+			planGeneration({ type: "admin-resource", name: "book", dialect: "sqlite" }),
+		).toThrow(/--dialect only applies to the model template/);
 	});
 });

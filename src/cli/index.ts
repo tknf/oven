@@ -21,7 +21,7 @@ const USAGE = `Usage:
 
 Options:
   --dir <path>       Output directory (defaults to the conventional directory for <type>)
-  --dialect <name>   model only. sqlite | pg | mysql (default: sqlite)
+  --dialect <name>   model only (error for every other type). sqlite | pg | mysql (default: sqlite)
   --force            Overwrite an existing file
 
   oven --help         Show this help
@@ -85,6 +85,10 @@ const runGenerate = (args: string[]): void => {
 
 	const dir = readOption(args, "--dir");
 	const dialectInput = readOption(args, "--dialect");
+	if (dialectInput !== undefined && type !== "model") {
+		console.error(`--dialect only applies to the model template, not "${type}"\n\n${USAGE}`);
+		process.exit(1);
+	}
 	if (dialectInput !== undefined && !isModelDialect(dialectInput)) {
 		console.error(`Unknown dialect: ${dialectInput} (must be one of sqlite | pg | mysql)`);
 		process.exit(1);

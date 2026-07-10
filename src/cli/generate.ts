@@ -5,7 +5,15 @@
 import { join } from "node:path";
 
 /** Kinds of templates accepted by `oven generate`. */
-export type GenerateType = "handler" | "model" | "form" | "job" | "policy" | "view" | "seed";
+export type GenerateType =
+	| "handler"
+	| "model"
+	| "form"
+	| "job"
+	| "policy"
+	| "view"
+	| "seed"
+	| "admin-resource";
 
 /** Drizzle dialect targeted by the `model` template. */
 export type ModelDialect = "sqlite" | "pg" | "mysql";
@@ -33,6 +41,7 @@ export const GENERATE_TYPES: readonly GenerateType[] = [
 	"policy",
 	"view",
 	"seed",
+	"admin-resource",
 ];
 
 /** Default output directory per type. */
@@ -44,6 +53,7 @@ const DEFAULT_DIRS: Record<GenerateType, string> = {
 	policy: "src/policies",
 	view: "src/views",
 	seed: "src/seeds",
+	"admin-resource": "src/admin",
 };
 
 /** Class name suffix per type. */
@@ -55,6 +65,7 @@ const TYPE_SUFFIXES: Record<GenerateType, string> = {
 	policy: "Policy",
 	view: "View",
 	seed: "Seed",
+	"admin-resource": "Resource",
 };
 
 /** Splits `input` into a sequence of words (on `-`/`_`/whitespace delimiters and camelCase/PascalCase boundaries). */
@@ -314,13 +325,80 @@ export const run${base}Seed = async (): Promise<void> => {
 `;
 
 /**
+ * Builds the admin-resource template content. Extends `AdminResource` and takes the
+ * corresponding Model and Drizzle table via constructor injection (the same pattern used
+ * throughout `docs/admin.md` and the admin test fixtures), so the generated class type-checks
+ * on its own without depending on a real model/table existing at a guessed import path. Since
+ * `AdminResource#model` is typed as the structural `AdminModel` (identical across the
+ * SQLite/Postgres/MySQL `Model` subclasses), the template has no dialect-specific branch.
+ */
+const adminResourceTemplate = (className: string, base: string): string => {
+	const tableVar = toCamelCase(base);
+	const modelVar = `${tableVar}Model`;
+
+	return `import type { Table } from "drizzle-orm";
+import type { AdminModel } from "@tknf/oven/admin";
+import { AdminResource } from "@tknf/oven/admin";
+
+// TODO: import the corresponding table and Model instance, e.g.:
+// import { ${tableVar} } from "../models/${snakeCase(base)}_model.js";
+// import { ${modelVar} } from "../lib/models.js";
+
+/**
+ * TODO: Describe ${className}.
+ * Register it by adding an instance to \`AdminPanel\`'s \`resources\` option, e.g.
+ * \`resources: [new ${className}(${modelVar}, ${tableVar})]\` (see docs/admin.md).
+ */
+export class ${className} extends AdminResource {
+	constructor(
+		private readonly ${modelVar}: AdminModel,
+		private readonly ${tableVar}: Table,
+	) {
+		super();
+	}
+
+	get key(): string {
+		// TODO: URL slug shown in admin routes
+		return "${snakeCase(base)}";
+	}
+
+	get label(): string {
+		// TODO: resource name shown in nav and headings
+		return "${base}";
+	}
+
+	get model(): AdminModel {
+		return this.${modelVar};
+	}
+
+	get table(): Table {
+		return this.${tableVar};
+	}
+
+	get primaryKey(): string {
+		// TODO: adjust if the primary key column is not "id"
+		return "id";
+	}
+
+	// TODO: implement form() to make this resource writable, e.g.:
+	// form() {
+	//   return new ${base}Form();
+	// }
+}
+`;
+};
+
+/**
  * Builds the destination path and content of a template (no side effects). Throws if `type`
  * is unknown.
  */
 export const planGeneration = (options: GenerateOptions): GenerationPlan => {
-	const { type, name, dialect = "sqlite" } = options;
+	const { type, name, dialect } = options;
 	if (!GENERATE_TYPES.includes(type)) {
 		throw new Error(`Unknown type: ${type}`);
+	}
+	if (dialect !== undefined && type !== "model") {
+		throw new Error(`--dialect only applies to the model template, not "${type}"`);
 	}
 
 	const className = classNameFor(type, name);
@@ -334,7 +412,7 @@ export const planGeneration = (options: GenerateOptions): GenerationPlan => {
 			case "handler":
 				return handlerTemplate(className);
 			case "model":
-				return modelTemplate(className, base, dialect);
+				return modelTemplate(className, base, dialect ?? "sqlite");
 			case "form":
 				return formTemplate(className);
 			case "job":
@@ -345,6 +423,8 @@ export const planGeneration = (options: GenerateOptions): GenerationPlan => {
 				return viewTemplate(className);
 			case "seed":
 				return seedTemplate(base);
+			case "admin-resource":
+				return adminResourceTemplate(className, base);
 		}
 	})();
 
