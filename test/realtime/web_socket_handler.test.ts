@@ -36,6 +36,15 @@ const createFakeUpgradeWebSocket = () => {
 };
 
 /**
+ * Builds a `CloseEvent`-typed value without relying on the `CloseEvent`
+ * global. Node 22 (the oldest runtime this project supports, and the one
+ * CI runs on) doesn't have `CloseEvent` (it was only added in Node 23), so
+ * a plain `Event` is downcast instead. The handlers under test never read
+ * `CloseEvent`-specific members (code/reason/wasClean), so this is safe.
+ */
+const createCloseEvent = (): CloseEvent => new Event("close") as CloseEvent;
+
+/**
  * A stub that satisfies only the minimal members required by `hono/ws`'s
  * `WSContext`. Returns the `send` mock itself (passing a property-accessed
  * value like `ws.send` directly to `expect` triggers oxlint's
@@ -89,7 +98,7 @@ describe("WebSocketHandler", () => {
 		const { ws } = createStubWSContext();
 		events.onOpen(new Event("open"), ws);
 		events.onMessage(new MessageEvent("message", { data: "hello" }), ws);
-		events.onClose(new CloseEvent("close"), ws);
+		events.onClose(createCloseEvent(), ws);
 
 		expect(opened).toEqual([{ path: "/ws", ws }]);
 		expect(messaged).toEqual([{ data: "hello", ws }]);
@@ -142,7 +151,7 @@ describe("BroadcastWebSocket", () => {
 		const events = getCaptured();
 		const { ws, send } = createStubWSContext();
 		events?.onOpen?.(new Event("open"), ws);
-		events?.onClose?.(new CloseEvent("close"), ws);
+		events?.onClose?.(createCloseEvent(), ws);
 
 		await broadcaster.publish("room:1", { data: "hello" });
 
@@ -162,7 +171,7 @@ describe("BroadcastWebSocket", () => {
 		events?.onOpen?.(new Event("open"), ws);
 
 		expect(() => {
-			events?.onClose?.(new CloseEvent("close"), ws);
+			events?.onClose?.(createCloseEvent(), ws);
 			events?.onError?.(new Event("error"), ws);
 		}).not.toThrow();
 
@@ -187,7 +196,7 @@ describe("BroadcastWebSocket", () => {
 		const { ws: ws2, send: send2 } = createStubWSContext();
 		eventsForSecond?.onOpen?.(new Event("open"), ws2);
 
-		eventsForFirst?.onClose?.(new CloseEvent("close"), ws1);
+		eventsForFirst?.onClose?.(createCloseEvent(), ws1);
 		await broadcaster.publish("room:1", { data: "hello" });
 
 		expect(send1).not.toHaveBeenCalled();
