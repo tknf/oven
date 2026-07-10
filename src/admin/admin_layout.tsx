@@ -86,8 +86,8 @@ const navItemMatchesPath = (href: string, currentPath: string): boolean =>
 	href === currentPath || currentPath.startsWith(`${href}/`);
 
 /**
- * Renders the left-hand sidebar nav (Django admin's `#nav-sidebar` equivalent):
- * a vertical link list, no JS. Items are split into two groups by
+ * Renders the left-hand sidebar nav (`#nav-sidebar`): a vertical link list,
+ * no JS. Items are split into two groups by
  * `AdminNavItem#group` — `"section"` items (dashboard, jobs, settings, audit)
  * render first, followed by a `resourcesLabel` heading and the `"resource"`
  * items (one per mounted `AdminResource`), if any. This keeps the sidebar
@@ -173,10 +173,9 @@ const AdminBreadcrumbs = ({ breadcrumbs, t }: { breadcrumbs: AdminBreadcrumb[]; 
 };
 
 /**
- * Renders the header's user-tools block (Django admin's `#user-tools`
- * equivalent: a greeting plus links such as "View site" / "Log out").
- * Renders nothing when `userTools` is `undefined` (not injected), so the
- * block is fully backward compatible.
+ * Renders the header's user-tools block (`#user-tools`): a greeting plus
+ * links such as "View site" / "Log out". Renders nothing when `userTools` is
+ * `undefined` (not injected), so the block is fully backward compatible.
  */
 const AdminUserToolsBar = ({
 	userTools,
@@ -211,8 +210,8 @@ const AdminUserToolsBar = ({
 };
 
 /**
- * Renders the flash message list (Django admin's `messagelist`). Renders
- * nothing when `messages` is empty. Each entry gets `role="alert"` (error) or
+ * Renders the flash message list (`ul.messagelist`). Renders nothing when
+ * `messages` is empty. Each entry gets `role="alert"` (error) or
  * `role="status"` (success/info) so assistive technology announces it without
  * the operator having to find it visually.
  */

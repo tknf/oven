@@ -61,10 +61,22 @@ import type { FormInput, FormInputValue, FormResult } from "../form/form.js";
 import { RouteHandler } from "../routing/route_handler.js";
 import type { Csrf } from "../security/csrf.js";
 import type { Session } from "../session/session.js";
+import { LastActiveSuperuserError } from "./admin_accounts_errors.js";
 import { bindAdminT } from "./admin_catalog.js";
 import type { AdminT } from "./admin_catalog.js";
-import { resourcePermission } from "./admin_permissions.js";
+import {
+	ADMIN_BUILTIN_PERMISSIONS,
+	resourcePermission,
+	resourcePermissions,
+} from "./admin_permissions.js";
 import type { AdminInline, AdminResource } from "./admin_resource.js";
+import { AdminAccountsGroupsDeleteView } from "./admin_accounts_groups_delete_view.js";
+import { AdminAccountsGroupsFormView } from "./admin_accounts_groups_form_view.js";
+import { AdminAccountsGroupsListView } from "./admin_accounts_groups_list_view.js";
+import { AdminAccountsUsersDeleteView } from "./admin_accounts_users_delete_view.js";
+import type { AdminAccountsCheckboxOption } from "./admin_accounts_users_form_view.js";
+import { AdminAccountsUsersFormView } from "./admin_accounts_users_form_view.js";
+import { AdminAccountsUsersListView } from "./admin_accounts_users_list_view.js";
 import { AdminAuditView } from "./admin_audit_view.js";
 import { AdminJobsView } from "./admin_jobs_view.js";
 import type { AdminBreadcrumb, AdminNavItem } from "./admin_layout.js";
@@ -83,7 +95,9 @@ import type {
 import { AdminResourceShowView } from "./admin_resource_show_view.js";
 import { AdminSettingsView } from "./admin_settings_view.js";
 import type {
+	AdminAccountsGroupRow,
 	AdminAccountsGroups,
+	AdminAccountsUserRow,
 	AdminAccountsUsers,
 	AdminAuditLog,
 	AdminAuditRow,
@@ -108,6 +122,15 @@ const ADMIN_MESSAGES_FLASH_KEY = "__oven_admin_messages__";
  * convention as `ADMIN_MESSAGES_FLASH_KEY`.
  */
 const ADMIN_IDENTITY_SESSION_KEY = "__oven_admin_identity__";
+
+/**
+ * Sentinel `requiredPermission` returns for a route that only a superuser may
+ * reach (the `accounts` section: operator-account management), bypassing the
+ * granted-permission-set check entirely rather than requiring some specific
+ * permission string a non-superuser could be granted. Distinct from `null`
+ * (no permission required at all, open to every active operator).
+ */
+const SUPERUSER_ONLY = Symbol("AdminPanel superuser-only route");
 
 /** Whether `value` has the shape of a single `AdminMessage`. */
 const isAdminMessage = (value: unknown): value is AdminMessage =>
@@ -632,16 +655,24 @@ const persistInlineRows = async (
 };
 
 /**
- * Normalizes `body._selected_action` (the row-selection checkboxes on the list
- * screen's bulk-action form; absent, a single value, or an array depending on how
- * many rows were checked) into a `string[]` of selected primary key values. A
- * `File` entry can never legitimately appear here (the field is a checkbox, not a
- * file input), so it is dropped rather than stringified.
+ * Normalizes a `FormInput` field that may be absent, a single value, or an array
+ * (however many checkboxes of a same-named group were checked) into a
+ * `string[]`. A `File` entry can never legitimately appear in a checkbox-group
+ * field, so it is dropped rather than stringified.
  */
-const selectedActionIds = (body: FormInput): string[] => {
-	const raw = body._selected_action;
+const multiValueField = (body: FormInput, name: string): string[] => {
+	const raw = body[name];
 	const values = raw === undefined ? [] : Array.isArray(raw) ? raw : [raw];
 	return values.filter((value): value is string => typeof value === "string");
+};
+
+/** Normalizes `body._selected_action` (the list screen's bulk-action row-selection checkboxes) via `multiValueField`. */
+const selectedActionIds = (body: FormInput): string[] => multiValueField(body, "_selected_action");
+
+/** Reads a single-value `FormInput` field as a string, or `""` when absent, a `File`, or an array. */
+const stringFormField = (body: FormInput, name: string): string => {
+	const value = body[name];
+	return typeof value === "string" ? value : "";
 };
 
 /**
@@ -673,6 +704,79 @@ const toAuditRow = (row: Record<string, unknown>): AdminAuditRow => ({
 	changes: row.changes == null ? null : stringify(row.changes),
 	createdAt: Number(row.createdAt ?? 0),
 });
+
+/**
+ * Every permission an accounts management UI may grant to a user or group:
+ * the built-in non-resource permissions (`ADMIN_BUILTIN_PERMISSIONS`) plus
+ * each wired resource's four action permissions (`resourcePermissions`). This
+ * is deliberately the same enumeration a resource's own permission gate
+ * checks against (`requiredPermission`), so a permission granted through the
+ * accounts screen is guaranteed to be one the gate can actually match.
+ */
+const knownAccountPermissions = (resources: AdminResource[]): string[] => {
+	const permissions: string[] = [...ADMIN_BUILTIN_PERMISSIONS];
+	for (const resource of resources) permissions.push(...resourcePermissions(resource.key));
+	return permissions;
+};
+
+/**
+ * Merges a user's or group's submitted permission checkboxes with its
+ * previously-stored permission strings, for the accounts users/groups
+ * create and update handlers (`wireAccounts`/`wireAccountsGroups`).
+ * `submitted` is filtered down to `known` (a checkbox can only ever submit a
+ * value that was rendered, but the body is untrusted input all the same);
+ * `stored` entries absent from `known` (e.g. granted by an app no longer
+ * wiring that resource) are preserved as `retainedUnknown` so saving the form
+ * never silently drops a permission it has no checkbox to represent.
+ * `nextPermissions` — the checked and retained-unknown permissions combined,
+ * de-duplicated — is what a create/update handler writes back; a create
+ * handler (no prior row) calls this with `stored: []`, so `retainedUnknown` is
+ * always `[]` and `nextPermissions` is just the de-duplicated checked set.
+ */
+const mergePermissionSelection = (
+	known: string[],
+	stored: string[],
+	submitted: string[],
+): { checkedPermissions: string[]; retainedUnknown: string[]; nextPermissions: string[] } => {
+	const knownSet = new Set(known);
+	const checkedPermissions = submitted.filter((permission) => knownSet.has(permission));
+	const retainedUnknown = stored.filter((permission) => !knownSet.has(permission));
+	const nextPermissions = [...new Set([...checkedPermissions, ...retainedUnknown])];
+	return { checkedPermissions, retainedUnknown, nextPermissions };
+};
+
+/** Builds one checkbox option per `known` permission string, checked according to `checked`. */
+const buildPermissionOptions = (
+	known: string[],
+	checked: ReadonlySet<string>,
+): AdminAccountsCheckboxOption[] =>
+	known.map((permission) => ({
+		value: permission,
+		label: permission,
+		checked: checked.has(permission),
+	}));
+
+/** Builds one checkbox option per group row, checked according to `memberOf` (a set of group ids). */
+const buildGroupOptions = (
+	groups: AdminAccountsGroupRow[],
+	memberOf: ReadonlySet<string>,
+): AdminAccountsCheckboxOption[] =>
+	groups.map((group) => ({ value: group.id, label: group.name, checked: memberOf.has(group.id) }));
+
+/**
+ * Fetches one group row by id, via `listGroups().find(...)` rather than a
+ * dedicated retrieve method: `AdminAccountsGroups` (`admin_types.ts`)
+ * deliberately exposes no single-group lookup, since the groups management
+ * screen expects a small enough group count that scanning the full list is
+ * acceptable.
+ */
+const findGroup = async (
+	groups: AdminAccountsGroups,
+	id: string,
+): Promise<AdminAccountsGroupRow | undefined> => {
+	const rows = await groups.listGroups();
+	return rows.find((row) => row.id === id);
+};
 
 /**
  * The logged-in operator's identity, as returned by `AdminPanelOptions.auth.authenticate`
@@ -733,8 +837,8 @@ export type AdminPanelOptions<E extends Env = Env> = {
 	 */
 	session?: (c: Context<E>) => Session;
 	/**
-	 * Header user-tools block (Django admin's `#user-tools`: a greeting plus
-	 * links such as "View site" / "Log out"), injected the same optional way
+	 * Header user-tools block (`#user-tools`: a greeting plus links such as
+	 * "View site" / "Log out"), injected the same optional way
 	 * as `csrf`/`audit`/`session`. Authentication/session details are the
 	 * app's responsibility, not admin's, so the app builds the greeting text
 	 * and link list itself from `Context`. When not injected, no user-tools
@@ -798,6 +902,25 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 	 * injected (used by `warnCsrfMissingOnce` to prevent duplicate warnings).
 	 */
 	private csrfMissingWarned = false;
+
+	/**
+	 * The current request's re-validated operator row (`accounts.users.retrieve`)
+	 * plus its granted permission set, keyed by the underlying `Request` object
+	 * so views rendered later in the same request (namely `buildNav`'s
+	 * superuser-only Accounts link and its per-section permission filter) can
+	 * read them without threading them through every call site. Set in
+	 * `middleware()` right after the row is re-validated; never set for a
+	 * request with no `accounts` option or no logged-in identity.
+	 *
+	 * `granted` is `null` for a superuser (whose bypass makes a granted set
+	 * meaningless) and is otherwise always populated — non-superusers need it
+	 * both for the permission gate below and for `buildNav`'s filter, so it is
+	 * fetched once per request regardless of which route was hit.
+	 */
+	private readonly requestOperator = new WeakMap<
+		Request,
+		{ row: AdminAccountsUserRow; granted: ReadonlySet<string> | null }
+	>();
 
 	constructor(options: AdminPanelOptions<E>) {
 		super();
@@ -865,27 +988,45 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 					}
 
 					/**
-					 * Superusers bypass permission checks entirely; everyone else needs
-					 * the resolved permission (when the route requires one) to be in the
-					 * union of their own permission set and their groups' sets, compared
-					 * by literal set membership (`admin_permissions.ts`). The granted set
-					 * is fetched only when an actual check happens — a superuser or a
-					 * `null` required permission reads nothing beyond `retrieve` above.
+					 * Superusers bypass permission checks entirely, so their granted set
+					 * is never computed (`null`) and the route's required permission is
+					 * never even resolved.
 					 */
-					if (!row.isSuperuser) {
+					if (row.isSuperuser) {
+						this.requestOperator.set(c.req.raw, { row, granted: null });
+					} else {
+						/**
+						 * The route's required permission is resolved before the granted
+						 * set is fetched, so a `SUPERUSER_ONLY` route (the `accounts`
+						 * section, unreachable by any non-superuser regardless of granted
+						 * permissions) short-circuits to 403 without a wasted query.
+						 * Otherwise the operator's own permission set and their groups'
+						 * sets are fetched in parallel (rather than one after another) and
+						 * unioned into the granted set, then stashed alongside the row so
+						 * a view rendered later in this request (`buildNav`'s filter) can
+						 * read it without a second fetch.
+						 */
 						const required = await this.requiredPermission(c);
-						if (required !== null) {
-							const granted = new Set(await options.accounts.users.userPermissions(identity.id));
-							if (options.accounts.groups) {
-								for (const permission of await options.accounts.groups.permissionsForUser(
-									identity.id,
-								)) {
-									granted.add(permission);
-								}
-							}
-							if (!granted.has(required)) {
-								return c.text("Forbidden", options.denyStatus ?? 403);
-							}
+						if (required === SUPERUSER_ONLY) {
+							return c.text("Forbidden", options.denyStatus ?? 403);
+						}
+
+						const [ownPermissions, groupPermissions] = await Promise.all([
+							options.accounts.users.userPermissions(identity.id),
+							options.accounts.groups
+								? options.accounts.groups.permissionsForUser(identity.id)
+								: Promise.resolve([]),
+						]);
+						const granted = new Set([...ownPermissions, ...groupPermissions]);
+						this.requestOperator.set(c.req.raw, { row, granted });
+
+						/**
+						 * The resolved permission (when the route requires one) must be in
+						 * the granted set above, compared by literal set membership
+						 * (`admin_permissions.ts`).
+						 */
+						if (required !== null && !granted.has(required)) {
+							return c.text("Forbidden", options.denyStatus ?? 403);
 						}
 					}
 				}
@@ -920,18 +1061,34 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 	 * (any active operator may see it) and unrecognized paths (which simply fall
 	 * through to the 404 they would produce anyway).
 	 *
+	 * This method is the single source of truth for the route-to-permission
+	 * table exercised by the `requiredPermission mapping` test suite
+	 * (`test/admin/admin_panel_accounts_ui.test.ts`): when wiring a new route
+	 * under any section, add its mapping here and update that table-driven test
+	 * so drift between the two is caught.
+	 *
 	 * Path segments are matched raw (never decoded): permissions are compared by
 	 * literal set membership only, so a key segment that does not correspond to a
 	 * registered resource never matches any granted permission.
 	 *
 	 * `POST /resources/<key>` serves both the create form and the list screen's
 	 * bulk-action form (see `wireResources`), so the body is peeked via
-	 * `c.req.parseBody()` to tell them apart: `action=delete` requires the delete
-	 * permission, anything else is a create submission. Hono caches the parsed
-	 * body on the request (`HonoRequest#bodyCache`), so `Csrf#verify` and the
-	 * route handler can safely `parseBody` again afterwards.
+	 * `c.req.parseBody()` to tell them apart the same way the route handler
+	 * does: a string `action` field (present, even empty, only on the
+	 * bulk-action form's `<select name="action">`) means bulk action, its
+	 * absence means a create submission. Within the bulk-action form,
+	 * `action=delete` requires the delete permission; any other value is a
+	 * no-op redirect (`handleBulkAction`) that requires no permission at all.
+	 * Hono caches the parsed body on the request (`HonoRequest#bodyCache`), so
+	 * `Csrf#verify` and the route handler can safely `parseBody` again
+	 * afterwards.
+	 *
+	 * The `accounts` section (operator-account management) resolves to the
+	 * `SUPERUSER_ONLY` sentinel for every path under it, regardless of method or
+	 * depth: unlike every other section, there is no granted permission string a
+	 * non-superuser could hold to reach it.
 	 */
-	private async requiredPermission(c: Context<E>): Promise<string | null> {
+	private async requiredPermission(c: Context<E>): Promise<string | typeof SUPERUSER_ONLY | null> {
 		const basePath = this.resolveBasePath();
 		const path = c.req.path;
 		if (path === basePath) return null;
@@ -968,6 +1125,8 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 			return null;
 		}
 
+		if (segments[0] === "accounts") return SUPERUSER_ONLY;
+
 		if (segments[0] === "resources" && segments.length >= 2 && segments[1] !== "") {
 			const key = segments[1];
 			if (method === "GET") {
@@ -986,7 +1145,10 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 			if (method === "POST") {
 				if (segments.length === 2) {
 					const body = await c.req.parseBody();
-					return resourcePermission(key, body.action === "delete" ? "delete" : "create");
+					if (typeof body.action === "string") {
+						return body.action === "delete" ? resourcePermission(key, "delete") : null;
+					}
+					return resourcePermission(key, "create");
 				}
 				/** `POST /resources/<key>/<id>` is the edit form's submission (see `wireResources`). */
 				if (segments.length === 3) return resourcePermission(key, "update");
@@ -1022,6 +1184,17 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 	/** Removes the logged-in identity from the session, if `panelOptions.session` is injected. */
 	private clearIdentity(c: Context<E>): void {
 		this.panelOptions?.session?.(c).unset(ADMIN_IDENTITY_SESSION_KEY);
+	}
+
+	/**
+	 * The current request's re-validated operator row and granted permission
+	 * set, as stashed by `middleware()` (`requestOperator`). `undefined` when
+	 * `accounts` is not injected or the request has no logged-in identity.
+	 */
+	private currentOperator(
+		c: Context<E>,
+	): { row: AdminAccountsUserRow; granted: ReadonlySet<string> | null } | undefined {
+		return this.requestOperator.get(c.req.raw);
 	}
 
 	/**
@@ -1091,13 +1264,14 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 
 			const brand = options.brand ?? "Admin";
 			const t = bindAdminT(c);
-			const resources = options.resources ?? [];
+			const resources = this.visibleResources(c);
 			const basePath = this.resolveBasePath();
+			const allowed = this.permissionFilter(c);
 
 			return c.html(
 				<AdminLayout
 					brand={brand}
-					nav={this.buildNav(t)}
+					nav={this.buildNav(c, t)}
 					resourcesLabel={t("index.resources")}
 					lang={c.get("language") ?? "en"}
 					breadcrumbs={[{ label: t("breadcrumb.home") }]}
@@ -1119,7 +1293,8 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 												<a href={`${basePath}/resources/${resource.key}`}>{resource.label}</a>
 											</th>
 											<td>
-												{resource.canWrite() ? (
+												{resource.canWrite() &&
+												allowed(resourcePermission(resource.key, "create")) ? (
 													<a
 														class="addlink"
 														href={`${basePath}/resources/${resource.key}/new`}
@@ -1232,9 +1407,9 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 	}
 
 	/**
-	 * Resolves the post-save redirect target from the pressed submit button's `name`,
-	 * matching Django admin's `_save`/`_addanother`/`_continue` convention
-	 * (`submit_line.html`). Any button name other than `_addanother`/`_continue` —
+	 * Resolves the post-save redirect target from the pressed submit button's `name`:
+	 * `_addanother` redirects to the "new" screen and `_continue` redirects back to
+	 * the "edit" screen for the just-saved row. Any button name other than those two —
 	 * including `_save` and no button name at all (e.g. a caller posting without one
 	 * of these fields) — falls back to the list, which is the pre-existing behavior.
 	 */
@@ -1247,17 +1422,76 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 		return `${basePath}/resources/${key}`;
 	}
 
-	/** Builds the nav item list, including only wired sections (jobs/settings/audit). */
-	private buildNav(t: AdminT): AdminNavItem[] {
+	/**
+	 * Resolves the granted-permission-set filter for the current request:
+	 * always `true` when there is nothing to filter against — `accounts` not
+	 * injected, the operator unknown (e.g. the login screen), or the operator
+	 * being a superuser — and literal set membership in the operator's granted
+	 * set (`currentOperator`) otherwise. Shared by `buildNav` and
+	 * `visibleResources` so a section or resource link never appears where
+	 * opening it would actually 403.
+	 */
+	private permissionFilter(c: Context<E>): (permission: string) => boolean {
+		const operator = this.panelOptions?.accounts ? this.currentOperator(c) : undefined;
+		const granted = operator && !operator.row.isSuperuser ? operator.granted : null;
+		return (permission) => !granted || granted.has(permission);
+	}
+
+	/**
+	 * The wired resources visible to the current request's operator: every
+	 * resource when `permissionFilter` has nothing to filter against,
+	 * otherwise only those whose `resource.<key>.view` permission is in the
+	 * operator's granted set. Used by both the dashboard's resource-list
+	 * module (`register()`) and `buildNav`'s resource links, so the two never
+	 * disagree — a resource that would 403 the operator never appears in
+	 * either place.
+	 */
+	private visibleResources(c: Context<E>): AdminResource[] {
+		const allowed = this.permissionFilter(c);
+		return (this.panelOptions?.resources ?? []).filter((resource) =>
+			allowed(resourcePermission(resource.key, "view")),
+		);
+	}
+
+	/**
+	 * Builds the nav item list, including only wired sections
+	 * (jobs/settings/audit/accounts/resources). The dashboard link is always
+	 * shown, and the Accounts link is gated on the current request's operator
+	 * being a superuser (`currentOperator`) — the only operators who can ever
+	 * reach `/accounts/*` (see `requiredPermission`'s `SUPERUSER_ONLY`
+	 * resolution) — so a non-superuser never sees a link to a screen that would
+	 * 403 them.
+	 *
+	 * When `accounts` is injected and the current operator is a known
+	 * non-superuser, every other section is additionally filtered against that
+	 * operator's granted permission set via `permissionFilter`, so a link only
+	 * appears if opening it would actually succeed. This filter is skipped
+	 * (every wired section shown, as before) when `accounts` is not injected or
+	 * the operator is unknown (e.g. the login screen) — both cases where there
+	 * is no granted set to check against.
+	 */
+	private buildNav(c: Context<E>, t: AdminT): AdminNavItem[] {
 		const options = this.panelOptions;
 		const basePath = this.resolveBasePath();
 		const nav: AdminNavItem[] = [{ href: basePath, label: t("nav.dashboard") }];
 		if (!options) return nav;
 
-		if (options.jobs) nav.push({ href: `${basePath}/jobs`, label: t("nav.jobs") });
-		if (options.settings) nav.push({ href: `${basePath}/settings`, label: t("nav.settings") });
-		if (options.audit) nav.push({ href: `${basePath}/audit`, label: t("nav.audit") });
-		for (const resource of options.resources ?? []) {
+		const operator = options.accounts ? this.currentOperator(c) : undefined;
+		const allowed = this.permissionFilter(c);
+
+		if (options.jobs && allowed("jobs.view")) {
+			nav.push({ href: `${basePath}/jobs`, label: t("nav.jobs") });
+		}
+		if (options.settings && allowed("settings.view")) {
+			nav.push({ href: `${basePath}/settings`, label: t("nav.settings") });
+		}
+		if (options.audit && allowed("audit.view")) {
+			nav.push({ href: `${basePath}/audit`, label: t("nav.audit") });
+		}
+		if (options.accounts && operator?.row.isSuperuser) {
+			nav.push({ href: `${basePath}/accounts/users`, label: t("nav.accounts") });
+		}
+		for (const resource of this.visibleResources(c)) {
 			nav.push({
 				href: `${basePath}/resources/${resource.key}`,
 				label: resource.label,
@@ -1323,7 +1557,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 			return c.html(
 				<AdminLayout
 					brand={this.panelOptions?.brand ?? "Admin"}
-					nav={this.buildNav(t)}
+					nav={this.buildNav(c, t)}
 					resourcesLabel={t("index.resources")}
 					lang={c.get("language") ?? "en"}
 					breadcrumbs={[
@@ -1377,6 +1611,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 		if (options.jobs) this.wireJobs();
 		if (options.settings) this.wireSettings();
 		if (options.audit) this.wireAudit();
+		if (options.accounts) this.wireAccounts();
 		if (options.resources && options.resources.length > 0) this.wireResources();
 	}
 
@@ -1422,7 +1657,22 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 			const next = this.sanitizeNext(typeof body.next === "string" ? body.next : undefined);
 
 			const identity = await auth.authenticate(c, { username, password });
-			if (!identity) {
+			/**
+			 * When `accounts` is injected, `identity.id` MUST be an accounts user id
+			 * (see `effectiveAuth`'s JSDoc) because the accounts gate in
+			 * `middleware()` re-validates the operator row by that id on every
+			 * request. A misconfigured explicit `auth` that returns an id with no
+			 * matching row (or an inactive one) would otherwise log the browser in
+			 * only for the very next request's re-validation to fail, clear the
+			 * identity, and redirect back to `/login` — an infinite loop. Checking
+			 * here instead surfaces the misconfiguration immediately, as an
+			 * ordinary invalid-credentials response, and skips storing the identity.
+			 */
+			const row =
+				identity && options.accounts
+					? await options.accounts.users.retrieve(identity.id)
+					: undefined;
+			if (!identity || (options.accounts && (!row || !row.isActive))) {
 				const t = bindAdminT(c);
 				return c.html(
 					<AdminLoginView
@@ -1472,7 +1722,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 			return c.html(
 				<AdminLayout
 					brand={options.brand ?? "Admin"}
-					nav={this.buildNav(t)}
+					nav={this.buildNav(c, t)}
 					resourcesLabel={t("index.resources")}
 					lang={c.get("language") ?? "en"}
 					breadcrumbs={[this.homeBreadcrumb(t), { label: t("nav.jobs") }]}
@@ -1535,7 +1785,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 			return c.html(
 				<AdminLayout
 					brand={options.brand ?? "Admin"}
-					nav={this.buildNav(t)}
+					nav={this.buildNav(c, t)}
 					resourcesLabel={t("index.resources")}
 					lang={c.get("language") ?? "en"}
 					breadcrumbs={[this.homeBreadcrumb(t), { label: t("nav.settings") }]}
@@ -1603,7 +1853,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 			return c.html(
 				<AdminLayout
 					brand={options.brand ?? "Admin"}
-					nav={this.buildNav(t)}
+					nav={this.buildNav(c, t)}
 					resourcesLabel={t("index.resources")}
 					lang={c.get("language") ?? "en"}
 					breadcrumbs={[this.homeBreadcrumb(t), { label: t("nav.audit") }]}
@@ -1622,6 +1872,801 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 				</AdminLayout>,
 			);
 		});
+	}
+
+	/**
+	 * Renders the accounts-user create/edit form screen (shared by the `new`
+	 * GET, the `new`/edit POST failure re-renders, and the `setPassword` POST
+	 * failure re-render — see `wireAccounts`), wrapped in `AdminLayout` with the
+	 * accounts breadcrumb trail. `status` defaults to `200` (the initial GET);
+	 * every failure re-render passes `422`.
+	 */
+	private renderAccountsUserForm(
+		c: Context<E>,
+		args: {
+			mode: "new" | "edit";
+			id?: string;
+			values: { username: string; label: string; isActive: boolean; isSuperuser: boolean };
+			permissionOptions: AdminAccountsCheckboxOption[];
+			unknownPermissions: string[];
+			groupOptions?: AdminAccountsCheckboxOption[];
+			error?: string;
+			passwordError?: string;
+			status?: ContentfulStatusCode;
+		},
+	): Response | Promise<Response> {
+		const options = this.panelOptions;
+		const basePath = this.resolveBasePath();
+		const listHref = `${basePath}/accounts/users`;
+		const t = bindAdminT(c);
+		const action =
+			args.mode === "new" ? listHref : `${listHref}/${encodeURIComponent(args.id ?? "")}`;
+
+		return c.html(
+			<AdminLayout
+				brand={options?.brand ?? "Admin"}
+				nav={this.buildNav(c, t)}
+				resourcesLabel={t("index.resources")}
+				lang={c.get("language") ?? "en"}
+				breadcrumbs={[
+					this.homeBreadcrumb(t),
+					{ href: listHref, label: t("nav.accounts") },
+					{
+						label:
+							args.mode === "new" ? t("accounts.users.newTitle") : t("accounts.users.editTitle"),
+					},
+				]}
+				messages={this.consumeMessages(c)}
+				userTools={this.resolveUserTools(c)}
+				csrfToken={this.csrfToken(c)}
+				currentPath={c.req.path}
+				t={t}
+			>
+				<AdminAccountsUsersFormView
+					basePath={basePath}
+					mode={args.mode}
+					action={action}
+					id={args.id}
+					values={args.values}
+					permissionOptions={args.permissionOptions}
+					unknownPermissions={args.unknownPermissions}
+					groupOptions={args.groupOptions}
+					error={args.error ?? null}
+					passwordError={args.passwordError ?? null}
+					csrfToken={this.csrfToken(c)}
+					t={t}
+				/>
+			</AdminLayout>,
+			args.status ?? 200,
+		);
+	}
+
+	/**
+	 * Registers the superuser-only operator accounts screen (`/accounts/users*`;
+	 * see `AdminPanelOptions.accounts`). Every route under this prefix resolves
+	 * to `requiredPermission`'s `SUPERUSER_ONLY` sentinel, so `middleware()`
+	 * denies a non-superuser before any handler here runs — these handlers
+	 * still guard on `options?.accounts` defensively (same convention as every
+	 * other `wire*` method), but never need to re-check the operator's role.
+	 *
+	 * Group membership editing (`groups` checkboxes, `setUserGroups`) is
+	 * included whenever `AdminPanelOptions.accounts.groups` is injected. The
+	 * dedicated groups management screen (`/accounts/groups*`, group CRUD
+	 * rather than membership editing) is registered separately by
+	 * `wireAccountsGroups`, called at the end of this method.
+	 */
+	private wireAccounts(): void {
+		this.get("/accounts/users", async (c) => {
+			const options = this.panelOptions;
+			if (!options?.accounts) return c.notFound();
+
+			const query = c.req.query("q") ?? "";
+			const page = parsePage(c.req.query("p") ?? undefined);
+			const [rows, total] = await Promise.all([
+				options.accounts.users.listUsers({
+					query: query || undefined,
+					limit: PAGE_SIZE,
+					offset: page * PAGE_SIZE,
+				}),
+				options.accounts.users.count(query || undefined),
+			]);
+			const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
+			const t = bindAdminT(c);
+
+			return c.html(
+				<AdminLayout
+					brand={options.brand ?? "Admin"}
+					nav={this.buildNav(c, t)}
+					resourcesLabel={t("index.resources")}
+					lang={c.get("language") ?? "en"}
+					breadcrumbs={[this.homeBreadcrumb(t), { label: t("nav.accounts") }]}
+					messages={this.consumeMessages(c)}
+					userTools={this.resolveUserTools(c)}
+					csrfToken={this.csrfToken(c)}
+					currentPath={c.req.path}
+					t={t}
+				>
+					<AdminAccountsUsersListView
+						basePath={this.resolveBasePath()}
+						rows={rows}
+						query={query}
+						page={page}
+						pageCount={pageCount}
+						total={total}
+						groupsHref={
+							options.accounts.groups ? `${this.resolveBasePath()}/accounts/groups` : undefined
+						}
+						t={t}
+					/>
+				</AdminLayout>,
+			);
+		});
+
+		this.get("/accounts/users/new", async (c) => {
+			const options = this.panelOptions;
+			if (!options?.accounts) return c.notFound();
+
+			const known = knownAccountPermissions(options.resources ?? []);
+			const groups = options.accounts.groups
+				? await options.accounts.groups.listGroups()
+				: undefined;
+
+			return this.renderAccountsUserForm(c, {
+				mode: "new",
+				values: { username: "", label: "", isActive: true, isSuperuser: false },
+				permissionOptions: buildPermissionOptions(known, new Set()),
+				unknownPermissions: [],
+				groupOptions: groups ? buildGroupOptions(groups, new Set()) : undefined,
+			});
+		});
+
+		this.post("/accounts/users", async (c) => {
+			const options = this.panelOptions;
+			if (!options?.accounts) return c.notFound();
+			const accounts = options.accounts;
+
+			const body = await c.req.parseBody({ all: true });
+			const username = stringFormField(body, "username");
+			const password = stringFormField(body, "password");
+			const label = stringFormField(body, "label");
+			const isActive = body.isActive !== undefined;
+			const isSuperuser = body.isSuperuser !== undefined;
+			const known = knownAccountPermissions(options.resources ?? []);
+			const { checkedPermissions } = mergePermissionSelection(
+				known,
+				[],
+				multiValueField(body, "permissions"),
+			);
+			const selectedGroups = multiValueField(body, "groups");
+
+			const t = bindAdminT(c);
+			const rerender = async (error: string) => {
+				const groups = accounts.groups ? await accounts.groups.listGroups() : undefined;
+				return this.renderAccountsUserForm(c, {
+					mode: "new",
+					values: { username, label, isActive, isSuperuser },
+					permissionOptions: buildPermissionOptions(known, new Set(checkedPermissions)),
+					unknownPermissions: [],
+					groupOptions: groups ? buildGroupOptions(groups, new Set(selectedGroups)) : undefined,
+					error,
+					status: 422,
+				});
+			};
+
+			let created: AdminAccountsUserRow;
+			try {
+				created = await options.accounts.users.createUser({
+					username,
+					password,
+					label: label || null,
+					isActive,
+					isSuperuser,
+					permissions: checkedPermissions,
+				});
+			} catch (err) {
+				const detail = err instanceof Error ? err.message : String(err);
+				return rerender(t("accounts.users.saveError", { detail }));
+			}
+
+			if (options.accounts.groups)
+				await options.accounts.groups.setUserGroups(created.id, selectedGroups);
+
+			await this.recordAudit(c, "accounts.user.create", created.id, {
+				username: created.username,
+				label: created.label,
+				isActive: created.isActive,
+				isSuperuser: created.isSuperuser,
+				permissions: checkedPermissions,
+			});
+
+			this.flashMessage(c, "success", t("message.added", { label: t("accounts.users.singular") }));
+			return c.redirect(`${this.resolveBasePath()}/accounts/users`, 303);
+		});
+
+		this.get("/accounts/users/:id/edit", async (c) => {
+			const options = this.panelOptions;
+			if (!options?.accounts) return c.notFound();
+
+			const id = c.req.param("id");
+			const row = await options.accounts.users.retrieve(id);
+			if (!row) return c.notFound();
+
+			const known = knownAccountPermissions(options.resources ?? []);
+			const knownSet = new Set(known);
+			const [stored, groups, memberOfRows] = await Promise.all([
+				options.accounts.users.userPermissions(id),
+				options.accounts.groups ? options.accounts.groups.listGroups() : Promise.resolve(undefined),
+				options.accounts.groups
+					? options.accounts.groups.userGroups(id)
+					: Promise.resolve(undefined),
+			]);
+			const memberOf = memberOfRows ? new Set(memberOfRows.map((group) => group.id)) : undefined;
+
+			return this.renderAccountsUserForm(c, {
+				mode: "edit",
+				id,
+				values: {
+					username: row.username,
+					label: row.label ?? "",
+					isActive: row.isActive,
+					isSuperuser: row.isSuperuser,
+				},
+				permissionOptions: buildPermissionOptions(
+					known,
+					new Set(stored.filter((p) => knownSet.has(p))),
+				),
+				unknownPermissions: stored.filter((p) => !knownSet.has(p)),
+				groupOptions: groups ? buildGroupOptions(groups, memberOf ?? new Set()) : undefined,
+			});
+		});
+
+		this.post("/accounts/users/:id", async (c) => {
+			const options = this.panelOptions;
+			if (!options?.accounts) return c.notFound();
+			const accounts = options.accounts;
+
+			const id = c.req.param("id");
+			const existing = await accounts.users.retrieve(id);
+			if (!existing) return c.notFound();
+
+			const body = await c.req.parseBody({ all: true });
+			const username = stringFormField(body, "username");
+			const label = stringFormField(body, "label");
+			const isActive = body.isActive !== undefined;
+			const isSuperuser = body.isSuperuser !== undefined;
+			const known = knownAccountPermissions(options.resources ?? []);
+			const stored = await accounts.users.userPermissions(id);
+			const { checkedPermissions, retainedUnknown, nextPermissions } = mergePermissionSelection(
+				known,
+				stored,
+				multiValueField(body, "permissions"),
+			);
+			const selectedGroups = multiValueField(body, "groups");
+
+			const t = bindAdminT(c);
+			const rerender = async (error: string) => {
+				const groups = accounts.groups ? await accounts.groups.listGroups() : undefined;
+				return this.renderAccountsUserForm(c, {
+					mode: "edit",
+					id,
+					values: { username, label, isActive, isSuperuser },
+					permissionOptions: buildPermissionOptions(known, new Set(checkedPermissions)),
+					unknownPermissions: retainedUnknown,
+					groupOptions: groups ? buildGroupOptions(groups, new Set(selectedGroups)) : undefined,
+					error,
+					status: 422,
+				});
+			};
+
+			/**
+			 * Refusing to deactivate or demote the last remaining active superuser
+			 * is enforced by the accounts service itself (`protectLastActiveSuperuser`),
+			 * as a single conditional write rather than a separate read-then-write
+			 * check here, so concurrent requests can't both pass a check and both
+			 * apply (see `AdminAccountsUsers#updateUser`'s JSDoc).
+			 */
+			let updated: AdminAccountsUserRow | undefined;
+			try {
+				updated = await options.accounts.users.updateUser(
+					id,
+					{ username, label: label || null, isActive, isSuperuser },
+					{ protectLastActiveSuperuser: true },
+				);
+			} catch (err) {
+				if (err instanceof LastActiveSuperuserError) {
+					return rerender(t("accounts.users.lastActiveSuperuserError"));
+				}
+				const detail = err instanceof Error ? err.message : String(err);
+				return rerender(t("accounts.users.saveError", { detail }));
+			}
+			if (!updated) return c.notFound();
+
+			await options.accounts.users.setUserPermissions(id, nextPermissions);
+			if (options.accounts.groups) await options.accounts.groups.setUserGroups(id, selectedGroups);
+
+			await this.recordAudit(c, "accounts.user.update", id, {
+				username: updated.username,
+				label: updated.label,
+				isActive: updated.isActive,
+				isSuperuser: updated.isSuperuser,
+				permissions: nextPermissions,
+			});
+
+			this.flashMessage(
+				c,
+				"success",
+				t("message.changed", { label: t("accounts.users.singular") }),
+			);
+			return c.redirect(
+				`${this.resolveBasePath()}/accounts/users/${encodeURIComponent(id)}/edit`,
+				303,
+			);
+		});
+
+		this.post("/accounts/users/:id/password", async (c) => {
+			const options = this.panelOptions;
+			if (!options?.accounts) return c.notFound();
+
+			const id = c.req.param("id");
+			const existing = await options.accounts.users.retrieve(id);
+			if (!existing) return c.notFound();
+
+			const body = await c.req.parseBody();
+			const password = stringFormField(body, "password");
+			const t = bindAdminT(c);
+
+			try {
+				await options.accounts.users.setPassword(id, password);
+			} catch (err) {
+				const detail = err instanceof Error ? err.message : String(err);
+				const known = knownAccountPermissions(options.resources ?? []);
+				const knownSet = new Set(known);
+				const [stored, groups, memberOfRows] = await Promise.all([
+					options.accounts.users.userPermissions(id),
+					options.accounts.groups
+						? options.accounts.groups.listGroups()
+						: Promise.resolve(undefined),
+					options.accounts.groups
+						? options.accounts.groups.userGroups(id)
+						: Promise.resolve(undefined),
+				]);
+				const memberOf = memberOfRows ? new Set(memberOfRows.map((group) => group.id)) : undefined;
+
+				return this.renderAccountsUserForm(c, {
+					mode: "edit",
+					id,
+					values: {
+						username: existing.username,
+						label: existing.label ?? "",
+						isActive: existing.isActive,
+						isSuperuser: existing.isSuperuser,
+					},
+					permissionOptions: buildPermissionOptions(
+						known,
+						new Set(stored.filter((p) => knownSet.has(p))),
+					),
+					unknownPermissions: stored.filter((p) => !knownSet.has(p)),
+					groupOptions: groups ? buildGroupOptions(groups, memberOf ?? new Set()) : undefined,
+					passwordError: t("accounts.users.saveError", { detail }),
+					status: 422,
+				});
+			}
+
+			await this.recordAudit(c, "accounts.user.setPassword", id);
+			this.flashMessage(
+				c,
+				"success",
+				t("message.changed", { label: t("accounts.users.singular") }),
+			);
+			return c.redirect(
+				`${this.resolveBasePath()}/accounts/users/${encodeURIComponent(id)}/edit`,
+				303,
+			);
+		});
+
+		this.get("/accounts/users/:id/delete", async (c) => {
+			const options = this.panelOptions;
+			if (!options?.accounts) return c.notFound();
+
+			const id = c.req.param("id");
+			const row = await options.accounts.users.retrieve(id);
+			if (!row) return c.notFound();
+
+			const t = bindAdminT(c);
+			const basePath = this.resolveBasePath();
+			const listHref = `${basePath}/accounts/users`;
+
+			return c.html(
+				<AdminLayout
+					brand={options.brand ?? "Admin"}
+					nav={this.buildNav(c, t)}
+					resourcesLabel={t("index.resources")}
+					lang={c.get("language") ?? "en"}
+					breadcrumbs={[
+						this.homeBreadcrumb(t),
+						{ href: listHref, label: t("nav.accounts") },
+						{ href: `${listHref}/${encodeURIComponent(id)}/edit`, label: row.username },
+						{ label: t("action.delete") },
+					]}
+					messages={this.consumeMessages(c)}
+					userTools={this.resolveUserTools(c)}
+					csrfToken={this.csrfToken(c)}
+					currentPath={c.req.path}
+					t={t}
+				>
+					<AdminAccountsUsersDeleteView
+						basePath={basePath}
+						id={id}
+						username={row.username}
+						label={row.label}
+						csrfToken={this.csrfToken(c)}
+						t={t}
+					/>
+				</AdminLayout>,
+			);
+		});
+
+		this.post("/accounts/users/:id/delete", async (c) => {
+			const options = this.panelOptions;
+			if (!options?.accounts) return c.notFound();
+
+			const id = c.req.param("id");
+			const existing = await options.accounts.users.retrieve(id);
+			if (!existing) return c.notFound();
+
+			const listUrl = `${this.resolveBasePath()}/accounts/users`;
+			const body = await c.req.parseBody();
+			if (body.post !== "yes") return c.redirect(listUrl, 303);
+
+			const t = bindAdminT(c);
+
+			/**
+			 * Same accounts-service guard as the update handler
+			 * (`protectLastActiveSuperuser`): an atomic conditional delete, not a
+			 * separate check-then-act read.
+			 */
+			try {
+				await options.accounts.users.deleteUser(id, { protectLastActiveSuperuser: true });
+			} catch (err) {
+				if (!(err instanceof LastActiveSuperuserError)) throw err;
+				this.flashMessage(c, "error", t("accounts.users.lastActiveSuperuserError"));
+				return c.redirect(`${listUrl}/${encodeURIComponent(id)}/edit`, 303);
+			}
+			if (options.accounts.groups) await options.accounts.groups.setUserGroups(id, []);
+			await this.recordAudit(c, "accounts.user.delete", id);
+
+			this.flashMessage(
+				c,
+				"success",
+				t("message.deleted", { label: t("accounts.users.singular") }),
+			);
+			return c.redirect(listUrl, 303);
+		});
+
+		this.wireAccountsGroups();
+	}
+
+	/**
+	 * Registers the superuser-only operator-groups management screen
+	 * (`/accounts/groups*`), called at the end of `wireAccounts`. Distinct from
+	 * that method's group-membership checkboxes (which edit which groups a
+	 * user belongs to): this screen manages the groups themselves — their name
+	 * and their own permission set (`AdminAccountsGroups#createGroup`/
+	 * `updateGroup`/`setGroupPermissions`/`deleteGroup`).
+	 *
+	 * Every route here also resolves to `requiredPermission`'s `SUPERUSER_ONLY`
+	 * sentinel (it falls under the `accounts` path prefix), so `middleware()`
+	 * denies a non-superuser before any handler runs. Each handler still
+	 * guards on `options?.accounts?.groups` defensively: when `groups` is not
+	 * injected, every route under this prefix is a 404, same convention as
+	 * every other optional section.
+	 */
+	private wireAccountsGroups(): void {
+		this.get("/accounts/groups", async (c) => {
+			const options = this.panelOptions;
+			if (!options?.accounts?.groups) return c.notFound();
+
+			const rows = await options.accounts.groups.listGroups();
+			const t = bindAdminT(c);
+			const basePath = this.resolveBasePath();
+
+			return c.html(
+				<AdminLayout
+					brand={options.brand ?? "Admin"}
+					nav={this.buildNav(c, t)}
+					resourcesLabel={t("index.resources")}
+					lang={c.get("language") ?? "en"}
+					breadcrumbs={[
+						this.homeBreadcrumb(t),
+						{ href: `${basePath}/accounts/users`, label: t("nav.accounts") },
+						{ label: t("accounts.groups.title") },
+					]}
+					messages={this.consumeMessages(c)}
+					userTools={this.resolveUserTools(c)}
+					csrfToken={this.csrfToken(c)}
+					currentPath={c.req.path}
+					t={t}
+				>
+					<AdminAccountsGroupsListView
+						basePath={basePath}
+						rows={rows}
+						usersHref={`${basePath}/accounts/users`}
+						t={t}
+					/>
+				</AdminLayout>,
+			);
+		});
+
+		this.get("/accounts/groups/new", async (c) => {
+			const options = this.panelOptions;
+			if (!options?.accounts?.groups) return c.notFound();
+
+			const known = knownAccountPermissions(options.resources ?? []);
+
+			return this.renderAccountsGroupForm(c, {
+				mode: "new",
+				values: { name: "" },
+				permissionOptions: buildPermissionOptions(known, new Set()),
+				unknownPermissions: [],
+			});
+		});
+
+		this.post("/accounts/groups", async (c) => {
+			const options = this.panelOptions;
+			if (!options?.accounts?.groups) return c.notFound();
+
+			const body = await c.req.parseBody({ all: true });
+			const name = stringFormField(body, "name");
+			const known = knownAccountPermissions(options.resources ?? []);
+			const { checkedPermissions } = mergePermissionSelection(
+				known,
+				[],
+				multiValueField(body, "permissions"),
+			);
+
+			const t = bindAdminT(c);
+			const rerender = (error: string) =>
+				this.renderAccountsGroupForm(c, {
+					mode: "new",
+					values: { name },
+					permissionOptions: buildPermissionOptions(known, new Set(checkedPermissions)),
+					unknownPermissions: [],
+					error,
+					status: 422,
+				});
+
+			let created: AdminAccountsGroupRow;
+			try {
+				created = await options.accounts.groups.createGroup({
+					name,
+					permissions: checkedPermissions,
+				});
+			} catch (err) {
+				const detail = err instanceof Error ? err.message : String(err);
+				return rerender(t("accounts.groups.saveError", { detail }));
+			}
+
+			await this.recordAudit(c, "accounts.group.create", created.id, {
+				name: created.name,
+				permissions: checkedPermissions,
+			});
+
+			this.flashMessage(c, "success", t("message.added", { label: t("accounts.groups.singular") }));
+			return c.redirect(`${this.resolveBasePath()}/accounts/groups`, 303);
+		});
+
+		this.get("/accounts/groups/:id/edit", async (c) => {
+			const options = this.panelOptions;
+			if (!options?.accounts?.groups) return c.notFound();
+
+			const id = c.req.param("id");
+			const row = await findGroup(options.accounts.groups, id);
+			if (!row) return c.notFound();
+
+			const known = knownAccountPermissions(options.resources ?? []);
+			const knownSet = new Set(known);
+			const stored = await options.accounts.groups.groupPermissions(id);
+
+			return this.renderAccountsGroupForm(c, {
+				mode: "edit",
+				id,
+				values: { name: row.name },
+				permissionOptions: buildPermissionOptions(
+					known,
+					new Set(stored.filter((p) => knownSet.has(p))),
+				),
+				unknownPermissions: stored.filter((p) => !knownSet.has(p)),
+			});
+		});
+
+		this.post("/accounts/groups/:id", async (c) => {
+			const options = this.panelOptions;
+			if (!options?.accounts?.groups) return c.notFound();
+
+			const id = c.req.param("id");
+			const existing = await findGroup(options.accounts.groups, id);
+			if (!existing) return c.notFound();
+
+			const body = await c.req.parseBody({ all: true });
+			const name = stringFormField(body, "name");
+			const known = knownAccountPermissions(options.resources ?? []);
+			const stored = await options.accounts.groups.groupPermissions(id);
+			const { checkedPermissions, retainedUnknown, nextPermissions } = mergePermissionSelection(
+				known,
+				stored,
+				multiValueField(body, "permissions"),
+			);
+
+			const t = bindAdminT(c);
+			const rerender = (error: string) =>
+				this.renderAccountsGroupForm(c, {
+					mode: "edit",
+					id,
+					values: { name },
+					permissionOptions: buildPermissionOptions(known, new Set(checkedPermissions)),
+					unknownPermissions: retainedUnknown,
+					error,
+					status: 422,
+				});
+
+			let updated: AdminAccountsGroupRow | undefined;
+			try {
+				updated = await options.accounts.groups.updateGroup(id, { name });
+			} catch (err) {
+				const detail = err instanceof Error ? err.message : String(err);
+				return rerender(t("accounts.groups.saveError", { detail }));
+			}
+			if (!updated) return c.notFound();
+
+			await options.accounts.groups.setGroupPermissions(id, nextPermissions);
+
+			await this.recordAudit(c, "accounts.group.update", id, {
+				name: updated.name,
+				permissions: nextPermissions,
+			});
+
+			this.flashMessage(
+				c,
+				"success",
+				t("message.changed", { label: t("accounts.groups.singular") }),
+			);
+			return c.redirect(
+				`${this.resolveBasePath()}/accounts/groups/${encodeURIComponent(id)}/edit`,
+				303,
+			);
+		});
+
+		this.get("/accounts/groups/:id/delete", async (c) => {
+			const options = this.panelOptions;
+			if (!options?.accounts?.groups) return c.notFound();
+
+			const id = c.req.param("id");
+			const row = await findGroup(options.accounts.groups, id);
+			if (!row) return c.notFound();
+
+			const t = bindAdminT(c);
+			const basePath = this.resolveBasePath();
+			const usersHref = `${basePath}/accounts/users`;
+			const listHref = `${basePath}/accounts/groups`;
+
+			return c.html(
+				<AdminLayout
+					brand={options.brand ?? "Admin"}
+					nav={this.buildNav(c, t)}
+					resourcesLabel={t("index.resources")}
+					lang={c.get("language") ?? "en"}
+					breadcrumbs={[
+						this.homeBreadcrumb(t),
+						{ href: usersHref, label: t("nav.accounts") },
+						{ href: listHref, label: t("accounts.groups.title") },
+						{ href: `${listHref}/${encodeURIComponent(id)}/edit`, label: row.name },
+						{ label: t("action.delete") },
+					]}
+					messages={this.consumeMessages(c)}
+					userTools={this.resolveUserTools(c)}
+					csrfToken={this.csrfToken(c)}
+					currentPath={c.req.path}
+					t={t}
+				>
+					<AdminAccountsGroupsDeleteView
+						basePath={basePath}
+						id={id}
+						name={row.name}
+						csrfToken={this.csrfToken(c)}
+						t={t}
+					/>
+				</AdminLayout>,
+			);
+		});
+
+		this.post("/accounts/groups/:id/delete", async (c) => {
+			const options = this.panelOptions;
+			if (!options?.accounts?.groups) return c.notFound();
+
+			const id = c.req.param("id");
+			const existing = await findGroup(options.accounts.groups, id);
+			if (!existing) return c.notFound();
+
+			const listUrl = `${this.resolveBasePath()}/accounts/groups`;
+			const body = await c.req.parseBody();
+			if (body.post !== "yes") return c.redirect(listUrl, 303);
+
+			const t = bindAdminT(c);
+			await options.accounts.groups.deleteGroup(id);
+			await this.recordAudit(c, "accounts.group.delete", id);
+
+			this.flashMessage(
+				c,
+				"success",
+				t("message.deleted", { label: t("accounts.groups.singular") }),
+			);
+			return c.redirect(listUrl, 303);
+		});
+	}
+
+	/**
+	 * Renders the accounts-group create/edit form screen (shared by the `new`
+	 * GET and the `new`/edit POST failure re-renders — see
+	 * `wireAccountsGroups`), wrapped in `AdminLayout` with the accounts/groups
+	 * breadcrumb trail. `status` defaults to `200` (the initial GET); a
+	 * failure re-render passes `422`.
+	 */
+	private renderAccountsGroupForm(
+		c: Context<E>,
+		args: {
+			mode: "new" | "edit";
+			id?: string;
+			values: { name: string };
+			permissionOptions: AdminAccountsCheckboxOption[];
+			unknownPermissions: string[];
+			error?: string;
+			status?: ContentfulStatusCode;
+		},
+	): Response | Promise<Response> {
+		const options = this.panelOptions;
+		const basePath = this.resolveBasePath();
+		const usersHref = `${basePath}/accounts/users`;
+		const listHref = `${basePath}/accounts/groups`;
+		const t = bindAdminT(c);
+		const action =
+			args.mode === "new" ? listHref : `${listHref}/${encodeURIComponent(args.id ?? "")}`;
+
+		return c.html(
+			<AdminLayout
+				brand={options?.brand ?? "Admin"}
+				nav={this.buildNav(c, t)}
+				resourcesLabel={t("index.resources")}
+				lang={c.get("language") ?? "en"}
+				breadcrumbs={[
+					this.homeBreadcrumb(t),
+					{ href: usersHref, label: t("nav.accounts") },
+					{ href: listHref, label: t("accounts.groups.title") },
+					{
+						label:
+							args.mode === "new" ? t("accounts.groups.newTitle") : t("accounts.groups.editTitle"),
+					},
+				]}
+				messages={this.consumeMessages(c)}
+				userTools={this.resolveUserTools(c)}
+				csrfToken={this.csrfToken(c)}
+				currentPath={c.req.path}
+				t={t}
+			>
+				<AdminAccountsGroupsFormView
+					basePath={basePath}
+					mode={args.mode}
+					action={action}
+					id={args.id}
+					values={args.values}
+					permissionOptions={args.permissionOptions}
+					unknownPermissions={args.unknownPermissions}
+					error={args.error ?? null}
+					csrfToken={this.csrfToken(c)}
+					t={t}
+				/>
+			</AdminLayout>,
+			args.status ?? 200,
+		);
 	}
 
 	/**
@@ -1683,6 +2728,10 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 				const offset = page * PAGE_SIZE;
 				const lang = c.get("language") ?? "en";
 				const t = bindAdminT(c);
+				const allowed = this.permissionFilter(c);
+				const canCreate = target.canWrite() && allowed(resourcePermission(key, "create"));
+				const canUpdate = target.canWrite() && allowed(resourcePermission(key, "update"));
+				const canDelete = target.canWrite() && allowed(resourcePermission(key, "delete"));
 
 				const [rows, total, dateHierarchy] = await Promise.all([
 					target.model.listPage({ where, orderBy, limit: PAGE_SIZE, offset }),
@@ -1708,7 +2757,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 				return c.html(
 					<AdminLayout
 						brand={options.brand ?? "Admin"}
-						nav={this.buildNav(t)}
+						nav={this.buildNav(c, t)}
 						resourcesLabel={t("index.resources")}
 						lang={c.get("language") ?? "en"}
 						breadcrumbs={[this.homeBreadcrumb(t), { label: target.label }]}
@@ -1725,7 +2774,9 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 							columns={displayColumns.map((column) => column.name)}
 							rows={rows}
 							primaryKey={target.primaryKey}
-							canWrite={target.canWrite()}
+							canCreate={canCreate}
+							canUpdate={canUpdate}
+							canDelete={canDelete}
 							searchEnabled={(target.searchColumns?.() ?? []).length > 0}
 							query={query}
 							filters={filterDefs}
@@ -1756,7 +2807,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 					return c.html(
 						<AdminLayout
 							brand={options.brand ?? "Admin"}
-							nav={this.buildNav(t)}
+							nav={this.buildNav(c, t)}
 							resourcesLabel={t("index.resources")}
 							lang={c.get("language") ?? "en"}
 							breadcrumbs={[
@@ -1795,10 +2846,13 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 				if (!row) return c.notFound();
 
 				const t = bindAdminT(c);
+				const allowed = this.permissionFilter(c);
+				const canUpdate = target.canWrite() && allowed(resourcePermission(key, "update"));
+				const canDelete = target.canWrite() && allowed(resourcePermission(key, "delete"));
 				return c.html(
 					<AdminLayout
 						brand={options.brand ?? "Admin"}
-						nav={this.buildNav(t)}
+						nav={this.buildNav(c, t)}
 						resourcesLabel={t("index.resources")}
 						lang={c.get("language") ?? "en"}
 						breadcrumbs={[
@@ -1819,7 +2873,8 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 							columns={target.columns().map((column) => column.name)}
 							row={row}
 							primaryKey={target.primaryKey}
-							canWrite={target.canWrite()}
+							canUpdate={canUpdate}
+							canDelete={canDelete}
 							t={t}
 						/>
 					</AdminLayout>,
@@ -1866,7 +2921,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 						return c.html(
 							<AdminLayout
 								brand={options.brand ?? "Admin"}
-								nav={this.buildNav(t)}
+								nav={this.buildNav(c, t)}
 								resourcesLabel={t("index.resources")}
 								lang={c.get("language") ?? "en"}
 								breadcrumbs={[
@@ -1922,7 +2977,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 					return c.html(
 						<AdminLayout
 							brand={options.brand ?? "Admin"}
-							nav={this.buildNav(t)}
+							nav={this.buildNav(c, t)}
 							resourcesLabel={t("index.resources")}
 							lang={c.get("language") ?? "en"}
 							breadcrumbs={[
@@ -1990,7 +3045,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 						return c.html(
 							<AdminLayout
 								brand={options.brand ?? "Admin"}
-								nav={this.buildNav(t)}
+								nav={this.buildNav(c, t)}
 								resourcesLabel={t("index.resources")}
 								lang={c.get("language") ?? "en"}
 								breadcrumbs={[
@@ -2054,7 +3109,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 					return c.html(
 						<AdminLayout
 							brand={options.brand ?? "Admin"}
-							nav={this.buildNav(t)}
+							nav={this.buildNav(c, t)}
 							resourcesLabel={t("index.resources")}
 							lang={c.get("language") ?? "en"}
 							breadcrumbs={[

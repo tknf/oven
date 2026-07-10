@@ -49,6 +49,7 @@ import type {
 import { hashPassword, verifyPassword } from "../auth/password.js";
 import { SnowflakeIdGenerator } from "../support/id_generator.js";
 import type { IdGenerator } from "../support/id_generator.js";
+import { LastActiveSuperuserError } from "./admin_accounts_errors.js";
 import { parseStoredPermissions } from "./admin_permissions.js";
 
 /** Default lower bound on password length (overridable via `MySqlAdminAccountsOptions#minPasswordLength`). */
@@ -229,6 +230,16 @@ export type MySqlAdminAccountsUpdateUserPatch<TUsers extends MySqlAdminUserRecor
 	isActive?: boolean;
 	isSuperuser?: boolean;
 } & Partial<MySqlAdminUserExtraInput<TUsers>>;
+
+/** Options accepted by `MySqlAdminAccounts#updateUser` and `#deleteUser`. */
+export type MySqlAdminAccountsGuardOptions = {
+	/**
+	 * When `true`, refuses (throwing `LastActiveSuperuserError`) to apply a
+	 * change that would leave zero active superusers. See `updateUser`/
+	 * `deleteUser` for how the guard is enforced.
+	 */
+	protectLastActiveSuperuser?: boolean;
+};
 
 /** Query options for `MySqlAdminAccounts#listUsers`. */
 export type MySqlAdminAccountsListOptions = {
@@ -415,10 +426,25 @@ export class MySqlAdminAccounts<
 	 * support RETURNING, the row is fetched back by re-SELECTing on `userId`
 	 * after the write (see the module JSDoc of `mysql_model.ts`, "Working around
 	 * the lack of RETURNING support"; note this is non-atomic).
+	 *
+	 * When `options.protectLastActiveSuperuser` is `true` and the patch would
+	 * deactivate (`isActive: false`) or demote (`isSuperuser: false`) the user,
+	 * the guard is folded into the UPDATE's own `WHERE` clause (see
+	 * `lastActiveSuperuserGuardCondition`) so the "is this the last active
+	 * superuser" check and the write happen in a single statement — a
+	 * check-then-act (`countActiveSuperusers` read, then a separate UPDATE)
+	 * would let a concurrent request slip through between the two. Because
+	 * there's no RETURNING to read the affected-row count from anyway, the
+	 * single post-write re-SELECT above doubles as the guard's diagnostic:
+	 * when the guard is active and the re-SELECTed row still is an active
+	 * superuser, the UPDATE must have matched zero rows (the guard blocked
+	 * it), so `LastActiveSuperuserError` is thrown instead of returning that
+	 * (unchanged) row; a missing row still returns `undefined` as usual.
 	 */
 	async updateUser(
 		userId: string,
 		patch: MySqlAdminAccountsUpdateUserPatch<TUsers>,
+		options: MySqlAdminAccountsGuardOptions = {},
 	): Promise<MySqlAdminUserRecord<TUsers> | undefined> {
 		const { username, label, isActive, isSuperuser, ...extras } = patch;
 		const update: Record<string, unknown> = sanitizeExtraColumns(extras);
@@ -437,12 +463,21 @@ export class MySqlAdminAccounts<
 		if (isActive !== undefined) update.isActive = isActive;
 		if (isSuperuser !== undefined) update.isSuperuser = isSuperuser;
 		update.updatedAt = Date.now();
+		const guarded =
+			options.protectLastActiveSuperuser === true && (isActive === false || isSuperuser === false);
+		const where = guarded
+			? and(eq(this.table.id, userId), this.lastActiveSuperuserGuardCondition())
+			: eq(this.table.id, userId);
 		/** `as` for the same per-table-varying-record reason as `createUser`. */
 		await this.db
 			.update(this.table)
 			.set(update as Partial<TUsers["$inferInsert"]>)
-			.where(eq(this.table.id, userId));
-		return this.retrieve(userId);
+			.where(where);
+		const row = await this.retrieve(userId);
+		if (guarded && row !== undefined && this.isActiveSuperuser(row)) {
+			throw new LastActiveSuperuserError();
+		}
+		return row;
 	}
 
 	/**
@@ -520,9 +555,29 @@ export class MySqlAdminAccounts<
 		return row?.value ?? 0;
 	}
 
-	/** Deletes the given user. A missing user is a no-op. */
-	async deleteUser(userId: string): Promise<void> {
-		await this.db.delete(this.table).where(eq(this.table.id, userId));
+	/**
+	 * Deletes the given user. A missing user is a no-op.
+	 *
+	 * When `options.protectLastActiveSuperuser` is `true`, the same guarded
+	 * `WHERE` as `updateUser` is folded into the DELETE, so "is this the last
+	 * active superuser" and the delete happen in one statement. MySQL has no
+	 * RETURNING to read an affected-row count from, so the guard is checked
+	 * with a post-write re-SELECT: if the row is still there and still an
+	 * active superuser, the DELETE must have matched zero rows (the guard
+	 * blocked it), and `LastActiveSuperuserError` is thrown; a missing row
+	 * (deleted, or never existed) is a silent no-op either way.
+	 */
+	async deleteUser(userId: string, options: MySqlAdminAccountsGuardOptions = {}): Promise<void> {
+		const guarded = options.protectLastActiveSuperuser === true;
+		const where = guarded
+			? and(eq(this.table.id, userId), this.lastActiveSuperuserGuardCondition())
+			: eq(this.table.id, userId);
+		await this.db.delete(this.table).where(where);
+		if (!guarded) return;
+		const existing = await this.retrieve(userId);
+		if (existing !== undefined && this.isActiveSuperuser(existing)) {
+			throw new LastActiveSuperuserError();
+		}
 	}
 
 	/**
@@ -535,6 +590,32 @@ export class MySqlAdminAccounts<
 	 */
 	private baseRow(row: MySqlAdminUserRecord<TUsers>): AdminUserBaseRow {
 		return row as AdminUserBaseRow;
+	}
+
+	/** Whether the given row is currently both a superuser and active. */
+	private isActiveSuperuser(row: MySqlAdminUserRecord<TUsers>): boolean {
+		const base = this.baseRow(row);
+		return base.isSuperuser && base.isActive;
+	}
+
+	/**
+	 * The `WHERE` fragment `updateUser`/`deleteUser` AND together with
+	 * `eq(id, userId)` when `protectLastActiveSuperuser` is requested: the
+	 * targeted row is allowed through when it is not currently an active
+	 * superuser (`isSuperuser = false` or `isActive = false`), or when more
+	 * than one active superuser exists besides it. Because this is combined
+	 * into the same UPDATE/DELETE statement rather than checked beforehand,
+	 * the check and the write are atomic — no concurrent request can slip
+	 * between reading the count and applying the change.
+	 *
+	 * The count subquery is wrapped in a derived table (`select ... from
+	 * (select count(*) ...) as c`) rather than referencing the table directly
+	 * in the outer statement's `WHERE`: MySQL rejects a subquery that reads
+	 * from the very table an UPDATE/DELETE is writing to (`ER_UPDATE_TABLE_USED`),
+	 * but a derived table is materialized first and sidesteps that restriction.
+	 */
+	private lastActiveSuperuserGuardCondition(): SQL {
+		return sql`(${eq(this.table.isSuperuser, false)} or ${eq(this.table.isActive, false)} or (select c.cnt from (select count(*) as cnt from ${this.table} where ${this.table.isSuperuser} and ${this.table.isActive}) as c) > 1)`;
 	}
 
 	/** Hashes a password, forwarding the `iterations` option only when it was provided. */

@@ -204,6 +204,47 @@ username, password }) => Promise<AdminIdentity | null>` (verify however
   (`resourcePermission(key, action)`, built-ins like `"audit.view"`) stored
   per user (`setUserPermissions`/`userPermissions`) — the panel does not
   enforce them; check them in your own `authorize`.
+- **`AdminPanel`'s `accounts` option hands enforcement to the panel
+  instead** — `accounts: { users, groups? }` (the same services above):
+  derives the built-in login from `users.authenticate` when `auth` isn't
+  also given (an explicit `auth` overrides the derived one — an escape
+  hatch, e.g. for rate limiting — but its identity's `id` must then be an
+  accounts user id); makes `authorize` optional (a built-in permission
+  gate resolves each route's required permission — resource
+  view/create/update/delete, `jobs.view`/`.manage`,
+  `settings.view`/`.manage`, `audit.view` — and checks it against the
+  operator's granted set; an explicit `authorize` still runs, ANDed with
+  the gate); requires both `session` and `csrf` (constructor throws
+  otherwise); re-validates the operator row against the DB on **every
+  request**, so `isActive: false` or a deleted row revokes access
+  immediately; and lets superusers bypass every permission check. When
+  omitted, `audit.actor` defaults to the logged-in identity's label
+  (falling back to its id), falling back further to the literal `"admin"`
+  when there's no login wiring or no logged-in identity.
+- **Injecting `accounts.users` also turns on a built-in, superuser-only
+  `/accounts/users` screen** (plus `/accounts/groups` once `accounts.groups`
+  is injected too) for creating, editing, and deleting operators —
+  `/accounts/*` requires `isSuperuser: true` regardless of any granted
+  permission string, and the nav/dashboard hide any link a non-superuser
+  couldn't actually open. Permission checkboxes only ever offer
+  `ADMIN_BUILTIN_PERMISSIONS` (the five built-ins, exported from
+  `@tknf/oven/admin`) plus `resource.<key>.<action>` per wired resource;
+  saving preserves any already-stored permission string the screen doesn't
+  recognize instead of dropping it. Deactivating, demoting, or deleting the
+  last active superuser is refused. Writes are audited as
+  `accounts.user.create`/`.update`/`.delete`/`.setPassword` and
+  `accounts.group.create`/`.update`/`.delete` (`setPassword` never records
+  the password itself). The last-active-superuser guard is a service-layer
+  feature (`updateUser(id, patch, { protectLastActiveSuperuser: true })` /
+  `deleteUser(id, { protectLastActiveSuperuser: true })`, all three
+  dialects): a rejected write throws `LastActiveSuperuserError`
+  (`@tknf/oven/admin`) via a single conditional `UPDATE`/`DELETE`, not a
+  check-then-act read, so it holds under concurrent requests too. The panel
+  always passes that option; a script calling `accounts.updateUser`/
+  `deleteUser` directly gets the same protection only by passing it too
+  (omit it for the unguarded call). Unknown-permission preservation, by
+  contrast, is UI-only — `accounts.setUserPermissions` itself always
+  overwrites the stored set outright.
 - **Operator groups (`SQLiteAdminGroups`/`PgAdminGroups`/`MySqlAdminGroups`)
   layer named permission groups over the accounts** — constructed with both
   shipped tables (`sqliteAdminGroupsTable()` + `sqliteAdminUserGroupsTable()`).

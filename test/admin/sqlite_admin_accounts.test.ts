@@ -7,6 +7,7 @@
  */
 import { eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vite-plus/test";
+import { LastActiveSuperuserError } from "../../src/admin/admin_accounts_errors.js";
 import { SQLiteAdminAccounts } from "../../src/admin/sqlite_admin_accounts.js";
 import type { SQLiteAdminUserRecordTable } from "../../src/admin/sqlite_admin_accounts.js";
 import { verifyPassword } from "../../src/auth/password.js";
@@ -318,6 +319,138 @@ describe("SQLiteAdminAccounts", () => {
 
 		expect(await users.retrieve(created.id)).toBeUndefined();
 		expect(await users.count()).toBe(0);
+	});
+
+	describe("protectLastActiveSuperuser", () => {
+		test("updateUser rejects demoting the only active superuser and leaves the row unchanged", async () => {
+			const users = accounts();
+			const created = await users.createUser({
+				username: "alice",
+				password: "password-1",
+				isSuperuser: true,
+			});
+
+			await expect(
+				users.updateUser(created.id, { isSuperuser: false }, { protectLastActiveSuperuser: true }),
+			).rejects.toThrow(LastActiveSuperuserError);
+			const persisted = await users.retrieve(created.id);
+			expect(persisted?.isSuperuser).toBe(true);
+			expect(persisted?.updatedAt).toBe(created.updatedAt);
+		});
+
+		test("updateUser rejects deactivating the only active superuser and leaves the row unchanged", async () => {
+			const users = accounts();
+			const created = await users.createUser({
+				username: "alice",
+				password: "password-1",
+				isSuperuser: true,
+			});
+
+			await expect(
+				users.updateUser(created.id, { isActive: false }, { protectLastActiveSuperuser: true }),
+			).rejects.toThrow(LastActiveSuperuserError);
+			const persisted = await users.retrieve(created.id);
+			expect(persisted?.isActive).toBe(true);
+			expect(persisted?.updatedAt).toBe(created.updatedAt);
+		});
+
+		test("updateUser allows demoting one of two active superusers", async () => {
+			const users = accounts();
+			const alice = await users.createUser({
+				username: "alice",
+				password: "password-1",
+				isSuperuser: true,
+			});
+			await users.createUser({ username: "bob", password: "password-1", isSuperuser: true });
+
+			const updated = await users.updateUser(
+				alice.id,
+				{ isSuperuser: false },
+				{ protectLastActiveSuperuser: true },
+			);
+
+			expect(updated?.isSuperuser).toBe(false);
+		});
+
+		test("updateUser allows updating a non-superuser even with the guard on", async () => {
+			const users = accounts();
+			const created = await users.createUser({ username: "alice", password: "password-1" });
+
+			const updated = await users.updateUser(
+				created.id,
+				{ label: "Ops" },
+				{ protectLastActiveSuperuser: true },
+			);
+
+			expect(updated?.label).toBe("Ops");
+		});
+
+		test("deleteUser rejects deleting the only active superuser and leaves the row in place", async () => {
+			const users = accounts();
+			const created = await users.createUser({
+				username: "alice",
+				password: "password-1",
+				isSuperuser: true,
+			});
+
+			await expect(
+				users.deleteUser(created.id, { protectLastActiveSuperuser: true }),
+			).rejects.toThrow(LastActiveSuperuserError);
+			expect(await users.retrieve(created.id)).toBeDefined();
+		});
+
+		test("deleteUser allows deleting one of two active superusers", async () => {
+			const users = accounts();
+			const alice = await users.createUser({
+				username: "alice",
+				password: "password-1",
+				isSuperuser: true,
+			});
+			await users.createUser({ username: "bob", password: "password-1", isSuperuser: true });
+
+			await users.deleteUser(alice.id, { protectLastActiveSuperuser: true });
+
+			expect(await users.retrieve(alice.id)).toBeUndefined();
+		});
+
+		test("updateUser on an unknown id returns undefined instead of throwing", async () => {
+			const users = accounts();
+
+			expect(
+				await users.updateUser(
+					"missing",
+					{ isSuperuser: false },
+					{ protectLastActiveSuperuser: true },
+				),
+			).toBeUndefined();
+		});
+
+		test("deleteUser on an unknown id is a no-op instead of throwing", async () => {
+			const users = accounts();
+
+			await expect(
+				users.deleteUser("missing", { protectLastActiveSuperuser: true }),
+			).resolves.toBeUndefined();
+		});
+
+		test("without the option, the only active superuser can still be demoted and deleted", async () => {
+			const users = accounts();
+			const alice = await users.createUser({
+				username: "alice",
+				password: "password-1",
+				isSuperuser: true,
+			});
+			const bob = await users.createUser({
+				username: "bob",
+				password: "password-1",
+				isSuperuser: true,
+			});
+
+			const demoted = await users.updateUser(alice.id, { isSuperuser: false });
+			expect(demoted?.isSuperuser).toBe(false);
+			await users.deleteUser(bob.id);
+			expect(await users.retrieve(bob.id)).toBeUndefined();
+		});
 	});
 
 	test("an extended table types and stores its extra columns", async () => {

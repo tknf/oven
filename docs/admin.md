@@ -449,9 +449,10 @@ Once `auth` is injected:
   redirected to `/login?next=<original path>` (confined to the panel's
   own `basePath` — an unrecognized or external `next` falls back to
   `basePath` itself, an open-redirect guard). A logged-in request still
-  goes through `authorize` as before, so `auth` narrows "is this operator
-  who they say they are" and `authorize` still decides "is this operator
-  allowed in here".
+  goes through `authorize` as before (when `accounts` is also injected,
+  it goes through the accounts permission gate too — both must allow), so
+  `auth` narrows "is this operator who they say they are" while
+  `authorize`/`accounts` decide "is this operator allowed in here".
 - On successful login, the session id is reissued (`Session#regenerate`)
   before the identity is stored, as a defense against session-fixation.
 - If `userTools` is not separately injected, the header's user-tools block
@@ -463,6 +464,71 @@ Once `auth` is injected:
 Without `auth` injected, there are no login/logout routes and no redirect
 gate — every route is guarded by `authorize` alone, exactly as before
 (backward compatible).
+
+### Handing enforcement to the panel (`accounts`)
+
+Wiring `auth` still leaves "who is allowed to do what" up to your own
+`authorize` callback. Injecting `accounts` instead hands both login and
+permission enforcement to the panel itself, built on top of the operator
+accounts service described in [Admin accounts](./admin-accounts.md):
+
+```ts
+import { SQLiteAdminAccounts, SQLiteAdminGroups } from "@tknf/oven/admin";
+import { adminGroups, adminUserGroups, adminUsers } from "./db/schema.js";
+import { db } from "./lib/db.js";
+import { csrf } from "./lib/csrf.js";
+import { sessionAccessor } from "./lib/session.js";
+
+const accounts = new SQLiteAdminAccounts(db, adminUsers);
+const groups = new SQLiteAdminGroups(db, { groups: adminGroups, userGroups: adminUserGroups });
+
+new AdminPanel({
+  session: sessionAccessor.use,
+  csrf,
+  accounts: { users: accounts, groups }, // `groups` is optional
+  resources: [new PublisherResource()],
+});
+```
+
+With `accounts` injected and no explicit `authorize`:
+
+- The built-in login/logout screens are derived from `accounts.users.authenticate`
+  automatically (same as wiring `auth` yourself, so `auth` is optional too).
+  Passing an explicit `auth` still wins over the derived one — an escape
+  hatch for e.g. wrapping the credential check in rate limiting — but its
+  returned identity's `id` must then be one of `accounts.users`'s own user
+  ids, since every request re-validates the logged-in operator by that id.
+- `authorize` becomes optional: a built-in permission gate takes over,
+  resolving the permission each route requires (view/create/update/delete
+  per resource, plus `jobs.view`/`jobs.manage`/`settings.view`/
+  `settings.manage`/`audit.view`) and checking it against the operator's
+  granted set. Passing `authorize` anyway runs it IN ADDITION to the
+  accounts gate (both must allow — an AND). At least one of `authorize`/
+  `accounts` is required; the constructor throws if both are omitted.
+- `session` and `csrf` are both required once `accounts` is injected — the
+  constructor throws if either is missing.
+- The logged-in operator's row is re-validated against the DB on **every
+  request** (not only at login), so setting `isActive: false` or deleting
+  the row revokes access immediately, redirecting the stale session back
+  to `/login`.
+- Superusers (`isSuperuser: true`) bypass every permission check. Everyone
+  else needs the resolved permission to be in the union of their own
+  granted set (`accounts.users.userPermissions`) and, when `groups` is
+  also injected, every group's set (`accounts.groups.permissionsForUser`).
+  The dashboard itself requires no permission — any active operator may
+  open it.
+
+See [Admin accounts](./admin-accounts.md#let-the-panel-enforce-permissions)
+for the permission vocabulary and the full route-to-permission mapping.
+
+Injecting `accounts.users` also turns on a built-in, superuser-only
+`/accounts/users` screen for managing operators themselves (and
+`/accounts/groups` too, once `accounts.groups` is injected), so you don't
+have to hand-build one on top of `AdminAccountsUsers`/`AdminAccountsGroups`.
+The nav and dashboard also drop any link a non-superuser's granted set
+wouldn't actually let them open. See
+[Manage operators from the panel](./admin-accounts.md#manage-operators-from-the-panel)
+for what the screen does and its guardrails.
 
 ### Adding job operations, settings, and audit log sections
 
@@ -481,9 +547,13 @@ new AdminPanel({
 });
 ```
 
-`audit.actor` defaults to the literal string `"admin"` if omitted. Job
-retry/delete, flag toggles, and maintenance toggles are all recorded to
-`audit.log` automatically once `audit` is injected.
+When `audit.actor` is omitted, the recorded actor defaults to the
+logged-in identity's `label` (falling back to its `id`) if `auth` or
+`accounts` is wired and a request is logged in; the literal string
+`"admin"` remains the last-resort fallback for a panel with no login
+wiring at all, or a write that somehow reaches the handler while logged
+out. Job retry/delete, flag toggles, and maintenance toggles are all
+recorded to `audit.log` automatically once `audit` is injected.
 
 ### Localizing the admin UI
 
@@ -513,13 +583,16 @@ language), the panel falls back to English.
   or by verifying upstream. Without it, the panel logs a one-time
   `console.warn` on the first unsafe-method request, but still serves it
   — it does not fail closed on its own.
-- **`authorize` is mandatory and the panel assumes nothing about roles.**
-  There's no default "is this user an admin" check; a misconfigured
-  `authorize` (e.g. one that always returns `true`) is the same as
-  leaving `/admin` unauthenticated. `auth` (see "Wiring built-in
-  login/logout" above), when injected, only answers "who is this
-  operator" — `authorize` still runs on every logged-in request and
-  still decides "are they allowed in here".
+- **An access gate is mandatory and the panel assumes nothing about
+  roles.** At least one of `authorize` or `accounts` must be injected —
+  the constructor throws otherwise. Without `accounts`, there's no
+  default "is this user an admin" check; a misconfigured `authorize`
+  (e.g. one that always returns `true`) is the same as leaving `/admin`
+  unauthenticated. When both are injected, they run as an AND (every
+  request must pass both). `auth` (see "Wiring built-in login/logout"
+  above), when injected on its own, only answers "who is this operator"
+  — `authorize` still runs on every logged-in request and still decides
+  "are they allowed in here".
 - **`auth` doesn't hash or store anything — that's still the app's own
   user table and `verifyPassword`/`hashPassword` (`@tknf/oven/auth`).**
   `authenticate` is a plain lookup-and-verify callback; admin only wires

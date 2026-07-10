@@ -10,13 +10,19 @@
  *
  * Bulk delete follows the same two-step contract, familiar from other admin
  * consoles' "select rows, choose an action, run, then confirm" flow: when
- * `canWrite` is `true`, the result table is wrapped in a
+ * `canDelete` is `true`, the result table is wrapped in a
  * `<form id="changelist-form" method="post">` posting back to this same list URL,
  * with a row-selection checkbox column and an actions bar above the table
  * (`<select name="action">` + `_selected_action` checkboxes + `select_across` +
  * a "Run" submit button). `AdminPanel#wireResources` dispatches on the presence of
  * `action` in the posted body to distinguish this from the create-form POST that
  * targets the same URL.
+ *
+ * `canCreate`/`canUpdate`/`canDelete` are resolved by `AdminPanel` from both
+ * `AdminResource#canWrite()` (whether the resource has a `form()` at all) and
+ * the current operator's granted permission set, so an operator who only holds
+ * `resource.<key>.view` never sees an Add link, an Edit link, a Delete link, or
+ * the bulk-action UI that would otherwise 403 when clicked.
  *
  * The list itself is a numbered, offset-based pagination (`?p=`, 0-based) over
  * `AdminModel#listPage`, with an arbitrary-column sort (`?o=<i>` ascending,
@@ -60,9 +66,9 @@ type ListState = {
 
 /**
  * Builds one list screen URL from the current `state` plus `page` and optional
- * sort/filter overrides. Sort and filter links always pass `page: 0` (Django
- * admin's convention: changing the ordering or a filter returns to the first
- * page); only the paginator's own page links pass the target page number.
+ * sort/filter overrides. Sort and filter links always pass `page: 0` (changing
+ * the ordering or a filter returns to the first page); only the paginator's
+ * own page links pass the target page number.
  */
 const buildListUrl = (
 	basePath: string,
@@ -102,10 +108,9 @@ const PAGE_RANGE_ELLIPSIS = "…";
 
 /**
  * Elides a long page-number list down to the first 2, the last 2, and a window
- * of 3 pages on either side of the current page (a simplified version of Django
- * admin's `Paginator.get_elided_page_range`). Returns `page`-indexed numbers
- * (0-based) interleaved with `PAGE_RANGE_ELLIPSIS` markers wherever a gap is
- * skipped.
+ * of 3 pages on either side of the current page. Returns `page`-indexed
+ * numbers (0-based) interleaved with `PAGE_RANGE_ELLIPSIS` markers wherever a
+ * gap is skipped.
  */
 const buildPageRange = (
 	page: number,
@@ -152,8 +157,12 @@ export type AdminResourceListViewProps = {
 	columns: string[];
 	rows: Record<string, unknown>[];
 	primaryKey: string;
-	/** Whether to show create/edit/delete links/forms and the bulk-action UI (`AdminResource#canWrite()`). */
-	canWrite: boolean;
+	/** Whether to show the "Add" link (`AdminResource#canWrite()` AND the operator's granted set includes `resource.<key>.create`). */
+	canCreate: boolean;
+	/** Whether to show each row's Edit link (`AdminResource#canWrite()` AND the operator's granted set includes `resource.<key>.update`). */
+	canUpdate: boolean;
+	/** Whether to show the row-selection column, each row's Delete link, and the bulk-action UI (`AdminResource#canWrite()` AND the operator's granted set includes `resource.<key>.delete`). */
+	canDelete: boolean;
 	/** Whether to show the search form (whether `AdminResource#searchColumns()` has at least one entry). */
 	searchEnabled: boolean;
 	/** Current search term (the `q` query). */
@@ -301,7 +310,8 @@ const ResourceTable = ({
 	columns,
 	rows,
 	primaryKey,
-	canWrite,
+	canUpdate,
+	canDelete,
 	state,
 	t,
 }: {
@@ -311,7 +321,8 @@ const ResourceTable = ({
 	columns: string[];
 	rows: Record<string, unknown>[];
 	primaryKey: string;
-	canWrite: boolean;
+	canUpdate: boolean;
+	canDelete: boolean;
 	state: ListState;
 	t: AdminT;
 }) => {
@@ -323,7 +334,7 @@ const ResourceTable = ({
 				<caption class="visually-hidden">{label}</caption>
 				<thead>
 					<tr>
-						{canWrite && (
+						{canDelete && (
 							<th class="action-checkbox-column" scope="col">
 								<span class="visually-hidden">{t("a11y.select")}</span>
 							</th>
@@ -367,7 +378,7 @@ const ResourceTable = ({
 						const name = rowDisplayName(row, columns, id);
 						return (
 							<tr>
-								{canWrite && (
+								{canDelete && (
 									<td class="action-checkbox-column">
 										<input
 											type="checkbox"
@@ -389,19 +400,19 @@ const ResourceTable = ({
 									<a href={detailHref} aria-label={t("a11y.viewItem", { name })}>
 										{t("action.detail")}
 									</a>
-									{canWrite && (
-										<>
-											<a href={`${detailHref}/edit`} aria-label={t("a11y.editItem", { name })}>
-												{t("action.edit")}
-											</a>
-											<a
-												class="deletelink"
-												href={`${detailHref}/delete`}
-												aria-label={t("a11y.deleteItem", { name })}
-											>
-												{t("action.delete")}
-											</a>
-										</>
+									{canUpdate && (
+										<a href={`${detailHref}/edit`} aria-label={t("a11y.editItem", { name })}>
+											{t("action.edit")}
+										</a>
+									)}
+									{canDelete && (
+										<a
+											class="deletelink"
+											href={`${detailHref}/delete`}
+											aria-label={t("a11y.deleteItem", { name })}
+										>
+											{t("action.delete")}
+										</a>
 									)}
 								</td>
 							</tr>
@@ -414,12 +425,12 @@ const ResourceTable = ({
 };
 
 /**
- * Bulk-action bar shown above the result table when `canWrite` is `true`. The
- * `<select name="action">` currently offers only "delete" (Django admin's
- * `_selected_action`/`action`/`select_across`/`index` contract; `select_across`
- * always posts `"0"` since this list has no "select all matching, across every
- * page" affordance). Lives inside `changelist-form` alongside the table so its
- * `_selected_action` checkboxes are submitted together.
+ * Bulk-action bar shown above the result table when `canDelete` is `true`. The
+ * `<select name="action">` currently offers only "delete", alongside a
+ * `select_across` field (always posts `"0"` since this list has no "select
+ * all matching, across every page" affordance) and an `index` field. Lives
+ * inside `changelist-form` alongside the table so its `_selected_action`
+ * checkboxes are submitted together.
  */
 const ActionsBar = ({ label, t }: { label: string; t: AdminT }) => (
 	<div class="actions">
@@ -549,7 +560,7 @@ const Paginator = ({
 	</nav>
 );
 
-/** Resource list screen body. Renders the heading, new-record link, search form, list table (with a bulk-action form when `canWrite`), numbered pagination + result count, and (when `filters` is non-empty) the filter sidebar. */
+/** Resource list screen body. Renders the heading, new-record link, search form, list table (with a bulk-action form when `canDelete`), numbered pagination + result count, and (when `filters` is non-empty) the filter sidebar. */
 export const AdminResourceListView = ({
 	basePath,
 	resourceKey,
@@ -557,7 +568,9 @@ export const AdminResourceListView = ({
 	columns,
 	rows,
 	primaryKey,
-	canWrite,
+	canCreate,
+	canUpdate,
+	canDelete,
 	searchEnabled,
 	query,
 	filters,
@@ -580,7 +593,8 @@ export const AdminResourceListView = ({
 			columns={columns}
 			rows={rows}
 			primaryKey={primaryKey}
-			canWrite={canWrite}
+			canUpdate={canUpdate}
+			canDelete={canDelete}
 			state={state}
 			t={t}
 		/>
@@ -588,7 +602,7 @@ export const AdminResourceListView = ({
 
 	const results = (
 		<>
-			{canWrite && (
+			{canCreate && (
 				<div class="object-tools">
 					<a class="addlink" href={`${listUrl}/new`} aria-label={t("a11y.addItem", { label })}>
 						{t("action.create")}
@@ -607,7 +621,7 @@ export const AdminResourceListView = ({
 					t={t}
 				/>
 			)}
-			{canWrite && rows.length > 0 ? (
+			{canDelete && rows.length > 0 ? (
 				<form id="changelist-form" method="post" action={listUrl}>
 					{csrfToken !== null && (
 						<input type="hidden" name={CSRF_FORM_FIELD_NAME} value={csrfToken} />

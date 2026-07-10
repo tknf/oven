@@ -17,13 +17,23 @@ export const ADMIN_PERMISSION_ACTIONS = ["view", "create", "update", "delete"] a
 /** One of the four resource-permission actions (derived from `ADMIN_PERMISSION_ACTIONS` so the two stay in sync). */
 export type AdminPermissionAction = (typeof ADMIN_PERMISSION_ACTIONS)[number];
 
-/** Built-in permissions for the non-resource admin screens (jobs, settings, audit log). */
-export type AdminBuiltinPermission =
-	| "jobs.view"
-	| "jobs.manage"
-	| "settings.view"
-	| "settings.manage"
-	| "audit.view";
+/**
+ * Every built-in permission for the non-resource admin screens (jobs,
+ * settings, audit log), in no particular order. Also the enumeration an
+ * accounts management UI offers when granting a known permission to a user or
+ * group (as opposed to a resource permission, which is derived per-resource
+ * via `resourcePermission`/`resourcePermissions`).
+ */
+export const ADMIN_BUILTIN_PERMISSIONS = [
+	"jobs.view",
+	"jobs.manage",
+	"settings.view",
+	"settings.manage",
+	"audit.view",
+] as const;
+
+/** One of the built-in permissions for the non-resource admin screens (derived from `ADMIN_BUILTIN_PERMISSIONS` so the two stay in sync). */
+export type AdminBuiltinPermission = (typeof ADMIN_BUILTIN_PERMISSIONS)[number];
 
 /** Any permission string this vocabulary produces: a resource permission or a built-in one. */
 export type AdminPermission =

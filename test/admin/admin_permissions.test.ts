@@ -6,6 +6,7 @@
  */
 import { describe, expect, test } from "vite-plus/test";
 import {
+	ADMIN_BUILTIN_PERMISSIONS,
 	ADMIN_PERMISSION_ACTIONS,
 	parseStoredPermissions,
 	resourcePermission,
@@ -32,6 +33,19 @@ describe("resourcePermissions", () => {
 	test("covers exactly the actions in ADMIN_PERMISSION_ACTIONS", () => {
 		expect(ADMIN_PERMISSION_ACTIONS).toEqual(["view", "create", "update", "delete"]);
 		expect(resourcePermissions("books")).toHaveLength(ADMIN_PERMISSION_ACTIONS.length);
+	});
+});
+
+describe("ADMIN_BUILTIN_PERMISSIONS", () => {
+	test("lists exactly the five built-in permissions for the non-resource admin screens", () => {
+		expect(ADMIN_BUILTIN_PERMISSIONS).toHaveLength(5);
+		expect(ADMIN_BUILTIN_PERMISSIONS).toEqual([
+			"jobs.view",
+			"jobs.manage",
+			"settings.view",
+			"settings.manage",
+			"audit.view",
+		]);
 	});
 });
 

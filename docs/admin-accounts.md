@@ -56,8 +56,11 @@ import { db } from "./db.js";
 export const accounts = new SQLiteAdminAccounts(db, adminUsers);
 ```
 
-Create the first operator from a seed script that reads credentials
-from environment variables — never hardcode credentials:
+Bootstrap the first superuser from a seed script that runs on startup (or as
+a one-off migration step) and reads credentials from environment variables —
+never hardcode credentials. Gate it on `countActiveSuperusers()` rather than a
+specific username, so the seed is idempotent (safe to run on every boot) and
+keeps working even after that first account is renamed or replaced:
 
 ```ts
 // scripts/seed_admin.ts
@@ -68,10 +71,15 @@ const password = process.env.OVEN_ADMIN_PASSWORD;
 if (!username || !password) {
   throw new Error("Set OVEN_ADMIN_USERNAME and OVEN_ADMIN_PASSWORD");
 }
-if (!(await accounts.findByUsername(username))) {
+if ((await accounts.countActiveSuperusers()) === 0) {
   await accounts.createUser({ username, password, isSuperuser: true });
 }
 ```
+
+That covers only the very first operator. Once the panel is reachable, create
+every operator after that (and any group) from the panel's own UI instead of
+scripting more seeds — see
+[Manage operators from the panel](#manage-operators-from-the-panel).
 
 Then back the panel's built-in login screens
 ([Admin panel](./admin.md#wiring-built-in-loginlogout)) with
@@ -133,6 +141,13 @@ are excluded from the extra-column input and stripped at runtime, so
 they can never be smuggled through the extension mechanism.
 
 ### Grant and check permissions
+
+This recipe checks permissions by hand inside your own `authorize`
+callback — useful when you don't hand enforcement to `AdminPanel` via the
+`accounts` option (see
+[Let the panel enforce permissions](#let-the-panel-enforce-permissions)
+below), or when you check permissions somewhere other than the panel
+entirely.
 
 A permission is a plain string. Resource permissions follow
 `resource.<resourceKey>.<action>` with the four actions
@@ -246,6 +261,109 @@ Group management mirrors the accounts service: `retrieve`/`findByName`/
 lists a group's member user ids, and `deleteGroup` removes the group
 along with its membership rows.
 
+### Let the panel enforce permissions
+
+Rather than checking `userPermissions`/`permissionsForUser` by hand inside
+`authorize` ([Grant and check permissions](#grant-and-check-permissions)),
+pass the services straight to `AdminPanel`'s `accounts` option and let the
+panel derive the login screens and enforce permissions itself:
+
+```ts
+new AdminPanel({
+  session: sessionAccessor.use,
+  csrf,
+  accounts: { users: accounts, groups }, // `groups` is optional
+  resources: [new PublisherResource()],
+  jobs: { console: jobsConsole },
+  settings: { featureFlags: { flags: featureFlags, names: ["beta"] } },
+  audit: { log: auditLog },
+});
+```
+
+No `authorize` and no `auth` needed: the built-in login/logout screens are
+derived from `accounts.users.authenticate`, and every route resolves to a
+required permission checked against the union of the operator's own
+`userPermissions` and (when `groups` is injected) every group's
+`permissionsForUser`. The operator row is re-read on **every request** (not
+cached in the session), so `updateUser(id, { isActive: false })` or
+`deleteUser(id)` revokes access on the very next request. A superuser
+(`isSuperuser: true`) bypasses every check.
+
+The route-to-permission mapping:
+
+| Route | Permission required |
+| --- | --- |
+| `GET /` (dashboard) | none — any active operator |
+| `GET /resources/:key`, `GET /resources/:key/:id` | `resource.<key>.view` |
+| `GET /resources/:key/new` | `resource.<key>.create` |
+| `GET /resources/:key/:id/edit`, `POST /resources/:key/:id` | `resource.<key>.update` |
+| `GET`/`POST /resources/:key/:id/delete` | `resource.<key>.delete` |
+| `POST /resources/:key` | `resource.<key>.create`, or `.delete` when the submitted `action` is `"delete"` (the list screen's bulk-delete form posts here too) |
+| `GET /jobs` | `jobs.view` |
+| `POST /jobs/:id/retry`, `POST /jobs/:id/delete` | `jobs.manage` |
+| `GET /settings` | `settings.view` |
+| `POST /settings/flags/:name`, `POST /settings/maintenance` | `settings.manage` |
+| `GET /audit` | `audit.view` |
+| `/accounts/*` | superuser only — no granted permission string reaches it |
+
+The nav links and the dashboard's resource list are filtered to match:
+a non-superuser only sees the sections and resources their granted set
+actually lets them open (so a link never leads to a 403), and the
+Accounts nav link only ever renders for a superuser.
+
+A permission check that fails responds with `denyStatus` (default `403`).
+Passing an explicit `authorize` alongside `accounts` still runs it, in
+addition to this gate (both must allow); passing `auth` alongside
+`accounts` overrides the derived login (an escape hatch for e.g. wrapping
+the credential check in rate limiting), but its `authenticate` must then
+resolve to an identity whose `id` is one of `accounts.users`'s own user
+ids, since re-validation on every request looks the row up by that id.
+`session` and `csrf` are both required once `accounts` is injected — the
+constructor throws otherwise. See
+[Handing enforcement to the panel](./admin.md#handing-enforcement-to-the-panel-accounts)
+for the full option reference.
+
+### Manage operators from the panel
+
+Once `accounts.users` is wired in as above, a superuser-only screen at
+`/accounts/users` (and `/accounts/groups` too, once `accounts.groups` is
+also injected) lets an operator create, edit, and delete other operators
+without you writing any of this by hand. Reach for
+[Manage users programmatically](#manage-users-programmatically) instead
+when you need to script account changes (seeding, a migration, an
+internal tool) outside the panel's own UI.
+
+The screen covers:
+
+- **Users** (`/accounts/users`): a searchable (`?q=`), paginated (`?p=`)
+  list; a create form (username, password, label, active, superuser,
+  permissions, and — when `accounts.groups` is injected — group
+  membership); an edit form for the same fields (password changes through
+  a separate form); and a delete confirmation.
+- **Groups** (`/accounts/groups`, requires `accounts.groups`): list,
+  create, edit, and delete for the groups themselves (name and permission
+  set) — distinct from the group-membership checkboxes on the user form.
+- **The permission checkboxes only ever offer a known set**:
+  `ADMIN_BUILTIN_PERMISSIONS` (the five built-ins, exported from
+  `@tknf/oven/admin`) plus `resource.<key>.<action>` for every wired
+  resource. Saving a form writes checked-known permissions **union**
+  whatever unrecognized permission strings the row already had — a
+  permission granted some other way (an older app version, a script) is
+  preserved rather than silently dropped just because this screen doesn't
+  recognize it.
+- **The last active superuser is protected.** Deactivating, demoting, or
+  deleting the last remaining active superuser (`isSuperuser && isActive`)
+  is refused with an error, so the panel can never lock every operator out
+  of itself. The panel gets this by always passing
+  `{ protectLastActiveSuperuser: true }` to `updateUser`/`deleteUser` — see
+  [Manage users programmatically](#manage-users-programmatically) for how
+  to get the same protection outside the panel.
+- **Every write is audited** (once `audit` is also injected):
+  `accounts.user.create`/`.update`/`.delete`/`.setPassword` and
+  `accounts.group.create`/`.update`/`.delete`. The password itself is
+  never recorded — `setPassword`'s audit entry carries no `changes`
+  payload at all.
+
 ### Manage users programmatically
 
 ```ts
@@ -261,9 +379,32 @@ const total = await accounts.count("ops");
 `permissions`, `id`, and timestamps can never pass through it; the
 dedicated methods own those. `listUsers`/`count` match `query` against
 `username` OR `label` with a wildcard-escaped `LIKE`. `deleteUser(id)`
-removes a row, and `countActiveSuperusers()` tells you whether you are
-about to deactivate, demote, or delete the last active superuser —
-check it first.
+removes a row, and `countActiveSuperusers()` tells you how many active
+superusers currently exist.
+
+Pass `{ protectLastActiveSuperuser: true }` as the last argument to
+`updateUser`/`deleteUser` to get the same protection the panel itself
+uses: a patch or delete that would deactivate, demote, or remove the
+only remaining active superuser is rejected with `LastActiveSuperuserError`
+(exported from `@tknf/oven/admin`) instead of applied. This is enforced
+as a single conditional write in the dialect service, not a separate
+read-then-write check, so it holds up even under concurrent requests.
+
+```ts
+import { LastActiveSuperuserError } from "@tknf/oven/admin";
+
+try {
+  await accounts.updateUser(user.id, { isActive: false }, { protectLastActiveSuperuser: true });
+} catch (err) {
+  if (err instanceof LastActiveSuperuserError) {
+    // refused: this would have left zero active superusers
+  }
+}
+```
+
+Omit the options argument (or pass `protectLastActiveSuperuser: false`)
+to get the unguarded behavior — the call always applies, exactly as
+before.
 
 ### Use Postgres or MySQL
 
@@ -374,6 +515,21 @@ then.
   `accounts.deleteUser(userId)`. Leftover rows are ignored by
   `userGroups`/`permissionsForUser` (inner join) but keep showing up in
   `groupMembers` until cleaned up.
+- **Last-active-superuser protection is opt-in on `updateUser`/`deleteUser`,
+  unknown-permission preservation lives only in the panel.** The service
+  guards against locking every operator out only when you pass
+  `{ protectLastActiveSuperuser: true }` (see
+  [Manage users programmatically](#manage-users-programmatically)); the
+  panel always passes it, so calling `accounts.updateUser`/`deleteUser`
+  without that option bypasses the guard. It is enforced as a single
+  conditional `UPDATE`/`DELETE` in the dialect service, not a
+  check-then-act read, so it holds even under concurrent requests.
+  Unknown-permission preservation (retaining a permission string the
+  panel's checkboxes don't recognize) is a UI-level concern with no
+  service equivalent — calling `accounts.setUserPermissions` directly
+  overwrites the stored set outright, so reimplement that merge yourself
+  if you manage permissions programmatically instead of through
+  [Manage operators from the panel](#manage-operators-from-the-panel).
 
 ## See also
 

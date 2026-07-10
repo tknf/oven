@@ -7,19 +7,30 @@
  * Start it from the repo root with:
  *   vp run playground
  * then open http://localhost:8787/admin (or http://localhost:8787/, which
- * redirects there). Since `auth` is wired below, that first request bounces
- * to /admin/login — sign in with admin/secret.
+ * redirects there). The panel is wired with the `accounts` option below (DB-backed
+ * operator accounts, not `authorize`/`auth`), so that first request bounces to
+ * /admin/login. Dev-only credentials seeded on startup (never deploy this harness):
+ *
+ *   - superuser: admin / playground-admin
+ *   - operator (direct permissions: jobs.view, resource.publishers.view): viewer / playground-viewer
+ *   - operator (member of the "Editors" group, which grants the `publishers` resource's
+ *     full CRUD set): editor / playground-editor
+ *
+ * Sign in as `admin` to see every screen, including the superuser-only operator
+ * accounts screens at /admin/accounts/users and /admin/accounts/groups. Sign in as
+ * `viewer` or `editor` to see the nav filtered down to their granted permissions, and
+ * a 403 on anything outside that set (e.g. /admin/settings for `viewer`).
  *
  * To tweak the visual style, edit `ADMIN_CSS` in `src/admin/admin_styles.ts`
  * and save — Vite's dev server hot-reloads the module, so a browser refresh
  * picks up the change.
  *
  * The DB is an in-memory libSQL instance seeded with a handful of publisher,
- * job, and audit-log rows so every screen (dashboard, resource CRUD, jobs,
- * settings, audit log) has content to render. Feature flags and maintenance
- * mode run against an in-memory `KeyValueStore`. Writes made through the
- * admin forms are not persisted anywhere outside this process, and the data
- * resets whenever the dev server restarts.
+ * job, audit-log, and operator-account rows so every screen (dashboard,
+ * resource CRUD, jobs, settings, audit log, accounts) has content to render.
+ * Feature flags and maintenance mode run against an in-memory `KeyValueStore`.
+ * Writes made through the admin forms are not persisted anywhere outside this
+ * process, and the data resets whenever the dev server restarts.
  *
  * Pages to try:
  *   /admin
@@ -28,13 +39,18 @@
  *   /admin/jobs
  *   /admin/settings
  *   /admin/audit
+ *   /admin/accounts/users (superuser only)
+ *   /admin/accounts/groups (superuser only)
  */
 import type { StandardSchemaV1 } from "@standard-schema/spec";
 import type { Env } from "hono";
 import { Hono } from "hono";
 import { AdminPanel } from "../src/admin/admin_panel.js";
+import { resourcePermissions } from "../src/admin/admin_permissions.js";
 import type { AdminInline } from "../src/admin/admin_resource.js";
 import { AdminResource, fieldsFromTable } from "../src/admin/admin_resource.js";
+import { SQLiteAdminAccounts } from "../src/admin/sqlite_admin_accounts.js";
+import { SQLiteAdminGroups } from "../src/admin/sqlite_admin_groups.js";
 import { SQLiteAuditLog } from "../src/audit/sqlite_audit_log.js";
 import type { FieldDef } from "../src/form/form.js";
 import { Form } from "../src/form/form.js";
@@ -42,6 +58,7 @@ import { SQLiteJobsConsole } from "../src/jobs/sqlite_jobs_console.js";
 import { FeatureFlags } from "../src/kv/feature_flags.js";
 import { InMemoryKeyValueStore } from "../src/kv/in_memory_key_value_store.js";
 import { SQLiteModel } from "../src/model/sqlite_model.js";
+import { Csrf } from "../src/security/csrf.js";
 import { MaintenanceMode } from "../src/security/maintenance_mode.js";
 import { CookieSessionStorage } from "../src/session/cookie_session_storage.js";
 import { SessionAccessor } from "../src/session/session_accessor.js";
@@ -351,6 +368,39 @@ await featureFlags.disable("new-dashboard");
 const publisherResource = new PublisherResource(new PublisherModel(ctx.db), new BookModel(ctx.db));
 
 /**
+ * Operator accounts backing the panel's built-in login and its superuser-only
+ * `/accounts/*` screens (see `AdminPanel`'s `accounts` option). Dev-only: the
+ * seeded credentials below are fixed, never read from the environment, and
+ * this harness is never deployed.
+ */
+const accounts = new SQLiteAdminAccounts(ctx.db, schema.adminUsers);
+const groups = new SQLiteAdminGroups(ctx.db, {
+	groups: schema.adminGroups,
+	userGroups: schema.adminUserGroups,
+});
+
+/**
+ * Seed data for the operator accounts screen: a superuser who can reach every
+ * screen (including /accounts/*), an operator granted a couple of permissions
+ * directly, and an operator granted the `publishers` resource's full CRUD set
+ * through membership in the "Editors" group — so both the direct-permission
+ * and group-membership paths, and the nav/dashboard filtering they drive, are
+ * visible without further clicking around.
+ */
+await accounts.createUser({ username: "admin", password: "playground-admin", isSuperuser: true });
+await accounts.createUser({
+	username: "viewer",
+	password: "playground-viewer",
+	permissions: ["jobs.view", "resource.publishers.view"],
+});
+const editorsGroup = await groups.createGroup({
+	name: "Editors",
+	permissions: resourcePermissions("publishers"),
+});
+const editor = await accounts.createUser({ username: "editor", password: "playground-editor" });
+await groups.setUserGroups(editor.id, [editorsGroup.id]);
+
+/**
  * Signed-cookie session storage (data lives in the cookie itself, not in a
  * server-side map). This is deliberate for the playground: Vite's dev server
  * re-imports this module on every file change, which would wipe an in-memory
@@ -365,6 +415,9 @@ const sessionAccessor = new SessionAccessor<PreviewEnv, "session">(
 	}),
 );
 
+/** CSRF protection for the built-in login and every write route, required once `accounts` is injected. */
+const csrf = new Csrf<PreviewEnv>({ session: sessionAccessor.use });
+
 const app = new Hono<PreviewEnv>();
 app.get("/", (c) => c.redirect("/admin"));
 app.use(sessionAccessor.register);
@@ -372,7 +425,6 @@ app.route(
 	"/admin",
 	new AdminPanel<PreviewEnv>({
 		brand: "oven admin (playground)",
-		authorize: () => true,
 		resources: [publisherResource],
 		jobs: { console: new SQLiteJobsConsole(ctx.db, schema.jobs) },
 		settings: {
@@ -381,10 +433,8 @@ app.route(
 		},
 		audit: { log: auditLog },
 		session: sessionAccessor.use,
-		auth: {
-			authenticate: async (_c, { username, password }) =>
-				username === "admin" && password === "secret" ? { id: "admin", label: "admin" } : null,
-		},
+		csrf,
+		accounts: { users: accounts, groups },
 	}),
 );
 

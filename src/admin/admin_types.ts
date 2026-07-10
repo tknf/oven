@@ -86,9 +86,9 @@ export type AdminAuditLog = {
 };
 
 /**
- * A single flash message shown at the top of the next screen, mirroring the
- * `django.contrib.messages` framework's severity levels used by admin's own
- * change/add confirmations.
+ * A single flash message shown at the top of the next screen, with a severity
+ * level driving how it is announced and styled (admin's own change/add
+ * confirmations use `"success"`).
  */
 export type AdminMessage = {
 	level: "success" | "error" | "info";
@@ -108,8 +108,8 @@ export type AdminUserToolLink = {
 };
 
 /**
- * The header's user-tools block content (Django admin's `#user-tools`
- * equivalent). Authentication is out of admin's scope, so the app supplies
+ * The header's user-tools block content (`#user-tools`). Authentication is
+ * out of admin's scope, so the app supplies
  * this entirely via `AdminPanelOptions.userTools` (same optional-injection
  * pattern as `csrf`/`audit`/`session`); when not injected, the block renders
  * nothing.
@@ -154,6 +154,14 @@ export type AdminAccountsUserRow = {
  * `authenticate` to derive the built-in login, `retrieve` to re-validate the
  * logged-in operator on every request, and `userPermissions` to build the
  * granted permission set.
+ *
+ * The remaining methods (`createUser` through `deleteUser`) are the
+ * management surface an accounts management UI drives; they mirror the
+ * dialect services' own split of concerns — `updateUser` touches only profile
+ * fields (never the password or the permission set), `setPassword` and
+ * `setUserPermissions` own those two separately, and `countActiveSuperusers`
+ * exists so such a UI can refuse to deactivate, demote, or delete the last
+ * active superuser.
  */
 export type AdminAccountsUsers = {
 	authenticate(credentials: {
@@ -162,6 +170,64 @@ export type AdminAccountsUsers = {
 	}): Promise<AdminAccountsUserRow | null>;
 	retrieve(userId: string): Promise<AdminAccountsUserRow | undefined>;
 	userPermissions(userId: string): Promise<string[]>;
+	createUser(input: {
+		username: string;
+		password: string;
+		label?: string | null;
+		isActive?: boolean;
+		isSuperuser?: boolean;
+		permissions?: readonly string[];
+	}): Promise<AdminAccountsUserRow>;
+	updateUser(
+		userId: string,
+		patch: {
+			username?: string;
+			label?: string | null;
+			isActive?: boolean;
+			isSuperuser?: boolean;
+		},
+		/**
+		 * When `protectLastActiveSuperuser` is `true`, a patch that would
+		 * deactivate or demote the only remaining active superuser is rejected
+		 * with `LastActiveSuperuserError` instead of applied — enforced by the
+		 * dialect service as a single conditional UPDATE, not a separate
+		 * check-then-act read (see `SQLiteAdminAccounts#updateUser`).
+		 */
+		options?: { protectLastActiveSuperuser?: boolean },
+	): Promise<AdminAccountsUserRow | undefined>;
+	setPassword(userId: string, password: string): Promise<void>;
+	setUserPermissions(userId: string, permissions: readonly string[]): Promise<void>;
+	listUsers(options?: {
+		query?: string;
+		limit?: number;
+		offset?: number;
+	}): Promise<AdminAccountsUserRow[]>;
+	count(query?: string): Promise<number>;
+	countActiveSuperusers(): Promise<number>;
+	/**
+	 * When `options.protectLastActiveSuperuser` is `true`, deleting the only
+	 * remaining active superuser is rejected with `LastActiveSuperuserError`
+	 * instead of applied (same single-statement guarding as `updateUser`).
+	 */
+	deleteUser(userId: string, options?: { protectLastActiveSuperuser?: boolean }): Promise<void>;
+};
+
+/**
+ * One operator-group row as consumed by `AdminPanel` (`admin_panel.tsx`): the
+ * contract columns shared by the default groups tables of all three dialects
+ * (`sqliteAdminGroupsTable`/`pgAdminGroupsTable`/`mysqlAdminGroupsTable`; every
+ * timestamp is an epoch-millisecond number on each dialect, so the row shape
+ * is uniform). A service may return rows that are a SUPERSET of this shape
+ * (e.g. an extended table's app-specific columns) — that is the ordinary
+ * covariant-return direction and the extra properties are simply ignored by
+ * the panel.
+ */
+export type AdminAccountsGroupRow = {
+	id: string;
+	name: string;
+	permissions: string;
+	createdAt: number;
+	updatedAt: number;
 };
 
 /**
@@ -171,7 +237,26 @@ export type AdminAccountsUsers = {
  * resolves the union of the permission sets of every group the user belongs
  * to; `AdminPanel` (`admin_panel.tsx`) unions it with the user's own set
  * before checking.
+ *
+ * The remaining methods are the management surface an accounts management UI
+ * drives, split the same way as `AdminAccountsUsers`: `updateGroup` touches
+ * only the group's name, `setGroupPermissions` owns the permission set, and
+ * `userGroups`/`setUserGroups` read and replace one user's memberships.
  */
 export type AdminAccountsGroups = {
 	permissionsForUser(userId: string): Promise<string[]>;
+	listGroups(): Promise<AdminAccountsGroupRow[]>;
+	createGroup(input: {
+		name: string;
+		permissions?: readonly string[];
+	}): Promise<AdminAccountsGroupRow>;
+	updateGroup(
+		groupId: string,
+		patch: { name?: string },
+	): Promise<AdminAccountsGroupRow | undefined>;
+	setGroupPermissions(groupId: string, permissions: readonly string[]): Promise<void>;
+	groupPermissions(groupId: string): Promise<string[]>;
+	deleteGroup(groupId: string): Promise<void>;
+	userGroups(userId: string): Promise<AdminAccountsGroupRow[]>;
+	setUserGroups(userId: string, groupIds: readonly string[]): Promise<void>;
 };

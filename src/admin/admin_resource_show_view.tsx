@@ -32,12 +32,14 @@ export type AdminResourceShowViewProps = {
 	columns: string[];
 	row: Record<string, unknown>;
 	primaryKey: string;
-	/** Whether to show edit/delete links/forms (`AdminResource#canWrite()`). */
-	canWrite: boolean;
+	/** Whether to show the edit link (`AdminResource#canWrite()` AND the operator's granted set includes `resource.<key>.update`). */
+	canUpdate: boolean;
+	/** Whether to show the delete link (`AdminResource#canWrite()` AND the operator's granted set includes `resource.<key>.delete`). */
+	canDelete: boolean;
 	t: AdminT;
 };
 
-/** Resource show screen body. Renders a column name/value definition list, and if writable, an edit link and delete form. */
+/** Resource show screen body. Renders a column name/value definition list, and (per `canUpdate`/`canDelete`) an edit link and/or delete link. */
 export const AdminResourceShowView = ({
 	basePath,
 	resourceKey,
@@ -45,7 +47,8 @@ export const AdminResourceShowView = ({
 	columns,
 	row,
 	primaryKey,
-	canWrite,
+	canUpdate,
+	canDelete,
 	t,
 }: AdminResourceShowViewProps) => {
 	const id = stringify(row[primaryKey]);
@@ -64,23 +67,23 @@ export const AdminResourceShowView = ({
 					))}
 				</dl>
 			</div>
-			{canWrite && (
-				<>
-					<a
-						class="button"
-						href={`${detailHref}/edit`}
-						aria-label={t("a11y.editItem", { name: label })}
-					>
-						{t("action.edit")}
-					</a>
-					<a
-						class="deletelink"
-						href={`${detailHref}/delete`}
-						aria-label={t("a11y.deleteItem", { name: label })}
-					>
-						{t("action.delete")}
-					</a>
-				</>
+			{canUpdate && (
+				<a
+					class="button"
+					href={`${detailHref}/edit`}
+					aria-label={t("a11y.editItem", { name: label })}
+				>
+					{t("action.edit")}
+				</a>
+			)}
+			{canDelete && (
+				<a
+					class="deletelink"
+					href={`${detailHref}/delete`}
+					aria-label={t("a11y.deleteItem", { name: label })}
+				>
+					{t("action.delete")}
+				</a>
 			)}
 			<a href={`${basePath}/resources/${resourceKey}`}>{t("action.backToList")}</a>
 		</>
