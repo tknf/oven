@@ -15,7 +15,8 @@ field declarations into a `FormBinding` that a view can render directly.
 
 `File` upload content (size, MIME type) isn't something Standard Schema
 validates either, so `@tknf/oven/form` separately provides
-`validateUploadedFile`/`sniffMimeType` as plain functions for that axis.
+`validateUploadedFile`/`validateUploadedFiles`/`sniffMimeType` as plain
+functions for that axis.
 
 ## Minimal example
 
@@ -120,6 +121,30 @@ const RedeemCodePage = ({ binding, csrfToken }: { binding: FormBinding<"code">; 
 );
 ```
 
+### Declaring a file field
+
+`widget: "file"` is the dedicated `FieldDef` variant for a file input; it only
+carries the axes that actually apply to `input[type=file]` (`accept`/
+`multiple`), instead of the full text-input constraint set (`minLength`/
+`pattern`/etc., which don't apply to files):
+
+```ts
+protected fields(): Record<"cover", FieldDef> {
+  return {
+    cover: { label: "Cover image", widget: "file", accept: "image/png,image/jpeg" },
+  };
+}
+```
+
+The older spelling — `widget: "input"` (or `widget` omitted) with
+`type: "file"` — still works and renders identically; it predates the
+dedicated variant and exists for backward compatibility with code (and
+`fieldsFromTable` overrides) written before it. New code should prefer
+`widget: "file"`. Either way, the rendered `BoundField` never carries a
+`value`: browsers refuse to pre-populate `input[type=file]`'s selection from a
+`value` attribute, so `Form#toInput` never sets a key for a `widget: "file"`
+field either.
+
 ### Validating an uploaded file's size and MIME type
 
 ```ts
@@ -138,6 +163,66 @@ if (!validation.ok) {
 }
 ```
 
+### Validating a multi-file field (`multiple: true`)
+
+A `widget: "file"` field declared with `multiple: true` submits several
+`File`s under one key. `validateUploadedFiles` applies the same
+`UploadedFileConstraints` to every file and returns a result symmetric with
+`validateUploadedFile`'s own: `{ ok: true; files: File[] }`, or
+`{ ok: false; results }` where `results` holds every input file's own
+validation result tagged with its original `index`. `toUploadedFileFormErrors`
+converts the failing entries straight into `form.ts`'s `FormError[]`
+vocabulary, addressed to the field's name (a multi-file input is one HTML
+`name`, so there's no way to address "just the third file" separately):
+
+```ts
+import { validateUploadedFiles, toUploadedFileFormErrors } from "@tknf/oven/form";
+
+const body = await c.req.parseBody({ all: true }); // { all: true } so a single file also comes back as an array
+const files = Array.isArray(body.attachments) ? body.attachments.filter((v): v is File => v instanceof File) : [];
+
+const result = validateUploadedFiles(files, {
+  maxSizeBytes: 5 * 1024 * 1024,
+  allowedMimeTypes: ["image/png", "image/jpeg"],
+});
+
+if (!result.ok) {
+  const binding = form.bind({ errors: toUploadedFileFormErrors(result, "attachments") });
+  // ...re-render with binding
+}
+```
+
+`localizeUploadedFileError` accepts each failing entry from `result.results`
+directly — a batch entry is a `UploadedFileValidationFailure` plus `index`, so
+no shape conversion is needed to localize a batch failure's message.
+
+**`maxSizeBytes` is an after-the-fact check, not a request size limit.** It
+only rejects a `File` value *after* `c.req.parseBody()` has already buffered
+it — and by then the full multipart body has already been received into
+memory. To actually bound how much a request is allowed to make the server
+buffer, apply Hono's `bodyLimit` middleware ahead of any handler that calls
+`parseBody` (this includes `Csrf#verify`, which reads the CSRF token from the
+form body):
+
+```ts
+import { bodyLimit } from "hono/body-limit";
+
+app.post(
+  "/upload",
+  bodyLimit({ maxSize: 5 * 1024 * 1024 }), // must run before parseBody / csrf.verify
+  csrf.verify,
+  async (c) => {
+    const body = await c.req.parseBody();
+    const validation = validateUploadedFile(body.cover, { maxSizeBytes: 5 * 1024 * 1024 });
+    // ...
+  },
+);
+```
+
+`AdminPanel` (`@tknf/oven/admin`) exposes this as the `bodyLimitBytes` option
+(see the [admin guide](./admin.md)) so a route-by-route `bodyLimit()` doesn't
+need to be hand-wired for the panel's own upload fields.
+
 ## Gotchas / Security notes
 
 - **String values are trimmed automatically** inside `validate()` (array
@@ -147,6 +232,13 @@ if (!validation.ok) {
   `allowedMimeTypes` check only looks at the browser-reported MIME type.
   Combine it with the async `sniffMimeType` (magic-byte detection) when a
   stronger, content-based guarantee is required.
+- **A `widget: "file"` `BoundField` never has a `value`**, and `Form#toInput`
+  never sets a key for it — an edit form can't pre-select a previously
+  uploaded file into `input[type=file]`; render the existing file (e.g. its
+  URL) separately from the field itself if you need to show it.
+- **`validateUploadedFiles` constraints are shared across the whole batch** —
+  there's no per-file constraint override; every file in a `multiple: true`
+  field is checked against the same `UploadedFileConstraints`.
 - **A Standard Schema issue with no `path`** (a whole-object error, e.g. "this
   email is already registered") is collapsed into the fixed field name
   `"base"` (`FORM_BASE_ERROR_FIELD`) rather than being dropped — render it

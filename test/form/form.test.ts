@@ -598,6 +598,64 @@ describe("validation constraint attributes per widget", () => {
 	});
 });
 
+/** A form for verifying the dedicated `widget: "file"` and the backward-compatible `widget: "input", type: "file"` spelling. */
+class FileFieldsForm extends Form<
+	StandardSchemaV1<unknown, Record<string, unknown>>,
+	"avatar" | "legacyAvatar" | "plainFile"
+> {
+	protected schema() {
+		return defineStubSchema<Record<string, unknown>>((value) => ({
+			value: value as Record<string, unknown>,
+		}));
+	}
+	protected fields(): Record<"avatar" | "legacyAvatar" | "plainFile", FieldDef> {
+		return {
+			avatar: { label: "Avatar", widget: "file", accept: "image/*", multiple: true },
+			legacyAvatar: { label: "Avatar (legacy)", widget: "input", type: "file", accept: "image/*" },
+			plainFile: { label: "Attachment", widget: "file" },
+		};
+	}
+}
+
+describe("file widget", () => {
+	test("widget: 'file' reflects accept/multiple on BoundField", () => {
+		const avatar = new FileFieldsForm().bind().field("avatar");
+		if (avatar.widget !== "file") throw new Error("unreachable");
+
+		expect(avatar.accept).toBe("image/*");
+		expect(avatar.multiple).toBe(true);
+	});
+
+	test("widget: 'file' with no accept/multiple declared leaves both undefined", () => {
+		const plainFile = new FileFieldsForm().bind().field("plainFile");
+		if (plainFile.widget !== "file") throw new Error("unreachable");
+
+		expect(plainFile.accept).toBeUndefined();
+		expect(plainFile.multiple).toBeUndefined();
+	});
+
+	test("the legacy widget: 'input' + type: 'file' spelling still resolves to widget: 'input'", () => {
+		const legacyAvatar = new FileFieldsForm().bind().field("legacyAvatar");
+		if (legacyAvatar.widget !== "input") throw new Error("unreachable");
+
+		expect(legacyAvatar.type).toBe("file");
+		expect(legacyAvatar.accept).toBe("image/*");
+	});
+
+	test("Form#toInput never sets a key for widget: 'file' (a File value cannot be pre-populated)", () => {
+		const input = new FileFieldsForm().toInput({
+			avatar: "https://example.com/old-avatar.png",
+			legacyAvatar: "https://example.com/old-legacy.png",
+			plainFile: "https://example.com/old-file.pdf",
+		});
+
+		expect(Object.hasOwn(input, "avatar")).toBe(false);
+		expect(Object.hasOwn(input, "plainFile")).toBe(false);
+		// The legacy `widget: "input"` spelling is unaffected by the `file` skip and keeps its existing behavior.
+		expect(input.legacyAvatar).toBe("https://example.com/old-legacy.png");
+	});
+});
+
 /** A form for verifying the hidden widget. */
 class HiddenFieldsForm extends Form<
 	StandardSchemaV1<unknown, Record<string, unknown>>,
