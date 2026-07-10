@@ -40,12 +40,18 @@ export type KeyValueSessionStorageOptions = SessionCookieOptions & {
 	ttlSeconds?: number;
 	/** Re-put the TTL if this many milliseconds have passed since the last refresh. Defaults to 24 hours. */
 	refreshThresholdMs?: number;
+	/**
+	 * Prefix prepended to the store key. Defaults to `"oven_session:"`. Override this to
+	 * namespace multiple session purposes on the same store, or to match an existing key
+	 * scheme when migrating from another system.
+	 */
+	keyPrefix?: string;
 };
 
 const DEFAULT_TTL_SECONDS = 60 * 60 * 24 * 30;
 const DEFAULT_REFRESH_THRESHOLD_MS = 1000 * 60 * 60 * 24;
 
-const KEY_PREFIX = "oven_session:";
+const DEFAULT_KEY_PREFIX = "oven_session:";
 
 type StoredRecord = {
 	data: SessionData;
@@ -70,15 +76,17 @@ const isStoredRecord = (value: unknown): value is StoredRecord =>
 export class KeyValueSessionStorage extends SessionStorage {
 	private readonly ttlSeconds: number;
 	private readonly refreshThresholdMs: number;
+	private readonly keyPrefix: string;
 
 	constructor(
 		private readonly store: KeyValueStore,
 		options: KeyValueSessionStorageOptions = {},
 	) {
-		const { ttlSeconds, refreshThresholdMs, ...cookieOptions } = options;
+		const { ttlSeconds, refreshThresholdMs, keyPrefix, ...cookieOptions } = options;
 		super(cookieOptions);
 		this.ttlSeconds = ttlSeconds ?? DEFAULT_TTL_SECONDS;
 		this.refreshThresholdMs = refreshThresholdMs ?? DEFAULT_REFRESH_THRESHOLD_MS;
+		this.keyPrefix = keyPrefix ?? DEFAULT_KEY_PREFIX;
 	}
 
 	async get(cookieHeader: string | null): Promise<Session> {
@@ -115,12 +123,13 @@ export class KeyValueSessionStorage extends SessionStorage {
 
 	async destroy(session: Session): Promise<string> {
 		if (session.id) await this.store.delete(this.storeKey(session.id));
+		session.markDestroyed();
 
 		return this.buildDestroyCookie();
 	}
 
 	private storeKey(id: string): string {
-		return `${KEY_PREFIX}${id}`;
+		return `${this.keyPrefix}${id}`;
 	}
 
 	/**

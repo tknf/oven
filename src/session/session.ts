@@ -15,6 +15,11 @@
  * forgotten saves at the framework level. The session becomes dirty on calls to
  * `set`/`unset`/`flash`, and also when a flash value is consumed via `get` (consuming
  * it changes the data carried into the next request).
+ *
+ * `isDestroyed` (destruction tracking): a `SessionStorage.destroy` call marks the
+ * instance as destroyed regardless of `isDirty`, so that "destroy always wins" even
+ * when the same session was also mutated (e.g. via `flash`) earlier in the same
+ * request. See `markDestroyed`'s JSDoc for details.
  */
 export type SessionData = Record<string, unknown>;
 
@@ -35,6 +40,7 @@ export class Session {
 	private readonly map: Map<string, unknown>;
 	private dirty = false;
 	private regenerationRequested = false;
+	private destroyed = false;
 
 	/**
 	 * The session id. Always an empty string for `CookieSessionStorage`, which packs
@@ -57,6 +63,11 @@ export class Session {
 	/** `true` after a call to `set`/`unset`/`flash`, or after a flash value is consumed. */
 	get isDirty(): boolean {
 		return this.dirty;
+	}
+
+	/** `true` after `markDestroyed()` has been called (i.e. `SessionStorage.destroy` has run for this instance). */
+	get isDestroyed(): boolean {
+		return this.destroyed;
 	}
 
 	/** Whether `key` exists as either regular data or an unconsumed flash value. */
@@ -124,5 +135,15 @@ export class Session {
 	 */
 	acknowledgeRegeneration(): void {
 		this.regenerationRequested = false;
+	}
+
+	/**
+	 * Called by a concrete `SessionStorage` implementation from within `destroy`.
+	 * Application code is not expected to call this. Once set, the session is excluded
+	 * from `SessionAccessor`'s automatic commit regardless of `isDirty` — destroy always
+	 * wins, even if `set`/`flash` mutated this instance earlier in the same request.
+	 */
+	markDestroyed(): void {
+		this.destroyed = true;
 	}
 }

@@ -21,8 +21,9 @@
  * - `commit(session)`: persists the session and returns the value that should be set
  *   on the `Set-Cookie` header (the same string form returned by `hono/cookie`'s
  *   `generateCookie`).
- * - `destroy(session)`: destroys the session and returns the deletion (`Max-Age=0`)
- *   `Set-Cookie` value.
+ * - `destroy(session)`: destroys the session, calls `session.markDestroyed()` (so that
+ *   `SessionAccessor` never re-commits this instance even if it is also dirty), and
+ *   returns the deletion (`Max-Age=0`) `Set-Cookie` value.
  */
 import { generateCookie } from "hono/cookie";
 import { parse } from "hono/utils/cookie";
@@ -77,7 +78,10 @@ export abstract class SessionStorage {
 	/** Persists `session` and returns the value to set on the `Set-Cookie` header. */
 	abstract commit(session: Session): Promise<string>;
 
-	/** Destroys `session` and returns the deletion (`Max-Age=0`) `Set-Cookie` value. */
+	/**
+	 * Destroys `session`, calls `session.markDestroyed()`, and returns the deletion
+	 * (`Max-Age=0`) `Set-Cookie` value.
+	 */
 	abstract destroy(session: Session): Promise<string>;
 
 	/**

@@ -18,7 +18,9 @@ request's `Session`.
 forgetting to save. After your handler runs, it checks `session.isDirty`
 (set by any `set`/`unset`/`flash` call, or by consuming a flash value) and
 only then calls `storage.commit()` and appends `Set-Cookie`. Read-only
-requests never trigger a write.
+requests never trigger a write. If `storage.destroy()` was called anywhere
+during the request, that always wins over a pending dirty commit — see
+"Logging out" below.
 
 ## Minimal example
 
@@ -64,7 +66,7 @@ production, pick one of the backends below.
 | Class | Where data lives | Notes |
 | --- | --- | --- |
 | `CookieSessionStorage` | The cookie itself (HMAC-SHA256 signed) | No server-side storage, but data is only Base64URL-encoded, not encrypted — never put secrets in it (see Gotchas). Limited by the browser's ~4KB cookie size. |
-| `KeyValueSessionStorage` | A `KeyValueStore` (`@tknf/oven/kv`) | Only a session id is kept in the cookie. Supports TTL and best-effort sliding-TTL refresh. |
+| `KeyValueSessionStorage` | A `KeyValueStore` (`@tknf/oven/kv`) | Only a session id is kept in the cookie. Supports TTL and best-effort sliding-TTL refresh. Store keys are prefixed with `keyPrefix` (default `"oven_session:"`) — override it to namespace multiple session purposes on the same store, or to match an existing key scheme when migrating from another system. |
 | `PgDatabaseSessionStorage` / `SQLiteDatabaseSessionStorage` / `MySqlDatabaseSessionStorage` | A Drizzle-backed table | Use when you already have a SQL database and want sessions queryable/auditable there. |
 | `InMemorySessionStorage` | An in-process `Map` | Development/tests only — no TTL, no persistence across restarts. |
 
@@ -118,6 +120,14 @@ app.post("/logout", async (c) => {
   return c.redirect("/login");
 });
 ```
+
+`storage.destroy()` marks the `Session` instance as destroyed
+(`session.isDestroyed`), and `SessionAccessor` skips its automatic commit for
+a destroyed session even if it is also dirty. This means it's safe to flash a
+message before destroying in the same request — for example
+`sessionAccessor.use(c).flash("notice", "Logged out")` followed by
+`storage.destroy(session)` — without the auto-commit reviving the session
+data after the destroy `Set-Cookie` has already gone out.
 
 ## Gotchas / Security notes
 

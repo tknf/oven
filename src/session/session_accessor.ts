@@ -19,6 +19,15 @@
  * storages (such as one needing Cloudflare bindings) that require a per-request value
  * derived from `c`.
  *
+ * **Note (behavior on destroy)**: `isDirty` alone does not trigger an automatic
+ * commit — `isDestroyed` is also checked, and a destroyed session is never
+ * auto-committed even if it is dirty. If `storage.destroy(session)` is called
+ * anywhere during `next()` (e.g. on logout), the response carries only the
+ * destroy Cookie (`Max-Age=0`); a `set`/`flash` call made on that same `Session`
+ * instance earlier or later in the same request (e.g. a "you have been logged
+ * out" flash) does not get appended as a second, reviving `Set-Cookie`. This
+ * makes destroy always win over dirty within a single request.
+ *
  * **Note (behavior on error)**: if `next()` throws, the automatic `Set-Cookie` is not
  * applied (the exception passes through this accessor untouched, and the response
  * produced by `error_handler.ts`'s `onError` does not carry the `Set-Cookie` from
@@ -71,7 +80,7 @@ export class SessionAccessor<
 
 		await next();
 
-		if (session.isDirty) {
+		if (session.isDirty && !session.isDestroyed) {
 			const cookie = await sessionStorage.commit(session);
 			c.header("Set-Cookie", cookie, { append: true });
 		}
