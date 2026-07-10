@@ -42,7 +42,7 @@ subpath export (`@tknf/oven/<name>`).
 - [Mailer](./mailer.md) — `Mailer`, templates, preview, queued delivery
   (`@tknf/oven/mailer`).
 - [Pagination](./pagination.md) — query parsing, opaque cursors,
-  `PaginationView` (`@tknf/oven/pagination`).
+  `PaginationView`, `OffsetPaginationView` (`@tknf/oven/pagination`).
 - [Audit log](./audit.md) — append-only audit recording
   (`@tknf/oven/audit`).
 - [Database](./database.md) — `DatabaseAccessor` for wiring a Drizzle

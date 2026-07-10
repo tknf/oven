@@ -4,13 +4,13 @@
  * Hono's `Context`, same convention as `admin_resource_list_view.tsx`.
  *
  * Offset pagination (`?p=`, 0-based) mirrors the resource list's `?p=`
- * convention, but this screen has neither sort nor filters, so the URL
- * builder and pager are a smaller, self-contained copy rather than reusing
- * `admin_resource_list_view.tsx`'s (which are private to that module and
- * carry sort/filter state this screen doesn't have).
+ * convention; both screens share the same `OffsetPaginationView` from
+ * `pagination/`, with this screen's own `buildUsersUrl` supplying the
+ * (sort/filter-free) URL shape.
  */
 import type { AdminT } from "./admin_catalog.js";
 import type { AdminAccountsUserRow } from "./admin_types.js";
+import { OffsetPaginationView } from "../pagination/index.js";
 
 /** Builds one users-list URL, carrying the current search `query` through and dropping `p` at page 0. */
 const buildUsersUrl = (basePath: string, query: string, page: number): string => {
@@ -21,30 +21,6 @@ const buildUsersUrl = (basePath: string, query: string, page: number): string =>
 	const qs = params.toString();
 	const base = `${basePath}/accounts/users`;
 	return qs ? `${base}?${qs}` : base;
-};
-
-/** Ellipsis marker used by `buildPageRange` to elide long runs of page numbers. Same convention as `admin_resource_list_view.tsx`. */
-const PAGE_RANGE_ELLIPSIS = "…";
-
-/** Elides a long page-number list down to the first 2, the last 2, and a window of 3 pages on either side of the current page. Same algorithm as `admin_resource_list_view.tsx`'s `buildPageRange`. */
-const buildPageRange = (
-	page: number,
-	pageCount: number,
-): (number | typeof PAGE_RANGE_ELLIPSIS)[] => {
-	const kept = new Set<number>();
-	for (let i = 0; i < Math.min(2, pageCount); i++) kept.add(i);
-	for (let i = Math.max(0, pageCount - 2); i < pageCount; i++) kept.add(i);
-	for (let i = Math.max(0, page - 3); i <= Math.min(pageCount - 1, page + 3); i++) kept.add(i);
-
-	const sorted = [...kept].sort((a, b) => a - b);
-	const range: (number | typeof PAGE_RANGE_ELLIPSIS)[] = [];
-	let previous: number | null = null;
-	for (const current of sorted) {
-		if (previous !== null && current - previous > 1) range.push(PAGE_RANGE_ELLIPSIS);
-		range.push(current);
-		previous = current;
-	}
-	return range;
 };
 
 /** Formats an epoch ms column as an ISO string. `null` becomes `"-"` (same convention as `admin_jobs_view.tsx`'s `formatTime`). */
@@ -137,50 +113,6 @@ const UsersTable = ({
 	);
 };
 
-/** Numbered pagination + result count. Same rendering as `admin_resource_list_view.tsx`'s `Paginator`, minus sort/filter state. */
-const Paginator = ({
-	basePath,
-	query,
-	page,
-	pageCount,
-	total,
-	t,
-}: {
-	basePath: string;
-	query: string;
-	page: number;
-	pageCount: number;
-	total: number;
-	t: AdminT;
-}) => (
-	<nav class="paginator" aria-label="pagination">
-		{pageCount > 1 &&
-			buildPageRange(page, pageCount).map((entry) => {
-				if (entry === PAGE_RANGE_ELLIPSIS) {
-					return <span class="ellipsis">{PAGE_RANGE_ELLIPSIS}</span>;
-				}
-				if (entry === page) {
-					return (
-						<span class="this-page" aria-current="page">
-							{entry + 1}
-						</span>
-					);
-				}
-				return (
-					<a
-						href={buildUsersUrl(basePath, query, entry)}
-						aria-label={t("a11y.page", { n: entry + 1 })}
-					>
-						{entry + 1}
-					</a>
-				);
-			})}
-		<span class="result-count">
-			{total} {t("accounts.users.title")}
-		</span>
-	</nav>
-);
-
 /** Accounts-user list screen body. Renders the heading, "add user" link, search form, list table, and numbered pagination + result count. */
 export const AdminAccountsUsersListView = ({
 	basePath,
@@ -206,13 +138,13 @@ export const AdminAccountsUsersListView = ({
 		</div>
 		<SearchForm basePath={basePath} query={query} t={t} />
 		<UsersTable basePath={basePath} rows={rows} t={t} />
-		<Paginator
-			basePath={basePath}
-			query={query}
+		<OffsetPaginationView
 			page={page}
 			pageCount={pageCount}
-			total={total}
-			t={t}
+			buildUrl={(p) => buildUsersUrl(basePath, query, p)}
+			pageLabel={(n) => t("a11y.page", { n })}
+			summary={`${total} ${t("accounts.users.title")}`}
+			attrs={{ class: "paginator" }}
 		/>
 	</>
 );
