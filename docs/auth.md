@@ -26,10 +26,30 @@ rather than folded into a single "auth module":
   (signed, expiring one-time links), and `OAuthClient` (a thin OAuth2 code
   exchange helper).
 
-`Guard` deliberately has no built-in "public path" exclusion feature — that
-concern is already covered by Hono's own routing (mount `require` only on
-the sub-app or path range that needs protection). See the module JSDoc in
-`src/auth/guard.ts` for the full rationale.
+The primary way to exempt a path from `Guard` is still Hono's own routing —
+mount `require` only on the sub-app or path range that needs protection. But
+that guarantee lives entirely in registration order (e.g. mounting a public
+login handler before `app.use("/admin/*", guard.require)`), and a future
+reordering mistake becomes a silent authentication bypass with no error to
+catch it. For that reason `Guard` also accepts `except`, a list of exact
+request paths handled inside the Guard itself regardless of registration
+order — kept exact-match only (no glob/prefix matching) so `Guard` never
+grows a second, pattern-based routing responsibility. See the module JSDoc
+in `src/auth/guard.ts` for the full rationale.
+
+```ts
+export const accountGuard = new Guard<AppEnv, "account">("account", {
+  session: sessionAccessor.use,
+  identityKey: "accountId",
+  provider: (identity) => accounts.get(identity),
+  onFailure: (c) => c.redirect("/login", 303),
+  except: ["/admin/login"], // exact match only; keep the list minimal
+});
+```
+
+On an excepted path, `require` does nothing but `await next()` — it never
+reads the session, calls `provider`, or `c.set`s the subject. Only use
+`except` for genuinely public routes that don't also call `accountGuard.use(c)`.
 
 ## Minimal example
 

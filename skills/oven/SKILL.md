@@ -152,6 +152,10 @@ area, example-first). Consult them for depth.
   `routes` breaks the instance.
 - **`secure` cookie attribute is OFF by default** (session cookie, remember
   token). Set `secure: true` explicitly in production via the cookie options.
+- **`Guard`'s `except` is an exact-match public-path allowlist**, kept as a
+  fallback to routing-order exclusion (mounting a public handler before
+  `require`) — `except: ["/admin/login"]` skips session/provider resolution
+  entirely for that path (no glob/prefix matching, so keep the list minimal).
 - **`secrets` must be high-entropy random ~32 bytes** (`Encrypter`, `UrlSigner`,
   `CookieSessionStorage`, ...). Weak/short secrets only emit a `console.warn`,
   never throw — do not rely on the runtime to catch it.
