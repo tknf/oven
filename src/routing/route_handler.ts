@@ -31,6 +31,20 @@
  *    e.g. `protected layout() { return AdminLayout; }`.
  * 3. The RPC type chain (the `hc` client) is lost with the class-based approach, but
  *    this does not matter for an SSR-only stack (Turbo/Stimulus).
+ * 4. **Mounting at the app root leaks `layout()`/`middleware()` to the whole app.**
+ *    A path-less `this.use(...)` (which is what `layout()` and `middleware()`
+ *    compile down to in the constructor) registers under Hono's internal `"*"`
+ *    path. When the handler is mounted with `app.route(path, handler)`, Hono's
+ *    `mergePath(path, "*")` lifts that registration onto the parent app. For any
+ *    non-root `path` (e.g. `"/admin"`) this merges to `"/admin/*"`, correctly
+ *    scoped — but for `app.route("/", handler)` it merges to `"/*"`, which is
+ *    every route on the parent app, not just this handler's own routes
+ *    (confirmed on a real run against Hono 4.12.27). Avoid this either by (a)
+ *    mounting the handler on a dedicated base path instead of `"/"`, or, if it
+ *    must be mounted at the root, by (b) leaving `layout()` unset (`null`) and
+ *    applying `jsxRenderer` per route inside `register()` instead, and (c) doing
+ *    the same for `middleware()` — apply it per route rather than overriding the
+ *    hook.
  */
 import type { Env, Handler, MiddlewareHandler } from "hono";
 import { Hono } from "hono";
