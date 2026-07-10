@@ -86,6 +86,29 @@ describe("SessionAccessor", () => {
 		expect(factory).toHaveBeenCalledTimes(1);
 	});
 
+	test("destroying a session that was also dirtied in the same request skips the automatic commit (destroy wins)", async () => {
+		const storage = new InMemorySessionStorage();
+		const commitSpy = vi.spyOn(storage, "commit");
+		const accessor = new SessionAccessor<AppEnv, "session">("session", storage);
+
+		const app = new Hono<AppEnv>();
+		app.use(accessor.register);
+		app.get("/", async (c) => {
+			const session = accessor.use(c);
+			session.flash("notice", "You have been logged out");
+			const destroyCookie = await storage.destroy(session);
+			c.header("Set-Cookie", destroyCookie, { append: true });
+			return c.text("ok");
+		});
+
+		const res = await app.request("/");
+		const setCookieHeaders = res.headers.getSetCookie();
+
+		expect(commitSpy).not.toHaveBeenCalled();
+		expect(setCookieHeaders).toHaveLength(1);
+		expect(setCookieHeaders[0]).toContain("Max-Age=0");
+	});
+
 	test("data from a committed session carries over to the next request", async () => {
 		const storage = new InMemorySessionStorage();
 		const accessor = new SessionAccessor<AppEnv, "session">("session", storage);

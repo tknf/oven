@@ -98,6 +98,15 @@ describe("CookieSessionStorage", () => {
 		expect(setCookie).toContain("Max-Age=0");
 	});
 
+	test("destroy marks the session as destroyed", async () => {
+		const storage = new CookieSessionStorage({ secrets: ["secret-1"] });
+		const session = new Session("");
+
+		await storage.destroy(session);
+
+		expect(session.isDestroyed).toBe(true);
+	});
+
 	test("throws in the constructor when secrets is an empty array", () => {
 		expect(() => new CookieSessionStorage({ secrets: [] })).toThrow();
 	});

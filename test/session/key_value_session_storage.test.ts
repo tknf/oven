@@ -163,6 +163,15 @@ describe("KeyValueSessionStorage", () => {
 		expect(setCookie).toContain("Max-Age=0");
 	});
 
+	test("destroy marks the session as destroyed", async () => {
+		const storage = new KeyValueSessionStorage(new InMemoryKeyValueStore());
+		const session = new Session("");
+
+		await storage.destroy(session);
+
+		expect(session.isDestroyed).toBe(true);
+	});
+
 	test("commit after regenerate reissues the session ID, carries over the data, and empties the old ID's session", async () => {
 		const storage = new KeyValueSessionStorage(new InMemoryKeyValueStore());
 		const session = new Session("");

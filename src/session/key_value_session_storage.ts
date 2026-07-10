@@ -115,6 +115,7 @@ export class KeyValueSessionStorage extends SessionStorage {
 
 	async destroy(session: Session): Promise<string> {
 		if (session.id) await this.store.delete(this.storeKey(session.id));
+		session.markDestroyed();
 
 		return this.buildDestroyCookie();
 	}

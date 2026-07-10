@@ -44,6 +44,7 @@ export class InMemorySessionStorage extends SessionStorage {
 
 	async destroy(session: Session): Promise<string> {
 		if (session.id) this.store.delete(session.id);
+		session.markDestroyed();
 
 		return this.buildDestroyCookie();
 	}

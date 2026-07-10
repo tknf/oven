@@ -106,6 +106,7 @@ export class PgDatabaseSessionStorage<
 
 	async destroy(session: Session): Promise<string> {
 		if (session.id) await this.db.delete(this.table).where(eq(this.table.id, session.id));
+		session.markDestroyed();
 
 		return this.buildDestroyCookie();
 	}
