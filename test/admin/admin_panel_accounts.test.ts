@@ -56,6 +56,16 @@ const migrationsFolder = new URL("../test_support/fixtures/migrations", import.m
 
 type SessionEnv = Env & { Variables: { session: Session } };
 
+/**
+ * The session key `AdminPanel` stores the logged-in identity under
+ * (`ADMIN_IDENTITY_SESSION_KEY` in `admin_panel.tsx`; not exported, so
+ * duplicated here). Used only to hand-craft a legacy session that predates
+ * `passwordStamp` (see the "password change invalidates existing sessions"
+ * suite below) — every other test drives the identity exclusively through
+ * `loginAs`.
+ */
+const ADMIN_IDENTITY_SESSION_KEY = "__oven_admin_identity__";
+
 /** Extracts only the cookie name=value pair from a `Set-Cookie` header value (same convention as `test/security/csrf.test.ts`). */
 const toCookieHeader = (setCookieValue: string): string => {
 	const [pair] = setCookieValue.split(";");
@@ -263,7 +273,7 @@ describe("AdminPanel accounts integration", () => {
 			}),
 		);
 
-		return { app, users, groups, audit, jobsConsole };
+		return { app, users, groups, audit, jobsConsole, storage };
 	};
 
 	/**
@@ -564,6 +574,69 @@ describe("AdminPanel accounts integration", () => {
 			const res = await app.request("/admin", { headers: { Cookie: cookie } });
 			expect(res.status).toBe(302);
 			expect(res.headers.get("location")).toBe("/admin/login?next=%2Fadmin");
+		});
+	});
+
+	describe("password change invalidates existing sessions", () => {
+		test("changing the password logs an already-logged-in session out on its next request", async () => {
+			const { app, users } = buildAccountsApp();
+			await users.createUser({ username: "alice", password: "password-1" });
+			const { cookie } = await loginAs(app, "alice", "password-1");
+			expect((await app.request("/admin", { headers: { Cookie: cookie } })).status).toBe(200);
+
+			const user = await users.findByUsername("alice");
+			if (!user) throw new Error("expected alice to exist");
+			await users.setPassword(user.id, "password-2");
+
+			const res = await app.request("/admin", { headers: { Cookie: cookie } });
+			expect(res.status).toBe(302);
+			expect(res.headers.get("location")).toBe("/admin/login?next=%2Fadmin");
+		});
+
+		test("a session survives further requests when the password is never changed", async () => {
+			const { app, users } = buildAccountsApp();
+			await users.createUser({ username: "alice", password: "password-1" });
+			const { cookie } = await loginAs(app, "alice", "password-1");
+
+			expect((await app.request("/admin", { headers: { Cookie: cookie } })).status).toBe(200);
+			expect((await app.request("/admin", { headers: { Cookie: cookie } })).status).toBe(200);
+		});
+
+		test("a session with no passwordStamp, as issued before this field existed, is rejected", async () => {
+			const { app, users, storage } = buildAccountsApp();
+			await users.createUser({ username: "alice", password: "password-1" });
+			const { cookie } = await loginAs(app, "alice", "password-1");
+
+			/**
+			 * Simulates a session issued by a pre-upgrade `AdminPanel` that never
+			 * attached `passwordStamp`: read the identity `loginAs` just stored,
+			 * strip the field, and write it back directly through `storage`
+			 * (bypassing the panel entirely, since there is no supported way to
+			 * produce a stamp-less session through the public API anymore).
+			 */
+			const session = await storage.get(cookie);
+			const identity = session.get(ADMIN_IDENTITY_SESSION_KEY) as { id: string; label?: string };
+			session.set(ADMIN_IDENTITY_SESSION_KEY, { id: identity.id, label: identity.label });
+			await storage.commit(session);
+
+			const res = await app.request("/admin", { headers: { Cookie: cookie } });
+			expect(res.status).toBe(302);
+			expect(res.headers.get("location")).toBe("/admin/login?next=%2Fadmin");
+		});
+
+		test("logging in again after a password change restores access", async () => {
+			const { app, users } = buildAccountsApp();
+			await users.createUser({ username: "alice", password: "password-1" });
+			const { cookie: oldCookie } = await loginAs(app, "alice", "password-1");
+
+			const user = await users.findByUsername("alice");
+			if (!user) throw new Error("expected alice to exist");
+			await users.setPassword(user.id, "password-2");
+			expect((await app.request("/admin", { headers: { Cookie: oldCookie } })).status).toBe(302);
+
+			const { loginRes, cookie: newCookie } = await loginAs(app, "alice", "password-2");
+			expect(loginRes.status).toBe(303);
+			expect((await app.request("/admin", { headers: { Cookie: newCookie } })).status).toBe(200);
 		});
 	});
 

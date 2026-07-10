@@ -56,11 +56,15 @@
 import { and, eq, getTableColumns, gte, lt } from "drizzle-orm";
 import type { Column, SQL } from "drizzle-orm";
 import type { Context, Env, MiddlewareHandler } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import type { FormInput, FormInputValue, FormResult } from "../form/form.js";
 import { RouteHandler } from "../routing/route_handler.js";
 import type { Csrf } from "../security/csrf.js";
+import type { RateLimiter } from "../security/rate_limiter.js";
 import type { Session } from "../session/session.js";
+import { encodeBase64Url } from "../support/base64url.js";
+import { constantTimeEqual } from "../support/constant_time.js";
 import { LastActiveSuperuserError } from "./admin_accounts_errors.js";
 import { bindAdminT } from "./admin_catalog.js";
 import type { AdminT } from "./admin_catalog.js";
@@ -124,6 +128,50 @@ const ADMIN_MESSAGES_FLASH_KEY = "__oven_admin_messages__";
 const ADMIN_IDENTITY_SESSION_KEY = "__oven_admin_identity__";
 
 /**
+ * The session-stored shape of a logged-in identity: `AdminIdentity` plus an
+ * optional password fingerprint (`passwordStamp`, see `derivePasswordStamp`).
+ * Never part of the public `AdminIdentity` contract `AdminPanelOptions.auth.authenticate`
+ * returns — the `/login` route attaches `passwordStamp` itself, only when
+ * `accounts` is injected, right before writing the session (see `wireAuth`).
+ * The accounts gate in `middleware()` then re-derives the stamp from the
+ * re-read row's `passwordHash` on every request and rejects the session when
+ * they don't match (or when `passwordStamp` is missing entirely, which is
+ * always the case for a session issued before this field existed) — the
+ * cheapest way to invalidate every outstanding session on a password change
+ * without a dedicated "session generation" column (see `docs/admin-accounts.md`'s
+ * "Password changes end existing sessions" gotcha).
+ */
+type AdminSessionIdentity = AdminIdentity & { passwordStamp?: string };
+
+/** Length, in base64url characters, of a `passwordStamp` (see `derivePasswordStamp`). */
+const PASSWORD_STAMP_LENGTH = 16;
+
+/**
+ * Derives a short fingerprint of an accounts user row's `passwordHash`:
+ * SHA-256 of the hash, base64url-encoded, truncated to `PASSWORD_STAMP_LENGTH`
+ * characters. Truncating keeps the session payload small; a truncated SHA-256
+ * output is still far more collision-resistant than this needs to be, since
+ * the fingerprint only has to change whenever `passwordHash` does (detecting
+ * that change, not standing on its own as a security boundary — the hash
+ * comparison inside `setPassword`/`authenticate` already is one). `setPassword`
+ * always produces a different `passwordHash` (PBKDF2 with a fresh random
+ * salt), so a changed stamp reliably means the password was changed.
+ */
+const derivePasswordStamp = async (passwordHash: string): Promise<string> => {
+	const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(passwordHash));
+	return encodeBase64Url(new Uint8Array(digest)).slice(0, PASSWORD_STAMP_LENGTH);
+};
+
+/**
+ * Constant-time comparison of two `passwordStamp` values (timing-attack
+ * mitigation, same convention as `Csrf#verify`/`UrlSigner#verify`). Encodes
+ * both to UTF-8 bytes before delegating to `constantTimeEqual`, since a
+ * `passwordStamp` is an opaque base64url string rather than raw bytes.
+ */
+const passwordStampsMatch = (a: string, b: string): boolean =>
+	constantTimeEqual(new TextEncoder().encode(a), new TextEncoder().encode(b));
+
+/**
  * Sentinel `requiredPermission` returns for a route that only a superuser may
  * reach (the `accounts` section: operator-account management), bypassing the
  * granted-permission-set check entirely rather than requiring some specific
@@ -131,6 +179,41 @@ const ADMIN_IDENTITY_SESSION_KEY = "__oven_admin_identity__";
  * (no permission required at all, open to every active operator).
  */
 const SUPERUSER_ONLY = Symbol("AdminPanel superuser-only route");
+
+/**
+ * Attempt budget for the built-in `POST /login` route's `rateLimiter` gate
+ * (`AdminPanelOptions.rateLimiter`): at most `LOGIN_RATE_LIMIT` submissions per
+ * distinct username within `LOGIN_RATE_LIMIT_WINDOW_SECONDS`, matching the
+ * manual `RateLimiter` wiring this built-in option replaces (see the
+ * "Rate-limit `authenticate`" note in `docs/admin-accounts.md`).
+ */
+const LOGIN_RATE_LIMIT = 5;
+const LOGIN_RATE_LIMIT_WINDOW_SECONDS = 300;
+
+/**
+ * Default `Content-Security-Policy` header value for every response this panel
+ * produces (`AdminPanelOptions.contentSecurityPolicy`). The panel's own views
+ * (`admin_layout.tsx`, `admin_login_view.tsx`, and every `admin_*_view.tsx`) are
+ * fully self-contained, developer-authored SSR HTML: no `<script>`, no `<img>`/
+ * `<link>`/`<iframe>`/`url(...)` resource reference of any kind, only an inlined
+ * `<style>{raw(ADMIN_CSS)}</style>` (verified by grepping every admin view and
+ * `admin_styles.ts`). That lets the policy close as tightly as `default-src
+ * 'none'` and open only the two directives the views actually need:
+ * - `style-src 'unsafe-inline'` — for the inlined `<style>` block. Hashing it
+ *   instead was considered and rejected as unwarranted complexity for a
+ *   developer-authored, non-user-controlled string.
+ * - `form-action 'self'` — every screen submits `<form method="post">` to a
+ *   same-origin path under `basePath`.
+ *
+ * `base-uri 'none'` blocks a `<base>` tag from retargeting relative URLs, and
+ * `frame-ancestors 'none'` blocks the panel from being framed (clickjacking).
+ * Neither `img-src` nor `script-src` needs its own entry: `default-src 'none'`
+ * already denies both, and the views load no image (a browser's own favicon
+ * request for `/favicon.ico` is unrelated to this header — it targets the
+ * origin's root, not an admin page).
+ */
+export const ADMIN_DEFAULT_CSP =
+	"default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
 
 /** Whether `value` has the shape of a single `AdminMessage`. */
 const isAdminMessage = (value: unknown): value is AdminMessage =>
@@ -145,12 +228,19 @@ const isAdminMessage = (value: unknown): value is AdminMessage =>
 const isAdminMessageArray = (value: unknown): value is AdminMessage[] =>
 	Array.isArray(value) && value.every(isAdminMessage);
 
-/** Whether `value` has the shape of an `AdminIdentity`, as stored by `AdminPanel#setIdentity`. */
-const isAdminIdentity = (value: unknown): value is AdminIdentity => {
+/** Whether `value` has the shape of an `AdminSessionIdentity`, as stored by `AdminPanel#setIdentity`. */
+const isAdminIdentity = (value: unknown): value is AdminSessionIdentity => {
 	if (typeof value !== "object" || value === null) return false;
 	if (!("id" in value) || typeof value.id !== "string") return false;
 	if ("label" in value && value.label !== undefined && typeof value.label !== "string")
 		return false;
+	if (
+		"passwordStamp" in value &&
+		value.passwordStamp !== undefined &&
+		typeof value.passwordStamp !== "string"
+	) {
+		return false;
+	}
 	return true;
 };
 
@@ -869,6 +959,41 @@ export type AdminPanelOptions<E extends Env = Env> = {
 		) => Promise<AdminIdentity | null>;
 	};
 	/**
+	 * Brute-force protection (`RateLimiter` from `security/rate_limiter.ts`) for the
+	 * built-in `POST /login` route, keyed by the submitted username
+	 * (`` `admin-login:${username}` ``, the same key shape as the manual wiring
+	 * documented in `docs/admin-accounts.md`'s "Rate-limit `authenticate`" note).
+	 * Checked BEFORE `auth.authenticate` runs, so a request over the limit never
+	 * reaches the credential check at all: the login screen re-renders with a
+	 * generic "too many attempts" message and `429`. Every submission (successful
+	 * or not) consumes one attempt, and a successful login resets the counter
+	 * (`RateLimiter#reset`) so a legitimate operator who mistypes their password
+	 * once is not penalized on their next real attempt. Only meaningful when
+	 * login is wired (`auth` or `accounts`) — there is no `/login` route
+	 * otherwise. When login is wired but `rateLimiter` is not, a one-time
+	 * `console.warn` is issued at construction (SEC-302: same one-time-warning
+	 * pattern as `csrf`'s SEC-301).
+	 */
+	rateLimiter?: RateLimiter;
+	/**
+	 * `Content-Security-Policy` header applied to every response this panel
+	 * produces (set in `middleware()`, so it also lands on the auth gate's
+	 * redirect, the rate limiter's `429`, and the body-limit's `413`). Default
+	 * (when omitted):
+	 *
+	 * ```
+	 * default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'
+	 * ```
+	 *
+	 * (see `ADMIN_DEFAULT_CSP`'s JSDoc for why each directive is there). Pass a
+	 * string to replace the default outright — e.g. to relax it for a
+	 * customized layout that adds its own script or image — or `false` to omit
+	 * the header entirely. Default ON: unlike `csrf`/`rateLimiter`, there is no
+	 * one-time warning for leaving this unset, since the built-in default is
+	 * already safe.
+	 */
+	contentSecurityPolicy?: string | false;
+	/**
 	 * DB-backed operator accounts (`SQLiteAdminAccounts` etc., via the structural
 	 * contracts in `admin_types.ts`). Injecting this: (a) derives the built-in
 	 * login/logout (`auth`) from the users service when `auth` is not given,
@@ -886,6 +1011,25 @@ export type AdminPanelOptions<E extends Env = Env> = {
 		users: AdminAccountsUsers;
 		groups?: AdminAccountsGroups;
 	};
+	/**
+	 * Request body size limit (bytes), applied to every route via `hono/body-limit`
+	 * (`bodyLimit({ maxSize: bodyLimitBytes })`). Inserted as the very first entry
+	 * in `middleware()`'s array — ahead of the auth gate and CSRF verification —
+	 * because both `requiredPermission` (the accounts permission gate, for
+	 * `POST /resources/<key>`) and `csrf.verify` call `c.req.parseBody()`, which
+	 * buffers the request body in full; limiting the raw byte count before either
+	 * runs is what actually bounds how much a single request can make the panel
+	 * buffer, unlike `validateUploadedFile`'s `maxSizeBytes` (`form/uploaded_file.ts`),
+	 * which only rejects an already-fully-buffered `File` after the fact. Not
+	 * required: unlike `csrf`/`rateLimiter`, an upload surface isn't universal to
+	 * every admin deployment, so omitting this option is silent (no SEC-style
+	 * one-time warning) and keeps the existing unlimited-body behavior. Exceeding it
+	 * returns Hono's own default `413 Payload Too Large` (no custom `onError`). A
+	 * request with no body (e.g. `GET`) passes through untouched — `bodyLimit`
+	 * forwards to the next middleware immediately when `c.req.raw.body` is `null`
+	 * (verified against Hono's `body-limit` implementation).
+	 */
+	bodyLimitBytes?: number;
 };
 
 /** `RouteHandler` subclass that serves the unified admin panel, mounted explicitly by the app. */
@@ -902,6 +1046,13 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 	 * injected (used by `warnCsrfMissingOnce` to prevent duplicate warnings).
 	 */
 	private csrfMissingWarned = false;
+
+	/**
+	 * Becomes `true` once the one-time rateLimiter-missing warning has been
+	 * issued (used by `warnRateLimiterMissingOnce` to prevent duplicate
+	 * warnings; see SEC-302).
+	 */
+	private rateLimiterMissingWarned = false;
 
 	/**
 	 * The current request's re-validated operator row (`accounts.users.retrieve`)
@@ -945,11 +1096,47 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 				"AdminPanel: the `accounts` option requires `csrf` to also be injected (the built-in login and the panel's write routes must be CSRF-protected).",
 			);
 		}
+		this.warnRateLimiterMissingOnce();
 		this.wireSections();
 	}
 
 	protected middleware(): MiddlewareHandler<E>[] {
 		return [
+			/**
+			 * First in the array, so its `c.header()` call — placed after `await
+			 * next()` — runs last, once every other middleware and the route handler
+			 * below have fully settled. That makes it apply to every response this
+			 * panel produces regardless of how the request ended: the dashboard, the
+			 * login screen, an `authorize`/accounts-gate `403`, the auth gate's
+			 * redirect to `/login`, the rate limiter's `429`, and the body-limit
+			 * middleware's `413` alike. `c.header()` handles an already-finalized
+			 * response (e.g. `c.redirect`'s) by rebuilding it with the header added
+			 * (see Hono's `Context#header`), so this is safe to call unconditionally.
+			 * `false` omits the header; a string overrides `ADMIN_DEFAULT_CSP`.
+			 */
+			async (c, next) => {
+				await next();
+				const policy = this.panelOptions?.contentSecurityPolicy;
+				if (policy === false) return;
+				c.header("Content-Security-Policy", policy ?? ADMIN_DEFAULT_CSP);
+			},
+			/**
+			 * Runs first among the request-processing middleware below (ahead of
+			 * `csrf.verify` and the accounts permission gate's own `parseBody` peek),
+			 * so an oversized request is rejected before any middleware or handler
+			 * buffers it. `bodyLimitBytes` is read here rather than once at
+			 * construction: `middleware()` itself runs inside the base
+			 * `RouteHandler` constructor (`super()`), before this
+			 * subclass's own constructor body has assigned `panelOptions` (same reason
+			 * every other option below is read from `this.panelOptions` inside its
+			 * closure, not hoisted out of it). A no-op passthrough when not injected
+			 * (existing unlimited-body behavior).
+			 */
+			(c, next) => {
+				const bodyLimitBytes = this.panelOptions?.bodyLimitBytes;
+				if (bodyLimitBytes === undefined) return next();
+				return bodyLimit({ maxSize: bodyLimitBytes })(c, next);
+			},
 			async (c, next) => {
 				this.warnCsrfMissingOnce(c);
 				await next();
@@ -982,6 +1169,28 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 					 */
 					const row = await options.accounts.users.retrieve(identity.id);
 					if (!row || !row.isActive) {
+						this.clearIdentity(c);
+						const next_ = encodeURIComponent(c.req.path);
+						return c.redirect(`${this.resolveBasePath()}/login?next=${next_}`);
+					}
+
+					/**
+					 * The session's `passwordStamp` (attached at login, see `wireAuth`)
+					 * must still match a stamp derived from the row's CURRENT
+					 * `passwordHash`: a `setPassword` call always produces a different
+					 * hash (fresh PBKDF2 salt), so a mismatch here means the password
+					 * changed after this session was issued. A session with no stamp at
+					 * all (issued before this field existed) is treated the same as a
+					 * mismatch — fail closed rather than trust an old session
+					 * indefinitely. Either way the stale session is cleared and the
+					 * request is sent back to `/login`, exactly like the
+					 * `isActive`/missing-row case above.
+					 */
+					const expectedStamp = await derivePasswordStamp(row.passwordHash);
+					if (
+						identity.passwordStamp === undefined ||
+						!passwordStampsMatch(identity.passwordStamp, expectedStamp)
+					) {
 						this.clearIdentity(c);
 						const next_ = encodeURIComponent(c.req.path);
 						return c.redirect(`${this.resolveBasePath()}/login?next=${next_}`);
@@ -1164,11 +1373,11 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 	}
 
 	/**
-	 * Reads the logged-in `AdminIdentity` from the session, if `panelOptions.session`
-	 * is injected and holds a well-formed one. `null` otherwise (not logged in, no
-	 * session injected, or a malformed stored value).
+	 * Reads the logged-in `AdminSessionIdentity` from the session, if
+	 * `panelOptions.session` is injected and holds a well-formed one. `null`
+	 * otherwise (not logged in, no session injected, or a malformed stored value).
 	 */
-	private currentIdentity(c: Context<E>): AdminIdentity | null {
+	private currentIdentity(c: Context<E>): AdminSessionIdentity | null {
 		const session = this.panelOptions?.session;
 		if (!session) return null;
 
@@ -1177,7 +1386,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 	}
 
 	/** Stores `identity` in the session as the logged-in operator, if `panelOptions.session` is injected. */
-	private setIdentity(c: Context<E>, identity: AdminIdentity): void {
+	private setIdentity(c: Context<E>, identity: AdminSessionIdentity): void {
 		this.panelOptions?.session?.(c).set(ADMIN_IDENTITY_SESSION_KEY, identity);
 	}
 
@@ -1254,6 +1463,25 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 		this.csrfMissingWarned = true;
 		console.warn(
 			"AdminPanel has no csrf wired. Pass the `csrf` option or verify upstream for CSRF protection.",
+		);
+	}
+
+	/**
+	 * `console.warn`s that no `rateLimiter` is wired only once, checked eagerly at
+	 * construction time — unlike `warnCsrfMissingOnce`'s per-request check, this can
+	 * be decided as soon as the options are known, because the built-in `/login`
+	 * route this warning is about only exists when login is wired at all
+	 * (`effectiveAuth`); there is nothing to warn about otherwise (SEC-302: same
+	 * one-time-warning pattern as `warnCsrfMissingOnce`'s SEC-301).
+	 */
+	private warnRateLimiterMissingOnce(): void {
+		if (!this.effectiveAuth() || this.panelOptions?.rateLimiter || this.rateLimiterMissingWarned) {
+			return;
+		}
+
+		this.rateLimiterMissingWarned = true;
+		console.warn(
+			"AdminPanel has no rateLimiter wired. Pass the `rateLimiter` option to protect the built-in /login route from brute-force attempts.",
 		);
 	}
 
@@ -1620,7 +1848,9 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 	 * `auth` or one derived from `accounts` (`effectiveAuth`). The auth gate in
 	 * `middleware()` exempts these two paths from itself, the accounts gate, and
 	 * `authorize` (see `isAuthRoute`), so they are reachable both logged-out (to
-	 * log in) and logged-in-but-unauthorized (to log out).
+	 * log in) and logged-in-but-unauthorized (to log out). `POST "/login"` also
+	 * applies the `rateLimiter` gate (`AdminPanelOptions.rateLimiter`), when
+	 * injected, before `auth.authenticate` runs.
 	 */
 	private wireAuth(): void {
 		this.get("/login", async (c) => {
@@ -1656,6 +1886,40 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 			const password = typeof body.password === "string" ? body.password : "";
 			const next = this.sanitizeNext(typeof body.next === "string" ? body.next : undefined);
 
+			/**
+			 * Checked BEFORE `auth.authenticate` runs: a request already over the limit
+			 * never reaches the credential check at all. `consume` counts this
+			 * submission itself (successful or not) toward the limit — the simplest
+			 * reading of its check-and-increment API — and a successful login below
+			 * resets the counter, so a legitimate operator who mistypes their password
+			 * once is not penalized on their next real attempt.
+			 */
+			const rateLimiter = options.rateLimiter;
+			const rateLimitKey = `admin-login:${username}`;
+			if (
+				rateLimiter &&
+				!(await rateLimiter.consume(
+					rateLimitKey,
+					LOGIN_RATE_LIMIT,
+					LOGIN_RATE_LIMIT_WINDOW_SECONDS,
+				))
+			) {
+				const t = bindAdminT(c);
+				return c.html(
+					<AdminLoginView
+						brand={options.brand ?? "Admin"}
+						basePath={basePath}
+						csrfToken={this.csrfToken(c)}
+						next={next}
+						error="tooManyAttempts"
+						username={username}
+						lang={c.get("language") ?? "en"}
+						t={t}
+					/>,
+					429,
+				);
+			}
+
 			const identity = await auth.authenticate(c, { username, password });
 			/**
 			 * When `accounts` is injected, `identity.id` MUST be an accounts user id
@@ -1680,7 +1944,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 						basePath={basePath}
 						csrfToken={this.csrfToken(c)}
 						next={next}
-						error={true}
+						error="invalid"
 						username={username}
 						lang={c.get("language") ?? "en"}
 						t={t}
@@ -1689,13 +1953,27 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 				);
 			}
 
+			if (rateLimiter) await rateLimiter.reset(rateLimitKey);
+
 			/**
 			 * Reissues the session id on a successful login (session-fixation defense:
 			 * `Session#regenerate`), keeping the session's existing data (including any
 			 * CSRF secret already issued to this browser) but with a fresh id.
 			 */
 			options.session?.(c).regenerate();
-			this.setIdentity(c, identity);
+			/**
+			 * `row` is guaranteed defined and active here whenever `accounts` is
+			 * injected (the guard above already rejected any other case), so this is
+			 * where `passwordStamp` is attached: the accounts gate in `middleware()`
+			 * re-derives and compares it on every later request, invalidating this
+			 * session the moment `row.passwordHash` changes (see `derivePasswordStamp`).
+			 * Left unset when `accounts` is not injected — there is no row to stamp,
+			 * and the gate that checks it never runs without `accounts` either.
+			 */
+			const sessionIdentity: AdminSessionIdentity = row
+				? { ...identity, passwordStamp: await derivePasswordStamp(row.passwordHash) }
+				: identity;
+			this.setIdentity(c, sessionIdentity);
 			return c.redirect(next, 303);
 		});
 

@@ -20,6 +20,7 @@ import { InMemoryKeyValueStore } from "../../src/kv/in_memory_key_value_store.js
 import { FeatureFlags } from "../../src/kv/feature_flags.js";
 import { Csrf } from "../../src/security/csrf.js";
 import { MaintenanceMode } from "../../src/security/maintenance_mode.js";
+import { RateLimiter } from "../../src/security/rate_limiter.js";
 import { InMemorySessionStorage } from "../../src/session/in_memory_session_storage.js";
 import { SessionAccessor } from "../../src/session/session_accessor.js";
 import type { Session } from "../../src/session/session.js";
@@ -84,6 +85,39 @@ const buildAuthWiredApp = (overrides: { csrf?: boolean } = {}) => {
 	);
 
 	return { app };
+};
+
+/**
+ * Builds an `AdminPanel` test app wired with session + `auth` (fixed `admin`/`secret`
+ * credentials) + optionally `rateLimiter` (`overrides.rateLimiter`). Records every
+ * username `authenticate` was called with, so a test can assert it was skipped
+ * entirely when the `rateLimiter` gate rejects a submission.
+ */
+const buildRateLimitedApp = (overrides: { rateLimiter?: RateLimiter } = {}) => {
+	const storage = new InMemorySessionStorage();
+	const sessionAccessor = new SessionAccessor<SessionEnv, "session">("session", storage);
+	const authenticateCalls: string[] = [];
+
+	const app = new Hono<SessionEnv>();
+	app.use(sessionAccessor.register);
+	app.route(
+		"/admin",
+		new AdminPanel<SessionEnv>({
+			authorize: () => true,
+			session: sessionAccessor.use,
+			rateLimiter: overrides.rateLimiter,
+			auth: {
+				authenticate: async (_c, { username, password }) => {
+					authenticateCalls.push(username);
+					return username === "admin" && password === "secret"
+						? { id: "admin", label: "Admin" }
+						: null;
+				},
+			},
+		}),
+	);
+
+	return { app, authenticateCalls };
 };
 
 const migrationsFolder = new URL("../test_support/fixtures/migrations", import.meta.url).pathname;
@@ -523,6 +557,110 @@ describe("AdminPanel", () => {
 		});
 	});
 
+	describe("body limit", () => {
+		test("returns 413 when a request body exceeds bodyLimitBytes", async () => {
+			const app = new Hono();
+			const console_ = buildFakeJobsConsole();
+			app.route(
+				"/admin",
+				new AdminPanel({ authorize: () => true, jobs: { console: console_ }, bodyLimitBytes: 10 }),
+			);
+
+			const res = await app.request("/admin/jobs/job-2/retry", {
+				method: "POST",
+				headers: { "content-type": "text/plain" },
+				body: "x".repeat(11),
+			});
+
+			expect(res.status).toBe(413);
+			expect(console_.retryFailedCalls).toEqual([]);
+		});
+
+		test("processes normally when the request body is within bodyLimitBytes", async () => {
+			const app = new Hono();
+			const console_ = buildFakeJobsConsole();
+			app.route(
+				"/admin",
+				new AdminPanel({
+					authorize: () => true,
+					jobs: { console: console_ },
+					bodyLimitBytes: 1024,
+				}),
+			);
+
+			const res = await app.request("/admin/jobs/job-2/retry", {
+				method: "POST",
+				headers: { "content-type": "text/plain" },
+				body: "small",
+			});
+
+			expect(res.status).toBe(303);
+			expect(console_.retryFailedCalls).toEqual(["job-2"]);
+		});
+
+		test("does not limit request size when bodyLimitBytes is not injected (backward compatibility)", async () => {
+			const app = new Hono();
+			const console_ = buildFakeJobsConsole();
+			app.route("/admin", new AdminPanel({ authorize: () => true, jobs: { console: console_ } }));
+
+			const res = await app.request("/admin/jobs/job-2/retry", {
+				method: "POST",
+				headers: { "content-type": "text/plain" },
+				body: "x".repeat(2048),
+			});
+
+			expect(res.status).toBe(303);
+			expect(console_.retryFailedCalls).toEqual(["job-2"]);
+		});
+	});
+
+	describe("content security policy", () => {
+		test("attaches the default CSP header to the authorized dashboard", async () => {
+			const app = new Hono();
+			app.route("/admin", new AdminPanel({ authorize: () => true }));
+
+			const res = await app.request("/admin");
+
+			expect(res.headers.get("Content-Security-Policy")).toBe(
+				"default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+			);
+		});
+
+		test("attaches the default CSP header to the login screen", async () => {
+			const { app } = buildAuthWiredApp();
+
+			const res = await app.request("/admin/login");
+
+			expect(res.headers.get("Content-Security-Policy")).toBe(
+				"default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+			);
+		});
+
+		test("omits the header when contentSecurityPolicy is false", async () => {
+			const app = new Hono();
+			app.route("/admin", new AdminPanel({ authorize: () => true, contentSecurityPolicy: false }));
+
+			const res = await app.request("/admin");
+
+			expect(res.headers.get("Content-Security-Policy")).toBeNull();
+		});
+
+		test("uses the given string as-is when contentSecurityPolicy is a string", async () => {
+			const app = new Hono();
+			app.route(
+				"/admin",
+				new AdminPanel({
+					authorize: () => true,
+					contentSecurityPolicy: "default-src 'self'",
+				}),
+			);
+
+			const res = await app.request("/admin");
+
+			expect(res.headers.get("Content-Security-Policy")).toBe("default-src 'self'");
+		});
+	});
+
 	describe("navigation", () => {
 		test("shows links for injected sections and hides non-injected sections", async () => {
 			const app = new Hono();
@@ -867,6 +1005,108 @@ describe("AdminPanel", () => {
 			});
 
 			expect(res.status).toBe(403);
+		});
+	});
+
+	describe("rate limiting", () => {
+		test("a login attempt within the limit authenticates normally", async () => {
+			const rateLimiter = new RateLimiter(new InMemoryKeyValueStore());
+			const { app, authenticateCalls } = buildRateLimitedApp({ rateLimiter });
+
+			const res = await app.request("/admin/login", {
+				method: "POST",
+				headers: { "content-type": "application/x-www-form-urlencoded" },
+				body: new URLSearchParams({ username: "admin", password: "secret" }).toString(),
+			});
+
+			expect(res.status).toBe(303);
+			expect(authenticateCalls).toEqual(["admin"]);
+		});
+
+		test("a login attempt past the limit is rejected with 429 and never reaches authenticate", async () => {
+			const rateLimiter = new RateLimiter(new InMemoryKeyValueStore());
+			const { app, authenticateCalls } = buildRateLimitedApp({ rateLimiter });
+			const submit = () =>
+				app.request("/admin/login", {
+					method: "POST",
+					headers: { "content-type": "application/x-www-form-urlencoded" },
+					body: new URLSearchParams({ username: "admin", password: "wrong" }).toString(),
+				});
+
+			// The built-in budget is 5 attempts per username per window; the first 5 go through
+			// to `authenticate` (and fail on the wrong password), and the 6th is rejected up front.
+			for (let i = 0; i < 5; i++) {
+				await submit();
+			}
+			expect(authenticateCalls).toHaveLength(5);
+
+			const res = await submit();
+			const body = await res.text();
+
+			expect(res.status).toBe(429);
+			expect(body).toContain("Too many attempts. Try again later.");
+			expect(authenticateCalls).toHaveLength(5);
+		});
+
+		test("a different username has its own budget and is not blocked by another username's limit", async () => {
+			const rateLimiter = new RateLimiter(new InMemoryKeyValueStore());
+			const { app, authenticateCalls } = buildRateLimitedApp({ rateLimiter });
+			const submitAs = (username: string) =>
+				app.request("/admin/login", {
+					method: "POST",
+					headers: { "content-type": "application/x-www-form-urlencoded" },
+					body: new URLSearchParams({ username, password: "wrong" }).toString(),
+				});
+
+			for (let i = 0; i < 6; i++) {
+				await submitAs("admin");
+			}
+			const blockedRes = await submitAs("admin");
+			expect(blockedRes.status).toBe(429);
+
+			const otherRes = await submitAs("someone-else");
+			const otherBody = await otherRes.text();
+
+			// A fresh username still reaches `authenticate` (and fails on the wrong password,
+			// not on the rate limit), proving the two usernames key into separate budgets.
+			expect(otherRes.status).toBe(401);
+			expect(otherBody).toContain("Please enter a correct username and password.");
+			expect(authenticateCalls).toContain("someone-else");
+		});
+
+		test("emits a one-time console.warn at construction when login is wired but rateLimiter is not injected", () => {
+			const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+			const storage = new InMemorySessionStorage();
+			const sessionAccessor = new SessionAccessor<SessionEnv, "session">("session", storage);
+
+			new AdminPanel<SessionEnv>({
+				authorize: () => true,
+				session: sessionAccessor.use,
+				auth: { authenticate: async () => null },
+			});
+
+			expect(warnSpy).toHaveBeenCalledTimes(1);
+			expect(warnSpy.mock.calls[0]?.[0]).toContain("rateLimiter");
+
+			warnSpy.mockRestore();
+		});
+
+		test("does not warn when rateLimiter is injected", () => {
+			const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+			const rateLimiter = new RateLimiter(new InMemoryKeyValueStore());
+			const storage = new InMemorySessionStorage();
+			const sessionAccessor = new SessionAccessor<SessionEnv, "session">("session", storage);
+
+			new AdminPanel<SessionEnv>({
+				authorize: () => true,
+				session: sessionAccessor.use,
+				rateLimiter,
+				auth: { authenticate: async () => null },
+			});
+
+			expect(warnSpy).not.toHaveBeenCalled();
+
+			warnSpy.mockRestore();
 		});
 	});
 
