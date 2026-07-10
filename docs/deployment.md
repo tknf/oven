@@ -241,6 +241,21 @@ outgoing message.
 
 ### Wiring a Node deployment
 
+**What runs where on Node.** `@tknf/oven/node` only exists for what's
+genuinely filesystem-specific (`FileKeyValueStore`, `FileStorage`, both
+development-only — see below). Jobs, realtime, cron, and mail have no
+Node-specific adapter at all, and that's deliberate rather than a gap:
+each of those categories is already covered by a backend-agnostic
+implementation that runs unmodified on Node, so a second, Node-only
+wrapper around the same abstraction would add nothing.
+
+| Category | On Node, use |
+| --- | --- |
+| Jobs | A DB-backed `JobQueue` + `JobWorker` pair (`{Pg,SQLite,MySql}DatabaseJobQueue`/`{Pg,SQLite,MySql}DatabaseJobWorker`, `@tknf/oven/jobs`) — the worker's `run()` is a long-running poll loop, a natural fit for a process that stays alive between requests (see below). |
+| Realtime | A DB-backed `Broadcaster` (`PgDatabaseBroadcaster`/`SQLiteDatabaseBroadcaster`/`MySqlDatabaseBroadcaster`, `@tknf/oven/realtime`) — see [Realtime § Common tasks](./realtime.md#common-tasks). |
+| Cron | `Schedule#run` (`@tknf/oven/jobs`), a long-running loop that evaluates cron expressions itself rather than relying on a platform's cron trigger — see below and [Jobs](./jobs.md). |
+| Mail | A `FetchMailer` subclass wired to your provider's HTTP API (`@tknf/oven/mailer`). `ConsoleMailer` is a development-only fallback, never a production mailer — see [Mailer § Gotchas](./mailer.md#gotchas--security-notes). |
+
 A Node deployment is a long-running process, typically behind a load balancer
 running more than one instance. Its production storage adapters come from the
 same backend-agnostic modules used everywhere else in oven —

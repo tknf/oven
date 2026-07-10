@@ -154,9 +154,14 @@ app.post("/logout", async (c) => {
 });
 ```
 
-**API token authentication for non-browser clients:**
+**API token authentication for non-browser clients.** `ApiToken` only
+issues/verifies the token string — pulling it out of the
+`Authorization: Bearer <token>` header and rejecting the request when it's
+missing is already Hono's own `hono/bearer-auth`, so wire `ApiToken.verify`
+into its `verifyToken` option instead of parsing the header by hand:
 
 ```ts
+import { bearerAuth } from "hono/bearer-auth";
 import { ApiToken } from "@tknf/oven/auth";
 
 const apiToken = new ApiToken({ prefix: "oven_" });
@@ -164,16 +169,52 @@ const apiToken = new ApiToken({ prefix: "oven_" });
 const issued = await apiToken.issue(); // { token, selector, validatorHash }
 // Persist `selector`/`validatorHash` in your own token table; hand `token` to the client once.
 
-app.use(async (c, next) => {
-  const header = c.req.header("Authorization");
-  const token = header?.startsWith("Bearer ") ? header.slice(7) : null;
-  const record = token
-    ? await apiToken.verify(token, (selector) => db.apiTokens.findBySelector(selector))
-    : null;
-  if (record) c.set("apiTokenRecord", record);
-  await next();
+app.use(
+  bearerAuth({
+    verifyToken: async (token, c) => {
+      const record = await apiToken.verify(token, (selector) =>
+        db.apiTokens.findBySelector(selector),
+      );
+      if (!record) return false;
+      c.set("apiTokenRecord", record); // verifyToken returns a boolean, not the record
+      return true;
+    },
+  }),
+);
+```
+
+**Decoding an OAuth ID token — and verifying it when the trust chain
+requires it.** `OAuthClient.exchangeCode` returns `OAuthTokens.idToken` as
+a raw JWT string. `decodeIdToken` only base64url-decodes its payload for
+convenience; **it does not verify the signature** (see the class's own
+JSDoc in `src/auth/oauth.ts`). That's an acceptable shortcut only when the
+token came straight back from the provider's token endpoint over TLS — the
+transport itself is what you're trusting, not the signature. Any other
+path (a token forwarded from a client-side redirect, a mobile app handing
+you an ID token it obtained separately, ...) needs the signature actually
+checked before the payload is trustworthy. oven doesn't add its own JWT
+verifier for this — use Hono's, from `hono/jwt`:
+
+```ts
+import { verify } from "hono/jwt";
+
+// Symmetric example (an HMAC secret shared with the provider):
+const payload = await verify(idToken, provider.jwtSecret, "HS256");
+```
+
+```ts
+import { verifyWithJwks } from "hono/jwt";
+
+// Asymmetric example — the common case for OpenID Connect providers that
+// publish a JWKS endpoint (e.g. Google):
+const payload = await verifyWithJwks(idToken, {
+  jwks_uri: "https://www.googleapis.com/oauth2/v3/certs",
+  allowedAlgorithms: ["RS256"],
 });
 ```
+
+Both throw on a signature/claims mismatch and, on success, already return
+the decoded payload — once you've verified, `decodeIdToken` is redundant.
 
 ## Gotchas / Security notes
 
@@ -206,6 +247,11 @@ app.use(async (c, next) => {
   hides whether the resource exists at all, matching oven's error-handling
   policy. Override `denyStatus` to `403` in a subclass only when revealing
   existence is acceptable.
+- **`OAuthClient.decodeIdToken` never checks the signature.** It's only
+  safe to trust the payload it returns when the ID token was obtained
+  directly from the provider's token endpoint over TLS — verify with
+  `hono/jwt`'s `verify`/`verifyWithJwks` first for any ID token that
+  arrives by another path (see "Decoding an OAuth ID token" above).
 
 ## See also
 

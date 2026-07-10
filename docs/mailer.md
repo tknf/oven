@@ -126,6 +126,120 @@ export class PostmarkMailer extends FetchMailer {
 }
 ```
 
+**Implementing a provider: complete Resend example.** The `PostmarkMailer`
+stub above shows the shape of `buildRequest`; here is a complete,
+copy-pasteable `FetchMailer` subclass for [Resend](https://resend.com/docs/api-reference/emails/send-email)
+that maps every `MailMessage` field, including `cc`/`bcc` and
+Base64-encoded `attachments`:
+
+```ts
+// src/lib/resend_mailer.ts
+import { FetchMailer, normalizeMailAddresses } from "@tknf/oven/mailer";
+import type { MailAttachment, MailMessage } from "@tknf/oven/mailer";
+
+/** A single attachment in Resend's request shape (`content` must be Base64-encoded). */
+type ResendAttachment = {
+  filename: string;
+  content: string;
+  content_type: string;
+};
+
+/** Encodes `bytes` as a standard Base64 string (Resend requires Base64, not Base64URL). */
+const encodeBase64 = (bytes: Uint8Array): string => {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
+};
+
+/** `"base64"`-encoded content is passed through as-is; `"utf8"` content is encoded first. */
+const toBase64Content = (attachment: MailAttachment): string =>
+  attachment.encoding === "base64"
+    ? attachment.content
+    : encodeBase64(new TextEncoder().encode(attachment.content));
+
+const buildAttachments = (
+  attachments: MailAttachment[] | undefined,
+): ResendAttachment[] | undefined => {
+  if (!attachments || attachments.length === 0) return undefined;
+  return attachments.map((attachment) => ({
+    filename: attachment.filename,
+    content: toBase64Content(attachment),
+    content_type: attachment.contentType,
+  }));
+};
+
+export class ResendMailer extends FetchMailer {
+  constructor(
+    private readonly apiKey: string,
+    fetchFn?: typeof fetch,
+    timeoutMs?: number,
+  ) {
+    super(fetchFn, timeoutMs);
+  }
+
+  protected buildRequest(message: MailMessage): Request {
+    const cc = normalizeMailAddresses(message.cc);
+    const bcc = normalizeMailAddresses(message.bcc);
+
+    return new Request("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${this.apiKey}`,
+      },
+      body: JSON.stringify({
+        from: message.from,
+        to: normalizeMailAddresses(message.to),
+        ...(cc.length > 0 ? { cc } : {}),
+        ...(bcc.length > 0 ? { bcc } : {}),
+        subject: message.subject,
+        text: message.textBody,
+        ...(message.htmlBody !== undefined ? { html: message.htmlBody } : {}),
+        ...(message.attachments !== undefined
+          ? { attachments: buildAttachments(message.attachments) }
+          : {}),
+      }),
+    });
+  }
+}
+```
+
+Wire the API key from an environment variable through a `ScopedValueAccessor`
+(see [Concepts](./concepts.md) and
+[Routing § Injecting a shared value with `ContextAccessor`](./routing.md#injecting-a-shared-value-with-contextaccessor)),
+so the rest of the app depends on `Mailer` and never sees `ResendMailer` or
+the raw key:
+
+```ts
+// src/lib/mailer.ts
+import { ScopedValueAccessor } from "@tknf/oven/routing";
+import type { Mailer } from "@tknf/oven/mailer";
+import { ResendMailer } from "./resend_mailer.js";
+
+type AppBindings = { RESEND_API_KEY: string };
+type AppEnv = { Bindings: AppBindings; Variables: { mailer?: Mailer } };
+
+const accessor = new ScopedValueAccessor<AppEnv, "mailer">("mailer", {
+  create: (c) => new ResendMailer(c.env.RESEND_API_KEY, undefined, 10_000),
+  scope: "app", // the API key doesn't change per request; build the mailer once
+});
+
+export const registerMailer = accessor.register;
+export const useMailer = accessor.use;
+```
+
+```ts
+// main.ts
+app.use(registerMailer);
+```
+
+Sending mail then goes through `useMailer(c)`, `MailTemplate`, or
+`DeliverMailJob` exactly as in the earlier examples, none of which need to
+know the backend is Resend. Other providers (SES, your own SMTP-over-HTTP
+relay, ...) follow the same shape: only `buildRequest`'s endpoint and field
+mapping change — `send`, the timeout, and header-injection validation are
+all inherited from `FetchMailer` unchanged.
+
 **Sending through a Cloudflare Email Sending binding with
 `CloudflareEmailMailer`.** `@tknf/oven/cloudflare` ships a ready-made
 `Mailer` that wraps a `SendEmail` binding (configured as `send_email` in

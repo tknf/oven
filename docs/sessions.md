@@ -66,16 +66,62 @@ production, pick one of the backends below.
 | Class | Where data lives | Notes |
 | --- | --- | --- |
 | `CookieSessionStorage` | The cookie itself (HMAC-SHA256 signed) | No server-side storage, but data is only Base64URL-encoded, not encrypted — never put secrets in it (see Gotchas). Limited by the browser's ~4KB cookie size. |
-| `KeyValueSessionStorage` | A `KeyValueStore` (`@tknf/oven/kv`) | Only a session id is kept in the cookie. Supports TTL and best-effort sliding-TTL refresh. Store keys are prefixed with `keyPrefix` (default `"oven_session:"`) — override it to namespace multiple session purposes on the same store, or to match an existing key scheme when migrating from another system. |
-| `PgDatabaseSessionStorage` / `SQLiteDatabaseSessionStorage` / `MySqlDatabaseSessionStorage` | A Drizzle-backed table | Use when you already have a SQL database and want sessions queryable/auditable there. |
+| `KeyValueSessionStorage` | A `KeyValueStore` (`@tknf/oven/kv`) | Only a session id is kept in the cookie. Supports TTL and best-effort sliding-TTL refresh. Store keys are prefixed with `keyPrefix` (default `"oven_session:"`) — override it to namespace multiple session purposes on the same store, or to match an existing key scheme when migrating from another system. **The default recommendation for DB-backed sessions** — see below. |
+| `PgDatabaseSessionStorage` / `SQLiteDatabaseSessionStorage` / `MySqlDatabaseSessionStorage` | A dedicated Drizzle-backed `sessions` table | A more specialized option for when you need session-specific columns or queries against the session table itself — see below. |
 | `InMemorySessionStorage` | An in-process `Map` | Development/tests only — no TTL, no persistence across restarts. |
 
+**Picking between the two DB-backed options.** Both rows above that
+mention a database land on the same `SessionStorage` contract; the
+difference is what's actually queryable on disk, not the session
+semantics:
+
+| You want... | Use |
+| --- | --- |
+| DB-backed sessions, with no dedicated schema to design or maintain | `KeyValueSessionStorage` + a DB-backed `KeyValueStore` (`SQLiteDatabaseKeyValueStore`/`PgDatabaseKeyValueStore`/`MySqlDatabaseKeyValueStore`, `@tknf/oven/kv`) — the default choice below. Sessions land in the same generic `key`/`value`/`expiresAt` table (and store) any other `KeyValueStore` consumer (`RateLimiter`, `MaintenanceMode`, cache, ...) can share, with TTL and best-effort sliding-TTL refresh already built in. |
+| A dedicated `sessions` table you can query or join against directly (e.g. "list every active session for user X", a foreign key from another table into the session row) | `PgDatabaseSessionStorage`/`SQLiteDatabaseSessionStorage`/`MySqlDatabaseSessionStorage` — a purpose-built `id`/`data`/`expiresAt` table instead of a shared generic KV row. No sliding TTL (see the class's own module doc for why) and no built-in GC of expired rows (see Gotchas), so the schema and cleanup are yours to own. |
+
+Reach for `KeyValueSessionStorage` first. Move to a `*DatabaseSessionStorage`
+only once you actually need session-specific columns or direct queries
+against the session table — it's not a stepping stone toward the
+KV-backed option, it's a genuinely different tradeoff (a dedicated schema
+you maintain vs. a generic store shared with other `KeyValueStore`
+consumers).
+
 ```ts
-// src/lib/session.ts (production, cookie-backed)
+// src/lib/session.ts (production, DB-backed via a shared KeyValueStore — the default choice)
+import { KeyValueSessionStorage, SessionAccessor } from "@tknf/oven/session";
+import { SQLiteDatabaseKeyValueStore, sqliteKeyValueTable } from "@tknf/oven/kv";
+import { db } from "./db.js";
+
+const store = new SQLiteDatabaseKeyValueStore(db, sqliteKeyValueTable());
+const storage = new KeyValueSessionStorage(store, {
+  secure: true, // see Gotchas — not on by default
+});
+
+export const sessionAccessor = new SessionAccessor<AppEnv, "session">("session", storage);
+```
+
+```ts
+// src/lib/session.ts (production, cookie-backed — no server-side storage at all)
 import { CookieSessionStorage, SessionAccessor } from "@tknf/oven/session";
 
 const storage = new CookieSessionStorage({
   secrets: [process.env.SESSION_SECRET as string],
+  secure: true, // see Gotchas — not on by default
+});
+
+export const sessionAccessor = new SessionAccessor<AppEnv, "session">("session", storage);
+```
+
+**Using a dedicated `sessions` table instead** (once the decision table
+above points you there):
+
+```ts
+// src/lib/session.ts (production, a dedicated sessions table)
+import { SQLiteDatabaseSessionStorage, sqliteSessionsTable } from "@tknf/oven/session";
+import { db } from "./db.js";
+
+const storage = new SQLiteDatabaseSessionStorage(db, sqliteSessionsTable(), {
   secure: true, // see Gotchas — not on by default
 });
 
@@ -158,6 +204,12 @@ data after the destroy `Set-Cookie` has already gone out.
   flash message or other session change made just before an error must
   survive that error response, call `storage.commit()` yourself before
   throwing.
+- **`{Pg,SQLite,MySql}DatabaseSessionStorage` never actively GCs expired
+  rows** — a row is only deleted incidentally, the next time `get` happens
+  to read it past its `expiresAt`. Schedule
+  `{Pg,SQLite,MySql}PruneExpiredRecordsJob` (`@tknf/oven/jobs`) if you use a
+  dedicated `sessions` table and want expired rows actually removed; see
+  [Jobs](./jobs.md#common-tasks).
 
 ## See also
 
@@ -167,3 +219,5 @@ data after the destroy `Set-Cookie` has already gone out.
   the same `Session`, downstream of `SessionAccessor`.
 - [Concepts](./concepts.md) — the `register`/`use` convention that
   `SessionAccessor` follows.
+- [Jobs](./jobs.md) — `{Pg,SQLite,MySql}PruneExpiredRecordsJob` GCs expired
+  rows out of a dedicated `sessions` table.
