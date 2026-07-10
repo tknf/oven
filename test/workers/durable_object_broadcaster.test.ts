@@ -13,6 +13,21 @@
  * broadcaster tests (`test/realtime/sqlite_database_broadcaster.test.ts`).
  * Real timers throughout; fake timers don't mix with a real network round
  * trip to the Durable Object.
+ *
+ * The reconnection tests below drive a disconnect by making the *subscribe*
+ * handshake itself fail a controlled number of times, rather than by closing
+ * an already-open socket: closing a hibernatable Durable Object WebSocket
+ * from the client side was tried first, but its local `close` event never
+ * completed within several seconds in this test harness (`readyState` got
+ * stuck at `CLOSING`), so it is not a reliable way to reproduce a disconnect
+ * here (see the final report for detail; this is a harness limitation, not
+ * something specific to `DurableObjectBroadcaster`). Failing the handshake
+ * exercises the exact same `scheduleReconnect` path a live disconnect would
+ * (`connect`'s `catch`/no-`webSocket` branches call `hooks.onClose` exactly
+ * like a real close/error event would), so it still exercises the real
+ * state machine end to end. `withFailingSubscribes` wraps the real
+ * `DurableObjectNamespace` binding so the first `failCount` WebSocket-upgrade
+ * `fetch` calls through it reject before reaching the Durable Object.
  */
 import { env } from "cloudflare:workers";
 import { describe, expect, test, vi } from "vite-plus/test";
@@ -21,6 +36,50 @@ import { DurableObjectBroadcaster } from "../../src/cloudflare/durable_object_br
 
 /** Waits `ms` milliseconds of real time. A test-only helper to let the WebSocket handshake settle. */
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Wraps `namespace` so the first `failCount` WebSocket-upgrade `fetch` calls
+ * through it reject instead of reaching the Durable Object, and every
+ * subsequent one passes through unchanged. `getAttempts` reports the total
+ * number of upgrade attempts made so far, including the failed ones (see the
+ * module doc comment for why the reconnection tests drive a disconnect this
+ * way instead of closing a live socket).
+ */
+const withFailingSubscribes = (
+	namespace: DurableObjectNamespace,
+	failCount: number,
+): { namespace: DurableObjectNamespace; getAttempts: () => number } => {
+	let attempts = 0;
+	let remainingFailures = failCount;
+	const wrapped: DurableObjectNamespace = {
+		newUniqueId: (options) => namespace.newUniqueId(options),
+		idFromName: (name) => namespace.idFromName(name),
+		idFromString: (id) => namespace.idFromString(id),
+		getByName: (name, options) => namespace.getByName(name, options),
+		jurisdiction: (jurisdiction) => namespace.jurisdiction(jurisdiction),
+		get: (id, options) => {
+			const stub = namespace.get(id, options);
+			return new Proxy(stub, {
+				get: (target, prop, receiver) => {
+					if (prop === "fetch") {
+						return async (input: RequestInfo | URL, init?: RequestInit) => {
+							if (new Headers(init?.headers).get("Upgrade") === "websocket") {
+								attempts += 1;
+								if (remainingFailures > 0) {
+									remainingFailures -= 1;
+									throw new Error("simulated connect failure");
+								}
+							}
+							return target.fetch(input, init);
+						};
+					}
+					return Reflect.get(target, prop, receiver);
+				},
+			});
+		},
+	};
+	return { namespace: wrapped, getAttempts: () => attempts };
+};
 
 describe("DurableObjectBroadcaster", () => {
 	test("delivers a published message to a subscribed listener", async () => {
@@ -121,5 +180,72 @@ describe("DurableObjectBroadcaster", () => {
 			timeout: 2000,
 			interval: 20,
 		});
+	});
+
+	test("retries a failed connection with backoff, then reconnects and resumes delivery", async () => {
+		const { namespace, getAttempts } = withFailingSubscribes(env.BROADCASTER, 2);
+		const onDisconnect = vi.fn();
+		const onReconnect = vi.fn();
+		const broadcaster = new DurableObjectBroadcaster(namespace, {
+			onDisconnect,
+			onReconnect,
+			reconnectInitialDelayMs: 20,
+			reconnectMaxDelayMs: 50,
+		});
+		const received: BroadcastMessage[] = [];
+		broadcaster.subscribe("room:reconnect-1", (message) => received.push(message));
+
+		// 2 simulated failures before the 3rd attempt succeeds.
+		await vi.waitFor(() => expect(onReconnect).toHaveBeenCalledWith(2, "room:reconnect-1"), {
+			timeout: 2000,
+			interval: 20,
+		});
+		expect(getAttempts()).toBe(3);
+		expect(onDisconnect).toHaveBeenNthCalledWith(1, 1, expect.any(Error), "room:reconnect-1");
+		expect(onDisconnect).toHaveBeenNthCalledWith(2, 2, expect.any(Error), "room:reconnect-1");
+
+		await broadcaster.publish("room:reconnect-1", { data: "after-reconnect" });
+		await vi.waitFor(() => expect(received).toEqual([{ data: "after-reconnect" }]), {
+			timeout: 2000,
+			interval: 20,
+		});
+	});
+
+	test("unsubscribe stops further reconnect attempts", async () => {
+		const { namespace, getAttempts } = withFailingSubscribes(env.BROADCASTER, 100);
+		const onDisconnect = vi.fn();
+		// A backoff delay much longer than the `waitFor` poll interval below
+		// leaves a comfortable window to call `unsubscribe` well before the
+		// pending retry would otherwise fire, avoiding a race between the two.
+		const broadcaster = new DurableObjectBroadcaster(namespace, {
+			onDisconnect,
+			reconnectInitialDelayMs: 300,
+			reconnectMaxDelayMs: 300,
+		});
+		const unsubscribe = broadcaster.subscribe("room:reconnect-2", () => {});
+
+		await vi.waitFor(() => expect(onDisconnect).toHaveBeenCalledTimes(1), {
+			timeout: 2000,
+			interval: 10,
+		});
+		unsubscribe();
+		const attemptsAtUnsubscribe = getAttempts();
+
+		await sleep(500);
+		expect(getAttempts()).toBe(attemptsAtUnsubscribe);
+	});
+
+	test("with reconnect: false, a failed connection ends the subscription for good (original behavior)", async () => {
+		const { namespace, getAttempts } = withFailingSubscribes(env.BROADCASTER, 100);
+		const broadcaster = new DurableObjectBroadcaster(namespace, { reconnect: false });
+		const received: BroadcastMessage[] = [];
+		broadcaster.subscribe("room:reconnect-3", (message) => received.push(message));
+
+		await sleep(200);
+		expect(getAttempts()).toBe(1);
+
+		await broadcaster.publish("room:reconnect-3", { data: "should-not-arrive" });
+		await sleep(150);
+		expect(received).toEqual([]);
 	});
 });
