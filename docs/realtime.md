@@ -132,6 +132,48 @@ The `Broadcaster` contract (`publish`/`subscribe`) is identical across all
 implementations, so switching backends never touches `broadcastSse` or
 `BroadcastWebSocket` call sites — only the constructor in one wiring module.
 
+**Switching from `InMemoryBroadcaster` to `DurableObjectBroadcaster` on
+Cloudflare Workers.** `DurableObjectBroadcaster` (`@tknf/oven/cloudflare`)
+turns a Durable Object into the channel's coordination point instead of a
+table: one DO instance per channel (`namespace.idFromName(channel)`) fans a
+published message out to every WebSocket it currently holds. oven does not
+write your `wrangler.jsonc` for you — re-export the DO class from your
+Worker's entry point and declare the binding and migration yourself:
+
+```ts
+// src/worker.ts
+export { BroadcasterDurableObject } from "@tknf/oven/cloudflare";
+```
+
+```jsonc
+// wrangler.jsonc
+{
+  "durable_objects": {
+    "bindings": [{ "name": "BROADCASTER", "class_name": "BroadcasterDurableObject" }],
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["BroadcasterDurableObject"] }],
+}
+```
+
+```ts
+// src/lib/broadcaster.ts
+import { DurableObjectBroadcaster } from "@tknf/oven/cloudflare";
+
+export const makeBroadcaster = (namespace: DurableObjectNamespace) =>
+  new DurableObjectBroadcaster(namespace, {
+    onListenerError: (error, channel) => console.error(`listener failed on ${channel}`, error),
+  });
+```
+
+Two things make this adapter's timing different from the others: `subscribe`
+returns before the WebSocket to the DO finishes connecting, so a `publish`
+that lands in that short window is not delivered to that listener (the
+DB-backed adapters have the same kind of gap from polling; `InMemoryBroadcaster`
+does not); and if that WebSocket closes for any reason, the subscription just
+ends — this adapter does not reconnect. Both are fine for the
+request-scoped `broadcastSse`/`BroadcastWebSocket` connections shown above,
+since their own client already handles reconnecting from scratch.
+
 ## Gotchas / Security notes
 
 - **`BroadcastWebSocket` connections are not subject to the Same-Origin
@@ -147,8 +189,8 @@ implementations, so switching backends never touches `broadcastSse` or
   process.** It has no cross-instance delivery and no persistence — fine
   for development/tests/single-instance deployments, but silently loses
   messages published from a different instance in a scaled-out deployment.
-  Switch to a database-backed (or future Redis/Durable Objects) adapter
-  before scaling horizontally.
+  Switch to a database-backed adapter or, on Cloudflare Workers,
+  `DurableObjectBroadcaster` before scaling horizontally.
 - **`ScopedValueAccessor` scope matters.** If you wire a `Broadcaster`
   through `ScopedValueAccessor` (`@tknf/oven/routing`) instead of a plain
   module-level singleton, use `scope: "app"`. The default `"request"` scope

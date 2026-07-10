@@ -2,11 +2,13 @@
 	"$schema": "./node_modules/wrangler/config-schema.json",
 	"name": "oven-test",
 	"compatibility_date": "2026-07-02",
-	"main": "src/index.ts",
+	"main": "test/workers/test_worker.ts",
 	/**
 	 * Only define the bindings actually used by `test/workers/**` (the workerd project).
 	 * KV: `cloudflare_kv_store.test.ts` / `rate_limiter.test.ts`. R2: `r2_storage.test.ts`.
-	 * App-specific bindings such as TURSO are not defined since this library's tests don't use them.
+	 * Durable Objects: `durable_object_broadcaster.test.ts` (the class is exported from
+	 * `main`, see `test/workers/test_worker.ts`). App-specific bindings such as TURSO are
+	 * not defined since this library's tests don't use them.
 	 */
 	"kv_namespaces": [
 		{
@@ -18,6 +20,20 @@
 		{
 			"binding": "TEST_BUCKET",
 			"bucket_name": "oven-test-bucket",
+		},
+	],
+	"durable_objects": {
+		"bindings": [
+			{
+				"name": "BROADCASTER",
+				"class_name": "BroadcasterDurableObject",
+			},
+		],
+	},
+	"migrations": [
+		{
+			"tag": "v1",
+			"new_sqlite_classes": ["BroadcasterDurableObject"],
 		},
 	],
 }

@@ -12,9 +12,9 @@
  *
  * The scope reachable by `subscribe` is implementation-dependent. `InMemoryBroadcaster`
  * only reaches `publish` calls within the same process. Delivery in multi-instance
- * environments (multi-process, multi-region) is the responsibility of future
- * adapters (expected to be provided as subpaths, e.g. Redis Pub/Sub, Cloudflare
- * Durable Objects), and this abstraction itself does not depend on them.
+ * environments (multi-process, multi-region) is the responsibility of other adapters
+ * (the DB-backed `{Pg,SQLite,MySql}DatabaseBroadcaster`s, and `DurableObjectBroadcaster`
+ * in `@tknf/oven/cloudflare`), and this abstraction itself does not depend on any of them.
  */
 export type BroadcastMessage = {
 	/** Message body. Format (HTML snippet, JSON string, etc.) is the caller's contract. */
