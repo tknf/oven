@@ -57,6 +57,20 @@
 			"when": 1783588975604,
 			"tag": "0007_misty_warhawk",
 			"breakpoints": true
+		},
+		{
+			"idx": 8,
+			"version": "6",
+			"when": 1783646405430,
+			"tag": "0008_colossal_argent",
+			"breakpoints": true
+		},
+		{
+			"idx": 9,
+			"version": "6",
+			"when": 1783650306424,
+			"tag": "0009_fine_ezekiel_stane",
+			"breakpoints": true
 		}
 	]
 }

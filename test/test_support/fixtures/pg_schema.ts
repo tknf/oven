@@ -14,12 +14,16 @@
  * `INTEGER` column is SQLite's own variable-length integer (up to 8 bytes) and doesn't conflict
  * with JS's `number`.
  *
- * `jobs`/`broadcasts`/`sessions`/`kvEntries`/`audits` call the default schema factories exposed
- * by each adapter file (`pgJobsTable`/`pgBroadcastsTable`/`pgSessionsTable`/`pgKeyValueTable`/
- * `pgAuditsTable`) as-is. This verifies the factory-produced default schemas themselves through
- * the migration generation/application path.
+ * `jobs`/`broadcasts`/`sessions`/`kvEntries`/`audits`/`adminUsers`/`adminGroups`/
+ * `adminUserGroups` call the default schema factories exposed by each adapter file
+ * (`pgJobsTable`/`pgBroadcastsTable`/`pgSessionsTable`/`pgKeyValueTable`/`pgAuditsTable`/
+ * `pgAdminUsersTable`/`pgAdminGroupsTable`/`pgAdminUserGroupsTable`) as-is. This verifies the
+ * factory-produced default schemas themselves through the migration generation/application path.
  */
 import { bigint, pgTable, text } from "drizzle-orm/pg-core";
+/** Direct-file import (not `src/admin/index.js`): the admin index star-exports `.tsx` view modules, which drizzle-kit (which loads this schema) should not have to parse. */
+import { pgAdminUsersTable } from "../../../src/admin/pg_admin_accounts.js";
+import { pgAdminGroupsTable, pgAdminUserGroupsTable } from "../../../src/admin/pg_admin_groups.js";
 import { pgAuditsTable } from "../../../src/audit/index.js";
 import { pgJobsTable } from "../../../src/jobs/index.js";
 import { pgKeyValueTable } from "../../../src/kv/index.js";
@@ -44,3 +48,9 @@ export const sessions = pgSessionsTable();
 export const kvEntries = pgKeyValueTable();
 
 export const audits = pgAuditsTable();
+
+export const adminUsers = pgAdminUsersTable();
+
+export const adminGroups = pgAdminGroupsTable();
+
+export const adminUserGroups = pgAdminUserGroupsTable();

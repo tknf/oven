@@ -4,7 +4,9 @@
  * (`src/mailer/mail_preview_handler.ts`), this is a `RouteHandler` subclass with
  * screens that an app explicitly mounts via `app.route("/admin", new AdminPanel({...}))`.
  * Whether to mount in production and SecureHeaders are the app's responsibility, but
- * the panel itself hard-codes authorization (`authorize`) as mandatory. CSRF
+ * the panel itself hard-codes an access gate as mandatory: `authorize`, or the
+ * DB-backed permission gate derived from `accounts` (the constructor throws when
+ * neither is injected). CSRF
  * verification (`csrf`; `Csrf` from `security/csrf.ts`) is enforced on write routes
  * **only when injected** (SEC-301: to lean toward a safe-by-default posture, a
  * warning-only is emitted on the first unsafe-method request when not injected).
@@ -61,6 +63,7 @@ import type { Csrf } from "../security/csrf.js";
 import type { Session } from "../session/session.js";
 import { bindAdminT } from "./admin_catalog.js";
 import type { AdminT } from "./admin_catalog.js";
+import { resourcePermission } from "./admin_permissions.js";
 import type { AdminInline, AdminResource } from "./admin_resource.js";
 import { AdminAuditView } from "./admin_audit_view.js";
 import { AdminJobsView } from "./admin_jobs_view.js";
@@ -80,6 +83,8 @@ import type {
 import { AdminResourceShowView } from "./admin_resource_show_view.js";
 import { AdminSettingsView } from "./admin_settings_view.js";
 import type {
+	AdminAccountsGroups,
+	AdminAccountsUsers,
 	AdminAuditLog,
 	AdminAuditRow,
 	AdminFeatureFlags,
@@ -682,11 +687,13 @@ export type AdminIdentity = {
 
 export type AdminPanelOptions<E extends Env = Env> = {
 	/**
-	 * Admin access authorization callback (required). Assumes reuse of the existing
-	 * `Guard`/`Policy`; the core does not assume an admin-only role (e.g.
-	 * `authorize: (c) => adminPolicy.canAccess(c.get("user"))`).
+	 * Admin access authorization callback. Required unless `accounts` is injected
+	 * (the built-in permission gate takes over then); when both are given, this
+	 * runs IN ADDITION to the accounts gate (both must allow — an AND). Assumes
+	 * reuse of the existing `Guard`/`Policy`; the core does not assume an
+	 * admin-only role (e.g. `authorize: (c) => adminPolicy.canAccess(c.get("user"))`).
 	 */
-	authorize: (c: Context<E>) => boolean | Promise<boolean>;
+	authorize?: (c: Context<E>) => boolean | Promise<boolean>;
 	/** Brand name shown in the screen header/title. Default `"Admin"`. */
 	brand?: string;
 	/** Response status when `authorize` returns `false`. Default `403`. */
@@ -708,7 +715,12 @@ export type AdminPanelOptions<E extends Env = Env> = {
 		featureFlags?: { flags: AdminFeatureFlags; names: string[] };
 		maintenance?: AdminMaintenanceMode;
 	};
-	/** Audit log viewing screen. If `actor` is not specified, the recorded actor defaults to `"admin"`. */
+	/**
+	 * Audit log viewing screen. If `actor` is not specified, the recorded actor
+	 * defaults to the logged-in identity's label (falling back to its id), and to
+	 * `"admin"` when there is no auth wiring or no logged-in identity (see
+	 * `recordAudit`).
+	 */
 	audit?: { log: AdminAuditLog; actor?: (c: Context<E>) => string | Promise<string> };
 	/** Resource CRUD screen (`AdminResource` from `admin_resource.ts`). No rendering or routes if not injected. */
 	resources?: AdminResource[];
@@ -738,15 +750,37 @@ export type AdminPanelOptions<E extends Env = Env> = {
 	 * screens, the session-backed identity, and the auth gate that redirects an
 	 * unauthenticated request to `/login`. Requires `session` to also be injected
 	 * (enforced by the constructor); without it there is nowhere to hold the
-	 * logged-in identity between requests. When not injected, there are no
-	 * login/logout routes and no auth gate — every route is guarded by `authorize`
-	 * alone, exactly as before (backward compatible).
+	 * logged-in identity between requests. When neither this nor `accounts` is
+	 * injected, there are no login/logout routes and no auth gate — every route is
+	 * guarded by `authorize` alone, exactly as before (backward compatible). When
+	 * `accounts` is injected, omitting this derives the screens from the accounts
+	 * service; injecting it explicitly overrides the derived wiring (see
+	 * `effectiveAuth` — the returned identity's `id` must then be an accounts
+	 * user id).
 	 */
 	auth?: {
 		authenticate: (
 			c: Context<E>,
 			credentials: { username: string; password: string },
 		) => Promise<AdminIdentity | null>;
+	};
+	/**
+	 * DB-backed operator accounts (`SQLiteAdminAccounts` etc., via the structural
+	 * contracts in `admin_types.ts`). Injecting this: (a) derives the built-in
+	 * login/logout (`auth`) from the users service when `auth` is not given,
+	 * (b) makes `authorize` optional — a built-in permission gate takes over,
+	 * resolving the required permission per route (`requiredPermission`, using the
+	 * `admin_permissions.ts` vocabulary) and checking it against the operator's
+	 * granted set, (c) requires both `session` and `csrf` (the constructor throws
+	 * otherwise), (d) re-validates the logged-in operator against the DB on every
+	 * request, so setting `isActive: false` or deleting the row revokes access
+	 * immediately, and (e) lets superusers bypass all permission checks. When
+	 * `groups` is injected too, the granted set is the union of the user's own
+	 * permission set and every group's set (`permissionsForUser`).
+	 */
+	accounts?: {
+		users: AdminAccountsUsers;
+		groups?: AdminAccountsGroups;
 	};
 };
 
@@ -768,9 +802,24 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 	constructor(options: AdminPanelOptions<E>) {
 		super();
 		this.panelOptions = options;
+		if (!options.authorize && !options.accounts) {
+			throw new Error(
+				"AdminPanel: either `authorize` or `accounts` must be injected (the panel refuses to run without an access gate).",
+			);
+		}
 		if (options.auth && !options.session) {
 			throw new Error(
 				"AdminPanel: the `auth` option requires `session` to also be injected (there is nowhere to hold the logged-in identity otherwise).",
+			);
+		}
+		if (options.accounts && !options.session) {
+			throw new Error(
+				"AdminPanel: the `accounts` option requires `session` to also be injected (there is nowhere to hold the logged-in identity otherwise).",
+			);
+		}
+		if (options.accounts && !options.csrf) {
+			throw new Error(
+				"AdminPanel: the `accounts` option requires `csrf` to also be injected (the built-in login and the panel's write routes must be CSRF-protected).",
 			);
 		}
 		this.wireSections();
@@ -787,21 +836,65 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 				if (!options) return c.text("admin not configured", 500);
 
 				/**
-				 * The login/logout routes themselves are exempt from the auth gate and
-				 * `authorize` (otherwise a not-yet-logged-in request could never reach
-				 * `/login`, and a logged-in-but-unauthorized request could never reach
-				 * `/logout`), but still pass through to `csrfVerify` below like every
-				 * other route.
+				 * The login/logout routes themselves are exempt from the auth gate, the
+				 * accounts gate, and `authorize` (otherwise a not-yet-logged-in request
+				 * could never reach `/login`, and a logged-in-but-unauthorized request
+				 * could never reach `/logout`), but still pass through to `csrfVerify`
+				 * below like every other route.
 				 */
 				if (this.isAuthRoute(c)) return next();
 
-				if (options.auth && !this.currentIdentity(c)) {
+				const identity = this.currentIdentity(c);
+				if (this.effectiveAuth() && !identity) {
 					const next_ = encodeURIComponent(c.req.path);
 					return c.redirect(`${this.resolveBasePath()}/login?next=${next_}`);
 				}
 
-				const allowed = await options.authorize(c);
-				if (!allowed) return c.text("Forbidden", options.denyStatus ?? 403);
+				if (options.accounts && identity) {
+					/**
+					 * The operator row is re-validated against the DB on EVERY request
+					 * (not only at login), so deleting the row or setting
+					 * `isActive: false` revokes access immediately: the stale session
+					 * identity is cleared and the request is sent back to `/login`.
+					 */
+					const row = await options.accounts.users.retrieve(identity.id);
+					if (!row || !row.isActive) {
+						this.clearIdentity(c);
+						const next_ = encodeURIComponent(c.req.path);
+						return c.redirect(`${this.resolveBasePath()}/login?next=${next_}`);
+					}
+
+					/**
+					 * Superusers bypass permission checks entirely; everyone else needs
+					 * the resolved permission (when the route requires one) to be in the
+					 * union of their own permission set and their groups' sets, compared
+					 * by literal set membership (`admin_permissions.ts`). The granted set
+					 * is fetched only when an actual check happens — a superuser or a
+					 * `null` required permission reads nothing beyond `retrieve` above.
+					 */
+					if (!row.isSuperuser) {
+						const required = await this.requiredPermission(c);
+						if (required !== null) {
+							const granted = new Set(await options.accounts.users.userPermissions(identity.id));
+							if (options.accounts.groups) {
+								for (const permission of await options.accounts.groups.permissionsForUser(
+									identity.id,
+								)) {
+									granted.add(permission);
+								}
+							}
+							if (!granted.has(required)) {
+								return c.text("Forbidden", options.denyStatus ?? 403);
+							}
+						}
+					}
+				}
+
+				/** When both `accounts` and `authorize` are injected, both must allow (an AND). */
+				if (options.authorize) {
+					const allowed = await options.authorize(c);
+					if (!allowed) return c.text("Forbidden", options.denyStatus ?? 403);
+				}
 
 				await next();
 			},
@@ -817,6 +910,95 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 	private isAuthRoute(c: Context<E>): boolean {
 		const basePath = this.resolveBasePath();
 		return c.req.path === `${basePath}/login` || c.req.path === `${basePath}/logout`;
+	}
+
+	/**
+	 * Resolves the permission string the current request requires under the
+	 * accounts gate in `middleware()`, from the request path (with `basePath`
+	 * stripped) and HTTP method, using the vocabulary of `admin_permissions.ts`.
+	 * Returns `null` when no specific permission is required: the dashboard
+	 * (any active operator may see it) and unrecognized paths (which simply fall
+	 * through to the 404 they would produce anyway).
+	 *
+	 * Path segments are matched raw (never decoded): permissions are compared by
+	 * literal set membership only, so a key segment that does not correspond to a
+	 * registered resource never matches any granted permission.
+	 *
+	 * `POST /resources/<key>` serves both the create form and the list screen's
+	 * bulk-action form (see `wireResources`), so the body is peeked via
+	 * `c.req.parseBody()` to tell them apart: `action=delete` requires the delete
+	 * permission, anything else is a create submission. Hono caches the parsed
+	 * body on the request (`HonoRequest#bodyCache`), so `Csrf#verify` and the
+	 * route handler can safely `parseBody` again afterwards.
+	 */
+	private async requiredPermission(c: Context<E>): Promise<string | null> {
+		const basePath = this.resolveBasePath();
+		const path = c.req.path;
+		if (path === basePath) return null;
+		if (!path.startsWith(`${basePath}/`)) return null;
+
+		const segments = path.slice(basePath.length + 1).split("/");
+		const method = c.req.method.toUpperCase();
+
+		if (segments[0] === "jobs") {
+			if (method === "GET" && segments.length === 1) return "jobs.view";
+			if (
+				method === "POST" &&
+				segments.length === 3 &&
+				(segments[2] === "retry" || segments[2] === "delete")
+			) {
+				return "jobs.manage";
+			}
+			return null;
+		}
+
+		if (segments[0] === "settings") {
+			if (method === "GET" && segments.length === 1) return "settings.view";
+			if (method === "POST" && segments.length === 3 && segments[1] === "flags") {
+				return "settings.manage";
+			}
+			if (method === "POST" && segments.length === 2 && segments[1] === "maintenance") {
+				return "settings.manage";
+			}
+			return null;
+		}
+
+		if (segments[0] === "audit") {
+			if (method === "GET" && segments.length === 1) return "audit.view";
+			return null;
+		}
+
+		if (segments[0] === "resources" && segments.length >= 2 && segments[1] !== "") {
+			const key = segments[1];
+			if (method === "GET") {
+				if (segments.length === 2) return resourcePermission(key, "view");
+				if (segments.length === 3) {
+					return resourcePermission(key, segments[2] === "new" ? "create" : "view");
+				}
+				if (segments.length === 4 && segments[3] === "edit") {
+					return resourcePermission(key, "update");
+				}
+				if (segments.length === 4 && segments[3] === "delete") {
+					return resourcePermission(key, "delete");
+				}
+				return null;
+			}
+			if (method === "POST") {
+				if (segments.length === 2) {
+					const body = await c.req.parseBody();
+					return resourcePermission(key, body.action === "delete" ? "delete" : "create");
+				}
+				/** `POST /resources/<key>/<id>` is the edit form's submission (see `wireResources`). */
+				if (segments.length === 3) return resourcePermission(key, "update");
+				if (segments.length === 4 && segments[3] === "delete") {
+					return resourcePermission(key, "delete");
+				}
+				return null;
+			}
+			return null;
+		}
+
+		return null;
 	}
 
 	/**
@@ -840,6 +1022,34 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 	/** Removes the logged-in identity from the session, if `panelOptions.session` is injected. */
 	private clearIdentity(c: Context<E>): void {
 		this.panelOptions?.session?.(c).unset(ADMIN_IDENTITY_SESSION_KEY);
+	}
+
+	/**
+	 * Resolves the auth wiring used by the login/logout routes (`wireAuth`), the
+	 * auth gate in `middleware()`, and the default user-tools
+	 * (`resolveUserTools`). An explicitly injected `options.auth` always wins —
+	 * an escape hatch for e.g. wrapping the credential check with rate limiting;
+	 * in that case the returned identity's `id` MUST be an accounts user id,
+	 * because the accounts gate re-validates the operator row by `identity.id`
+	 * on every request. Otherwise, when `accounts` is injected, a default is
+	 * derived from the users service (`authenticate`, labelling the identity
+	 * with the row's `label` and falling back to its `username`). `undefined`
+	 * when neither is injected: no login/logout routes and no auth gate, exactly
+	 * as before (backward compatible).
+	 */
+	private effectiveAuth(): AdminPanelOptions<E>["auth"] {
+		const options = this.panelOptions;
+		if (!options) return undefined;
+		if (options.auth) return options.auth;
+
+		const accounts = options.accounts;
+		if (!accounts) return undefined;
+		return {
+			authenticate: async (_c, credentials) => {
+				const user = await accounts.users.authenticate(credentials);
+				return user ? { id: user.id, label: user.label ?? user.username } : null;
+			},
+		};
 	}
 
 	/**
@@ -971,16 +1181,18 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 
 	/**
 	 * Resolves the header's user-tools block content. `panelOptions.userTools`, when
-	 * injected, always wins. Otherwise, when `auth` is injected and the request is
+	 * injected, always wins. Otherwise, when auth wiring is present (an explicit
+	 * `auth` or one derived from `accounts`; see `effectiveAuth`) and the request is
 	 * logged in, a default block is built from the session identity (a greeting plus
-	 * a "Log out" link posting to this panel's `/logout`), so wiring `auth` alone
-	 * gets a working logout control without also having to inject `userTools`.
-	 * `undefined` when neither applies (no block rendered, backward compatible).
+	 * a "Log out" link posting to this panel's `/logout`), so wiring `auth` or
+	 * `accounts` alone gets a working logout control without also having to inject
+	 * `userTools`. `undefined` when neither applies (no block rendered, backward
+	 * compatible).
 	 */
 	private resolveUserTools(c: Context<E>): AdminUserTools | undefined {
 		const options = this.panelOptions;
 		if (options?.userTools) return options.userTools(c);
-		if (!options?.auth) return undefined;
+		if (!this.effectiveAuth()) return undefined;
 
 		const identity = this.currentIdentity(c);
 		if (!identity) return undefined;
@@ -1068,7 +1280,15 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 		const audit = this.panelOptions?.audit;
 		if (!audit) return;
 
-		const actor = audit.actor ? await audit.actor(c) : "admin";
+		/**
+		 * Actor precedence: the injected `audit.actor` callback always wins;
+		 * without it, the logged-in identity (its label, falling back to its id)
+		 * is used, and the literal `"admin"` remains the last resort for panels
+		 * with no auth wiring or no logged-in identity (backward compatible).
+		 */
+		const identity = this.currentIdentity(c);
+		const fallback = identity ? (identity.label ?? identity.id) : "admin";
+		const actor = audit.actor ? await audit.actor(c) : fallback;
 		await audit.log.record({ actor, action, target, changes });
 	}
 
@@ -1153,7 +1373,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 		const options = this.panelOptions;
 		if (!options) return;
 
-		if (options.auth) this.wireAuth();
+		if (options.auth || options.accounts) this.wireAuth();
 		if (options.jobs) this.wireJobs();
 		if (options.settings) this.wireSettings();
 		if (options.audit) this.wireAudit();
@@ -1161,15 +1381,16 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 	}
 
 	/**
-	 * Registers `GET`/`POST "/login"` and `POST "/logout"`. The auth gate in
-	 * `middleware()` exempts these two paths from both itself and `authorize` (see
-	 * `isAuthRoute`), so they are reachable both logged-out (to log in) and
-	 * logged-in-but-unauthorized (to log out).
+	 * Registers `GET`/`POST "/login"` and `POST "/logout"`, wired for an explicit
+	 * `auth` or one derived from `accounts` (`effectiveAuth`). The auth gate in
+	 * `middleware()` exempts these two paths from itself, the accounts gate, and
+	 * `authorize` (see `isAuthRoute`), so they are reachable both logged-out (to
+	 * log in) and logged-in-but-unauthorized (to log out).
 	 */
 	private wireAuth(): void {
 		this.get("/login", async (c) => {
 			const options = this.panelOptions;
-			if (!options?.auth) return c.notFound();
+			if (!options || !this.effectiveAuth()) return c.notFound();
 
 			const basePath = this.resolveBasePath();
 			if (this.currentIdentity(c)) return c.redirect(basePath, 303);
@@ -1191,7 +1412,8 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 
 		this.post("/login", async (c) => {
 			const options = this.panelOptions;
-			if (!options?.auth) return c.notFound();
+			const auth = this.effectiveAuth();
+			if (!options || !auth) return c.notFound();
 
 			const basePath = this.resolveBasePath();
 			const body = await c.req.parseBody();
@@ -1199,7 +1421,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 			const password = typeof body.password === "string" ? body.password : "";
 			const next = this.sanitizeNext(typeof body.next === "string" ? body.next : undefined);
 
-			const identity = await options.auth.authenticate(c, { username, password });
+			const identity = await auth.authenticate(c, { username, password });
 			if (!identity) {
 				const t = bindAdminT(c);
 				return c.html(
@@ -1228,8 +1450,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 		});
 
 		this.post("/logout", async (c) => {
-			const options = this.panelOptions;
-			if (!options?.auth) return c.notFound();
+			if (!this.effectiveAuth()) return c.notFound();
 
 			this.clearIdentity(c);
 			return c.redirect(`${this.resolveBasePath()}/login`, 303);

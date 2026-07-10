@@ -59,6 +59,9 @@ subpath export (`@tknf/oven/<name>`).
   `languageDetector` wiring (`@tknf/oven/i18n`).
 - [Admin panel](./admin.md) — `AdminPanel`, `AdminResource`, CRUD/jobs/
   settings/audit sections (`@tknf/oven/admin`).
+- [Admin accounts](./admin-accounts.md) — operator accounts, password
+  login, and stored permission sets for the admin panel
+  (`@tknf/oven/admin`).
 - [Helpers](./helpers.md) — CSV, currency/date-time/duration formatting,
   DOM ids (`@tknf/oven/helpers`).
 - [Support](./support.md) — id generators, signed cookies, base64url,

@@ -3,15 +3,27 @@
  * real application schema (`src/` must never import application code), and defines only the
  * minimal tables needed to verify the migration path.
  *
- * `jobs`/`broadcasts`/`sessions`/`kvEntries`/`audits` call the default schema factories exposed
- * by each adapter file (`sqliteJobsTable`/`sqliteBroadcastsTable`/`sqliteSessionsTable`/
- * `sqliteKeyValueTable`/`sqliteAuditsTable`) as-is. This verifies the factory-produced default
- * schemas themselves through the migration generation/application path (the
+ * `jobs`/`broadcasts`/`sessions`/`kvEntries`/`audits`/`adminUsers`/`adminGroups`/
+ * `adminUserGroups` call the default schema factories exposed by each adapter file
+ * (`sqliteJobsTable`/`sqliteBroadcastsTable`/`sqliteSessionsTable`/`sqliteKeyValueTable`/
+ * `sqliteAuditsTable`/`sqliteAdminUsersTable`/`sqliteAdminGroupsTable`/
+ * `sqliteAdminUserGroupsTable`) as-is. This verifies the factory-produced default schemas
+ * themselves through the migration generation/application path (the
  * `SQLiteJobRecordTable`/`SQLiteBroadcastRecordTable`/`SQLiteSessionRecordTable`/
- * `SQLiteKeyValueRecordTable`/`SQLiteAuditRecordTable` contracts are already checked with
- * `satisfies` on each factory's side).
+ * `SQLiteKeyValueRecordTable`/`SQLiteAuditRecordTable`/`SQLiteAdminUserRecordTable`/
+ * `SQLiteAdminGroupRecordTable`/`SQLiteAdminUserGroupRecordTable` contracts are already
+ * checked with `satisfies` on each factory's side).
  */
-import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+/** Direct-file import (not `src/admin/index.js`): the admin index star-exports `.tsx` view modules, which drizzle-kit (which loads this schema) should not have to parse. */
+import {
+	sqliteAdminUserColumns,
+	sqliteAdminUsersTable,
+} from "../../../src/admin/sqlite_admin_accounts.js";
+import {
+	sqliteAdminGroupsTable,
+	sqliteAdminUserGroupsTable,
+} from "../../../src/admin/sqlite_admin_groups.js";
 import { sqliteAuditsTable } from "../../../src/audit/index.js";
 import { sqliteJobsTable } from "../../../src/jobs/index.js";
 import { sqliteKeyValueTable } from "../../../src/kv/index.js";
@@ -51,3 +63,23 @@ export const sessions = sqliteSessionsTable();
 export const kvEntries = sqliteKeyValueTable();
 
 export const audits = sqliteAuditsTable();
+
+export const adminUsers = sqliteAdminUsersTable();
+
+export const adminGroups = sqliteAdminGroupsTable();
+
+export const adminUserGroups = sqliteAdminUserGroupsTable();
+
+/**
+ * Extended admin-user table verifying the documented extension recipe (spreading
+ * `sqliteAdminUserColumns()` into an app-defined table with extra columns) through
+ * the migration generation/application path.
+ */
+export const adminOperators = sqliteTable(
+	"admin_operators",
+	{
+		...sqliteAdminUserColumns(),
+		email: text("email").notNull(),
+	},
+	(t) => [uniqueIndex("admin_operators_username_idx").on(t.username)],
+);

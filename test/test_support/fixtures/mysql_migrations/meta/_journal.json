@@ -50,6 +50,20 @@
 			"when": 1783516619238,
 			"tag": "0006_unique_fantastic_four",
 			"breakpoints": true
+		},
+		{
+			"idx": 7,
+			"version": "5",
+			"when": 1783647452538,
+			"tag": "0007_smooth_big_bertha",
+			"breakpoints": true
+		},
+		{
+			"idx": 8,
+			"version": "5",
+			"when": 1783650307540,
+			"tag": "0008_chunky_blob",
+			"breakpoints": true
 		}
 	]
 }

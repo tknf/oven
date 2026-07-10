@@ -120,3 +120,58 @@ export type AdminUserTools = {
 	/** Links shown after the greeting (e.g. "View site", "Change password", "Log out"). */
 	links?: AdminUserToolLink[];
 };
+
+/**
+ * One operator-account row as consumed by `AdminPanel` (`admin_panel.tsx`):
+ * the contract columns shared by the default users tables of all three
+ * dialects (`sqliteAdminUsersTable`/`pgAdminUsersTable`/`mysqlAdminUsersTable`;
+ * every timestamp is an epoch-millisecond number on each dialect, so the row
+ * shape is uniform). A service may return rows that are a SUPERSET of this
+ * shape (e.g. `passwordHash`, or an extended table's app-specific columns) —
+ * that is the ordinary covariant-return direction and the extra properties are
+ * simply ignored by the panel.
+ */
+export type AdminAccountsUserRow = {
+	id: string;
+	username: string;
+	label: string | null;
+	isActive: boolean;
+	isSuperuser: boolean;
+	permissions: string;
+	lastLoginAt: number | null;
+	createdAt: number;
+	updatedAt: number;
+};
+
+/**
+ * The structure an operator-accounts service (`SQLiteAdminAccounts` etc.) must
+ * satisfy for `AdminPanelOptions.accounts.users`. Declared with method
+ * shorthand deliberately: shorthand parameters are checked bivariantly under
+ * `strictFunctionTypes`, so the dialect services — generic over their concrete
+ * table and returning rows that are a superset of `AdminAccountsUserRow` —
+ * stay assignable (an arrow-property declaration would check parameters
+ * contravariantly and reject them). `AdminPanel` (`admin_panel.tsx`) uses
+ * `authenticate` to derive the built-in login, `retrieve` to re-validate the
+ * logged-in operator on every request, and `userPermissions` to build the
+ * granted permission set.
+ */
+export type AdminAccountsUsers = {
+	authenticate(credentials: {
+		username: string;
+		password: string;
+	}): Promise<AdminAccountsUserRow | null>;
+	retrieve(userId: string): Promise<AdminAccountsUserRow | undefined>;
+	userPermissions(userId: string): Promise<string[]>;
+};
+
+/**
+ * The structure an operator-groups service (`SQLiteAdminGroups` etc.) must
+ * satisfy for `AdminPanelOptions.accounts.groups` (method shorthand for the
+ * same bivariance reason as `AdminAccountsUsers`). `permissionsForUser`
+ * resolves the union of the permission sets of every group the user belongs
+ * to; `AdminPanel` (`admin_panel.tsx`) unions it with the user's own set
+ * before checking.
+ */
+export type AdminAccountsGroups = {
+	permissionsForUser(userId: string): Promise<string[]>;
+};

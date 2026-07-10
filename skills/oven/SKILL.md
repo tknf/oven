@@ -111,34 +111,34 @@ per request (per-request state, e.g. bindings); `scope: "app"` memoizes once
 Import from the specific subpath. The root `@tknf/oven` re-exports everything
 except `cloudflare`, `node`, and `test`.
 
-| Subpath                 | Key exports                                                                                                                                                          |
-| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `@tknf/oven/routing`    | `RouteHandler`, `ContextAccessor`, `ValueAccessor`, `ScopedValueAccessor`, `NamedRoutes`, `ErrorPages`, `healthCheck`                                                |
-| `@tknf/oven/view`       | `View` (Accept-negotiated multi-format), `renderSnippet`/`renderSnippetStream` (htmx/Turbo), `ViewHelpers`, `cacheFragment`, `LayoutComponent`/`LayoutProps`         |
-| `@tknf/oven/model`      | `SQLiteModel`/`PgModel`/`MySqlModel` (thin Drizzle base), `StaleRecordError`                                                                                         |
-| `@tknf/oven/form`       | `Form` (Standard Schema), `FormView`, `validateUploadedFile`, `localizeUploadedFileError`                                                                            |
-| `@tknf/oven/session`    | `Session` (server-side + flash), `SessionAccessor`, `SessionStorage` + Cookie/InMemory/KeyValue/DB adapters                                                          |
-| `@tknf/oven/auth`       | `Guard`, `Policy`, `hashPassword`/`verifyPassword`, `ApiToken`, `RememberToken`, `EmailVerification`, `PasswordReset`, `OAuthClient`                                 |
-| `@tknf/oven/security`   | `Csrf`, `SecureHeaders`, `RateLimiter`, `TrustedHost`, `Encrypter`, `UrlSigner`, `MaintenanceMode`                                                                   |
-| `@tknf/oven/storage`    | `Storage` + `S3Storage`/`GoogleCloudStorage`/`InMemoryStorage`, `S3UrlSigner`                                                                                        |
-| `@tknf/oven/kv`         | `KeyValueStore` + InMemory/DB/`UpstashRedisStore`, `FeatureFlags`                                                                                                    |
-| `@tknf/oven/cache`      | `Cache` (JSON + `remember`), `CacheControl`                                                                                                                          |
-| `@tknf/oven/jobs`       | `Job`, `JobQueue`, `JobRegistry`, `InlineJobQueue`, DB queue/worker, `Schedule`                                                                                      |
-| `@tknf/oven/realtime`   | `Broadcaster`, `broadcastSse`, `BroadcastWebSocket`, `ChannelAuthorizer`                                                                                             |
-| `@tknf/oven/mailer`     | `Mailer`, `ConsoleMailer`, `FetchMailer`, `MailTemplate`, `DeliverMailJob`, `MailPreviewHandler`                                                                     |
-| `@tknf/oven/i18n`       | `Translator` (wraps Hono `languageDetector`)                                                                                                                         |
-| `@tknf/oven/admin`      | `AdminPanel` (extends RouteHandler), `AdminResource`, `fieldsFromTable`                                                                                              |
-| `@tknf/oven/pagination` | `parsePaginationQuery`, `encodeCursor`/`decodeCursor`, `PaginationView`                                                                                              |
-| `@tknf/oven/audit`      | `SQLiteAuditLog`/`PgAuditLog`/`MySqlAuditLog`                                                                                                                        |
-| `@tknf/oven/database`   | `DatabaseAccessor`                                                                                                                                                   |
-| `@tknf/oven/datasource` | `Datasource` (low-level `fetch` base), `RestDatasource` (retrieve/list/create/update/delete), `DatasourceError`, `DatasourceParseError`, `DatasourceValidationError` |
-| `@tknf/oven/logging`    | `Logger`, `ConsoleLogger`, `NullLogger`                                                                                                                              |
-| `@tknf/oven/helpers`    | CSV, `formatCurrency`/`formatDateTime`, `domId`                                                                                                                      |
-| `@tknf/oven/support`    | `IdGenerator` variants, `CookieAccessor`/`SignedCookieAccessor`, base64url, `validateEnv`, `constantTimeEqual`                                                       |
-| `@tknf/oven/vite`       | `ViteAssets`, `parseViteManifest`                                                                                                                                    |
-| `@tknf/oven/cloudflare` | `CloudflareKVStore`, `R2Storage`, `CloudflareCacheStore`, `CloudflareJobQueue`, `QueueConsumer`, `ScheduledDispatcher`                                               |
-| `@tknf/oven/node`       | `FileKeyValueStore`, `FileStorage`                                                                                                                                   |
-| `@tknf/oven/test`       | `createTestDb`, `defineFactory`, `actingAs`, `TestJobQueue`, `TestMailer`, `stubBinding`                                                                             |
+| Subpath                 | Key exports                                                                                                                                                                                                                                                                                                                               |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@tknf/oven/routing`    | `RouteHandler`, `ContextAccessor`, `ValueAccessor`, `ScopedValueAccessor`, `NamedRoutes`, `ErrorPages`, `healthCheck`                                                                                                                                                                                                                     |
+| `@tknf/oven/view`       | `View` (Accept-negotiated multi-format), `renderSnippet`/`renderSnippetStream` (htmx/Turbo), `ViewHelpers`, `cacheFragment`, `LayoutComponent`/`LayoutProps`                                                                                                                                                                              |
+| `@tknf/oven/model`      | `SQLiteModel`/`PgModel`/`MySqlModel` (thin Drizzle base), `StaleRecordError`                                                                                                                                                                                                                                                              |
+| `@tknf/oven/form`       | `Form` (Standard Schema), `FormView`, `validateUploadedFile`, `localizeUploadedFileError`                                                                                                                                                                                                                                                 |
+| `@tknf/oven/session`    | `Session` (server-side + flash), `SessionAccessor`, `SessionStorage` + Cookie/InMemory/KeyValue/DB adapters                                                                                                                                                                                                                               |
+| `@tknf/oven/auth`       | `Guard`, `Policy`, `hashPassword`/`verifyPassword`, `ApiToken`, `RememberToken`, `EmailVerification`, `PasswordReset`, `OAuthClient`                                                                                                                                                                                                      |
+| `@tknf/oven/security`   | `Csrf`, `SecureHeaders`, `RateLimiter`, `TrustedHost`, `Encrypter`, `UrlSigner`, `MaintenanceMode`                                                                                                                                                                                                                                        |
+| `@tknf/oven/storage`    | `Storage` + `S3Storage`/`GoogleCloudStorage`/`InMemoryStorage`, `S3UrlSigner`                                                                                                                                                                                                                                                             |
+| `@tknf/oven/kv`         | `KeyValueStore` + InMemory/DB/`UpstashRedisStore`, `FeatureFlags`                                                                                                                                                                                                                                                                         |
+| `@tknf/oven/cache`      | `Cache` (JSON + `remember`), `CacheControl`                                                                                                                                                                                                                                                                                               |
+| `@tknf/oven/jobs`       | `Job`, `JobQueue`, `JobRegistry`, `InlineJobQueue`, DB queue/worker, `Schedule`                                                                                                                                                                                                                                                           |
+| `@tknf/oven/realtime`   | `Broadcaster`, `broadcastSse`, `BroadcastWebSocket`, `ChannelAuthorizer`                                                                                                                                                                                                                                                                  |
+| `@tknf/oven/mailer`     | `Mailer`, `ConsoleMailer`, `FetchMailer`, `MailTemplate`, `DeliverMailJob`, `MailPreviewHandler`                                                                                                                                                                                                                                          |
+| `@tknf/oven/i18n`       | `Translator` (wraps Hono `languageDetector`)                                                                                                                                                                                                                                                                                              |
+| `@tknf/oven/admin`      | `AdminPanel` (extends RouteHandler), `AdminResource`, `fieldsFromTable`, `SQLiteAdminAccounts`/`PgAdminAccounts`/`MySqlAdminAccounts` (+ `sqliteAdminUsersTable` etc.), `SQLiteAdminGroups`/`PgAdminGroups`/`MySqlAdminGroups` (+ `sqliteAdminGroupsTable`/`sqliteAdminUserGroupsTable` etc.), `resourcePermission`/`resourcePermissions` |
+| `@tknf/oven/pagination` | `parsePaginationQuery`, `encodeCursor`/`decodeCursor`, `PaginationView`                                                                                                                                                                                                                                                                   |
+| `@tknf/oven/audit`      | `SQLiteAuditLog`/`PgAuditLog`/`MySqlAuditLog`                                                                                                                                                                                                                                                                                             |
+| `@tknf/oven/database`   | `DatabaseAccessor`                                                                                                                                                                                                                                                                                                                        |
+| `@tknf/oven/datasource` | `Datasource` (low-level `fetch` base), `RestDatasource` (retrieve/list/create/update/delete), `DatasourceError`, `DatasourceParseError`, `DatasourceValidationError`                                                                                                                                                                      |
+| `@tknf/oven/logging`    | `Logger`, `ConsoleLogger`, `NullLogger`                                                                                                                                                                                                                                                                                                   |
+| `@tknf/oven/helpers`    | CSV, `formatCurrency`/`formatDateTime`, `domId`                                                                                                                                                                                                                                                                                           |
+| `@tknf/oven/support`    | `IdGenerator` variants, `CookieAccessor`/`SignedCookieAccessor`, base64url, `validateEnv`, `constantTimeEqual`                                                                                                                                                                                                                            |
+| `@tknf/oven/vite`       | `ViteAssets`, `parseViteManifest`                                                                                                                                                                                                                                                                                                         |
+| `@tknf/oven/cloudflare` | `CloudflareKVStore`, `R2Storage`, `CloudflareCacheStore`, `CloudflareJobQueue`, `QueueConsumer`, `ScheduledDispatcher`                                                                                                                                                                                                                    |
+| `@tknf/oven/node`       | `FileKeyValueStore`, `FileStorage`                                                                                                                                                                                                                                                                                                        |
+| `@tknf/oven/test`       | `createTestDb`, `defineFactory`, `actingAs`, `TestJobQueue`, `TestMailer`, `stubBinding`                                                                                                                                                                                                                                                  |
 
 The full narrative guides live in the package repo under `docs/` (one guide per
 area, example-first). Consult them for depth.
@@ -186,6 +186,34 @@ username, password }) => Promise<AdminIdentity | null>` (verify however
   on every logged-in request; `auth` only answers "who is this", not "are
   they allowed in here". Omit `auth` and nothing changes (no login routes,
   no redirect gate — `authorize` alone gates access, as before).
+- **`@tknf/oven/admin` also ships operator accounts to back `auth`** —
+  `SQLiteAdminAccounts`/`PgAdminAccounts`/`MySqlAdminAccounts` over a shipped
+  users table (`sqliteAdminUsersTable()` etc., or spread
+  `sqliteAdminUserColumns()` into your own table, keeping the `username`
+  UNIQUE index). Security defaults to keep intact: usernames are normalized
+  (trim + lowercase) at the service boundary (cross-dialect uniqueness);
+  passwords are PBKDF2-hashed with a minimum length of 8 (configurable
+  `minPasswordLength`) and a hard maximum of 1024; `authenticate` is
+  enumeration-safe (dummy-hash verification when no user matches, inactive
+  accounts cost the same, every failure returns the same `null`) and rejects
+  oversized passwords before hashing. Do not raise the `iterations` option
+  when the app runs on Cloudflare Workers (workerd rejects PBKDF2 above
+  100,000 iterations and `verifyPassword` maps the error to `false` — logins
+  fail silently), and never expose the users table as an `AdminResource`
+  (the screens would render `passwordHash`). Permissions are plain strings
+  (`resourcePermission(key, action)`, built-ins like `"audit.view"`) stored
+  per user (`setUserPermissions`/`userPermissions`) — the panel does not
+  enforce them; check them in your own `authorize`.
+- **Operator groups (`SQLiteAdminGroups`/`PgAdminGroups`/`MySqlAdminGroups`)
+  layer named permission groups over the accounts** — constructed with both
+  shipped tables (`sqliteAdminGroupsTable()` + `sqliteAdminUserGroupsTable()`).
+  `setUserGroups` replaces a user's memberships with two statements (DELETE
+  then INSERT — not transactional, deliberately fail-closed: a mid-way
+  failure leaves fewer groups, never stale extras; re-run on error), and
+  group permissions resolve via `permissionsForUser(userId)` (the union of
+  every group's set) — combine it with the user's own `userPermissions` in
+  your `authorize`. Group names are only trimmed, never lowercased (unlike
+  usernames).
 - **`AdminResource#filters()` is a closed allowlist** — declare each filter's
   `options` explicitly; a query value outside that list is silently ignored
   rather than applied. The sidebar (`#changelist-filter`) only renders once

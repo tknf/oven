@@ -1,0 +1,14 @@
+CREATE TABLE "admin_users" (
+	"id" text PRIMARY KEY NOT NULL,
+	"username" text NOT NULL,
+	"password_hash" text NOT NULL,
+	"label" text,
+	"is_active" boolean DEFAULT true NOT NULL,
+	"is_superuser" boolean DEFAULT false NOT NULL,
+	"permissions" text DEFAULT '[]' NOT NULL,
+	"last_login_at" bigint,
+	"created_at" bigint NOT NULL,
+	"updated_at" bigint NOT NULL
+);
+--> statement-breakpoint
+CREATE UNIQUE INDEX "admin_users_username_idx" ON "admin_users" USING btree ("username");

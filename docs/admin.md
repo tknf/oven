@@ -433,6 +433,14 @@ constant-time PBKDF2 check `Guard`/`Policy` use elsewhere, but admin
 doesn't require it — any check that resolves to an identity or `null`
 works.
 
+If you'd rather not maintain your own operator user table,
+`@tknf/oven/admin` also ships an operator-accounts service
+(`SQLiteAdminAccounts`/`PgAdminAccounts`/`MySqlAdminAccounts`, plus a
+users-table schema factory) purpose-built to back `auth.authenticate` —
+password hashing, an enumeration-safe `authenticate`, active/superuser
+flags, and a stored permission set. See
+[Admin accounts](./admin-accounts.md).
+
 Once `auth` is injected:
 
 - `GET`/`POST "/login"` and `POST "/logout"` are registered under the

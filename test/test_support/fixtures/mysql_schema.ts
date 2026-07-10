@@ -10,14 +10,22 @@
  * MySQL's 32-bit `int` (treated as a JS number; epoch ms never exceeds 2^53, so no precision is
  * lost).
  *
- * `jobs`/`broadcasts`/`sessions`/`kvEntries`/`audits` call the default schema factories exposed
- * by each adapter file (`mysqlJobsTable`/`mysqlBroadcastsTable`/`mysqlSessionsTable`/
- * `mysqlKeyValueTable`/`mysqlAuditsTable`) as-is. This verifies the factory-produced default
- * schemas themselves through the migration generation/application path. The hand-written
- * definitions (`payload`/`data` as `varchar(4096)`, `lastError` as `varchar(2048)`) are unified
- * into the default schema's `text` columns (this column type change is intentional).
+ * `jobs`/`broadcasts`/`sessions`/`kvEntries`/`audits`/`adminUsers`/`adminGroups`/
+ * `adminUserGroups` call the default schema factories exposed by each adapter file
+ * (`mysqlJobsTable`/`mysqlBroadcastsTable`/`mysqlSessionsTable`/`mysqlKeyValueTable`/
+ * `mysqlAuditsTable`/`mysqlAdminUsersTable`/`mysqlAdminGroupsTable`/
+ * `mysqlAdminUserGroupsTable`) as-is. This verifies the factory-produced default schemas
+ * themselves through the migration generation/application path. The hand-written definitions (`payload`/`data` as
+ * `varchar(4096)`, `lastError` as `varchar(2048)`) are unified into the default schema's `text`
+ * columns (this column type change is intentional).
  */
 import { bigint, mysqlTable, varchar } from "drizzle-orm/mysql-core";
+/** Direct-file import (not `src/admin/index.js`): the admin index star-exports `.tsx` view modules, which drizzle-kit (which loads this schema) should not have to parse. */
+import { mysqlAdminUsersTable } from "../../../src/admin/mysql_admin_accounts.js";
+import {
+	mysqlAdminGroupsTable,
+	mysqlAdminUserGroupsTable,
+} from "../../../src/admin/mysql_admin_groups.js";
 import { mysqlAuditsTable } from "../../../src/audit/index.js";
 import { mysqlJobsTable } from "../../../src/jobs/index.js";
 import { mysqlKeyValueTable } from "../../../src/kv/index.js";
@@ -42,3 +50,9 @@ export const sessions = mysqlSessionsTable();
 export const kvEntries = mysqlKeyValueTable();
 
 export const audits = mysqlAuditsTable();
+
+export const adminUsers = mysqlAdminUsersTable();
+
+export const adminGroups = mysqlAdminGroupsTable();
+
+export const adminUserGroups = mysqlAdminUserGroupsTable();
