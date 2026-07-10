@@ -1,7 +1,7 @@
 /**
  * Verifies `Session` (the session data object) (docs/testing.md L1). Checks
  * get/set/has/unset, flash's consume-once semantics, and the tracking
- * conditions for `isDirty`.
+ * conditions for `isDirty` and `isDestroyed`.
  */
 import { describe, expect, test } from "vite-plus/test";
 import { isSessionData, Session } from "../../src/session/session.js";
@@ -121,6 +121,20 @@ describe("Session", () => {
 		session.get("error");
 
 		expect(session.isDirty).toBe(true);
+	});
+
+	test("isDestroyed is false for a new session", () => {
+		const session = new Session("");
+
+		expect(session.isDestroyed).toBe(false);
+	});
+
+	test("isDestroyed becomes true after markDestroyed", () => {
+		const session = new Session("");
+
+		session.markDestroyed();
+
+		expect(session.isDestroyed).toBe(true);
 	});
 });
 

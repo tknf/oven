@@ -152,6 +152,11 @@ area, example-first). Consult them for depth.
   `routes` breaks the instance.
 - **`secure` cookie attribute is OFF by default** (session cookie, remember
   token). Set `secure: true` explicitly in production via the cookie options.
+- **`storage.destroy(session)` always wins over `SessionAccessor`'s auto-commit.**
+  `destroy` marks the `Session` instance destroyed (`session.isDestroyed`), so a
+  `set`/`flash` made on that same instance earlier or later in the request (e.g.
+  a "logged out" flash before destroying) does not get auto-committed and
+  re-append a reviving `Set-Cookie` after the `Max-Age=0` destroy cookie.
 - **`secrets` must be high-entropy random ~32 bytes** (`Encrypter`, `UrlSigner`,
   `CookieSessionStorage`, ...). Weak/short secrets only emit a `console.warn`,
   never throw — do not rely on the runtime to catch it.

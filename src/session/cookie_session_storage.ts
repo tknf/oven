@@ -101,12 +101,15 @@ export class CookieSessionStorage extends SessionStorage {
 	}
 
 	/**
-	 * Ignores `session`: the cookie itself is the data, so destroying it is just
-	 * returning an empty value plus a `Max-Age=0` cookie. The parameter is kept to
-	 * match the base `SessionStorage` contract (other backends need the id to
-	 * identify what to delete).
+	 * There is no server-side notion of an id for this backend (the cookie itself is
+	 * the payload), so destroying it is just marking `session` destroyed and returning
+	 * an empty value plus a `Max-Age=0` cookie. Marking `session` destroyed (see
+	 * `Session.markDestroyed`) still matters here: it keeps `SessionAccessor` from
+	 * re-committing the same instance after `destroy` if it was also mutated earlier in
+	 * the same request.
 	 */
-	async destroy(_session: Session): Promise<string> {
+	async destroy(session: Session): Promise<string> {
+		session.markDestroyed();
 		return this.buildDestroyCookie();
 	}
 

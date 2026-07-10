@@ -134,4 +134,14 @@ describe("PgDatabaseSessionStorage", () => {
 
 		expect(setCookie).toContain("Max-Age=0");
 	});
+
+	test("destroy marks the session as destroyed", async () => {
+		const db = drizzle(client);
+		const storage = new PgDatabaseSessionStorage(db, sessionsTable);
+		const session = new Session("");
+
+		await storage.destroy(session);
+
+		expect(session.isDestroyed).toBe(true);
+	});
 });

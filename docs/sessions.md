@@ -18,7 +18,9 @@ request's `Session`.
 forgetting to save. After your handler runs, it checks `session.isDirty`
 (set by any `set`/`unset`/`flash` call, or by consuming a flash value) and
 only then calls `storage.commit()` and appends `Set-Cookie`. Read-only
-requests never trigger a write.
+requests never trigger a write. If `storage.destroy()` was called anywhere
+during the request, that always wins over a pending dirty commit — see
+"Logging out" below.
 
 ## Minimal example
 
@@ -118,6 +120,14 @@ app.post("/logout", async (c) => {
   return c.redirect("/login");
 });
 ```
+
+`storage.destroy()` marks the `Session` instance as destroyed
+(`session.isDestroyed`), and `SessionAccessor` skips its automatic commit for
+a destroyed session even if it is also dirty. This means it's safe to flash a
+message before destroying in the same request — for example
+`sessionAccessor.use(c).flash("notice", "Logged out")` followed by
+`storage.destroy(session)` — without the auto-commit reviving the session
+data after the destroy `Set-Cookie` has already gone out.
 
 ## Gotchas / Security notes
 
