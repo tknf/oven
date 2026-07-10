@@ -19,9 +19,9 @@ bundle.
 - **`actingAs`** — builds a `Cookie` header for an already-authenticated
   session, so tests can hit `Guard`-protected routes without going through
   a real login flow.
-- **`TestJobQueue`** / **`TestMailer`** — fake `JobQueue`/`Mailer`
-  implementations that record what was enqueued/sent instead of doing it,
-  for assertions.
+- **`TestJobQueue`** / **`TestMailer`** / **`TestBroadcaster`** — fake
+  `JobQueue`/`Mailer`/`Broadcaster` implementations that record what was
+  enqueued/sent/published instead of doing it, for assertions.
 - **`stubBinding`** — a generic `Proxy`-based stub for satisfying an
   external binding type (Cloudflare KV, R2, `Fetcher`, etc.) when a test
   only needs the type to line up, not real behavior.
@@ -33,6 +33,7 @@ flowchart LR
     Test --> actingAs -->|Cookie header| Guard["Guard-protected route"]
     Test --> TestJobQueue -->|"enqueue() recorded"| Assertion
     Test --> TestMailer -->|"send() recorded"| Assertion
+    Test --> TestBroadcaster -->|"publish() recorded"| Assertion
     Test --> stubBinding -->|"typed no-op"| Binding["Cloudflare binding param"]
 ```
 
@@ -111,14 +112,14 @@ const { cookie } = await actingAs(storage, {
 const res = await app.request("/protected", { headers: { Cookie: cookie } });
 ```
 
-### Assert on enqueued jobs and sent mail
+### Assert on enqueued jobs, sent mail, and published broadcasts
 
-Construct your app with a `TestJobQueue`/`TestMailer` in place of the real
-`JobQueue`/`Mailer` implementation, run the request, then inspect what was
-recorded instead of what actually happened:
+Construct your app with a `TestJobQueue`/`TestMailer`/`TestBroadcaster` in
+place of the real `JobQueue`/`Mailer`/`Broadcaster` implementation, run the
+request, then inspect what was recorded instead of what actually happened:
 
 ```ts
-import { TestJobQueue, TestMailer } from "@tknf/oven/test";
+import { TestBroadcaster, TestJobQueue, TestMailer } from "@tknf/oven/test";
 
 const queue = new TestJobQueue();
 await queue.enqueue(greetJob, { name: "Alice" }, { delaySeconds: 60 });
@@ -130,12 +131,22 @@ const mailer = new TestMailer();
 await mailer.send({ from: "a@example.com", to: "b@example.com", subject: "s", textBody: "t" });
 
 mailer.sentTo("b@example.com"); // matches recipients across to/cc/bcc
+
+const broadcaster = new TestBroadcaster();
+await broadcaster.publish("room:1", { data: "hello" });
+
+broadcaster.publishedTo("room:1"); // => [{ data: "hello" }]
+broadcaster.published;             // => [{ channel: "room:1", message: { data: "hello" } }]
 ```
 
-Both fakes still run the real validation logic of their base class
-(`enqueue`'s option validation, for example), so a test with an invalid
-`delaySeconds`/`priority` fails the same way it would against the real
-queue. Call `clear()` between tests to reset the recorded history.
+`TestJobQueue` and `TestMailer` still run the real validation logic of
+their base class (`enqueue`'s option validation, for example), so a test
+with an invalid `delaySeconds`/`priority` fails the same way it would
+against the real queue. `TestBroadcaster` additionally delivers messages to
+any `subscribe`d listeners, mirroring `InMemoryBroadcaster`'s semantics, so
+code under test that reacts to its own broadcasts keeps working against the
+fake. Call `clear()` between tests to reset the recorded history — for
+`TestBroadcaster` this only clears `published`, not active subscriptions.
 
 ### Stub a Cloudflare binding parameter
 
@@ -172,6 +183,11 @@ const kv = stubBinding<KVNamespace>();
   still calls the same `enqueue` option validation the real `JobQueue`
   does — an invalid `delaySeconds` or `priority` still rejects and is
   never recorded in `enqueued`.
+- **`TestBroadcaster` is single-process, like `InMemoryBroadcaster`.** It
+  only delivers to listeners registered via its own `subscribe` in the same
+  test — it does not reach a real `InMemoryBroadcaster`/DB-backed
+  broadcaster instance elsewhere, and `published` only records calls made
+  through that same `TestBroadcaster` instance.
 - **MySQL-backed tests are skipped without `OVEN_MYSQL_TEST_URL`.** If
   you're testing against oven's MySQL adapters (jobs, audit log, realtime
   broadcaster) and see them silently skip, that's expected in an
@@ -188,5 +204,7 @@ const kv = stubBinding<KVNamespace>();
   `createTestDb` and `defineFactory` are designed to test.
 - [Jobs](./jobs.md) — the `JobQueue`/`Job` types `TestJobQueue` fakes.
 - [Mailer](./mailer.md) — the `Mailer`/`MailMessage` types `TestMailer` fakes.
+- [Realtime](./realtime.md) — the `Broadcaster`/`BroadcastMessage` types
+  `TestBroadcaster` fakes.
 - [Authentication](./auth.md) — the `Guard`/`SessionStorage` types
   `actingAs` drives.

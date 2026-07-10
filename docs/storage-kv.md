@@ -197,6 +197,12 @@ const report = await cache.remember(
   being swallowed into "disabled".
 - **`InMemoryStorage`/`InMemoryKeyValueStore` are for development and
   tests only** — nothing is persisted, and state is lost on restart.
+- **The DB-backed `{Pg,SQLite,MySql}DatabaseKeyValueStore` adapters don't
+  run background GC.** An expired row is only deleted incidentally, on the
+  next `get` that happens to hit it — nothing sweeps rows nobody reads
+  again. Schedule `{Pg,SQLite,MySql}PruneExpiredRecordsJob`
+  (`@tknf/oven/jobs`) to actually clear expired rows out of the table; see
+  [Jobs](./jobs.md#common-tasks).
 - **Keep S3/GCS credentials out of source.** `S3Storage`/`S3UrlSigner` take
   `accessKeyId`/`secretAccessKey` as plain constructor values, and
   `GoogleCloudStorage` takes a `tokenProvider` callback — source these from
@@ -211,6 +217,8 @@ const report = await cache.remember(
 - [Sessions](./sessions.md) — `SessionStorage` follows the same
   backend-independent, constructor-injected pattern (and some session
   backends are themselves built on `KeyValueStore`).
+- [Jobs](./jobs.md) — `{Pg,SQLite,MySql}PruneExpiredRecordsJob` GCs expired
+  rows out of a DB-backed `KeyValueStore`/`SessionStorage` table.
 - [Security](./security.md) — secret/key handling conventions shared across
   oven (`SECURITY.md` covers the storage-key sanitization requirement in
   full).
