@@ -33,6 +33,7 @@
  */
 import type { AdminFilter } from "./admin_resource.js";
 import type { AdminT } from "./admin_catalog.js";
+import { OffsetPaginationView } from "../pagination/index.js";
 import { CSRF_FORM_FIELD_NAME } from "../security/csrf.js";
 
 /** The list screen's current sort (a display column index from `columns` + direction), or `null` when unsorted (falls back to the resource's default order). */
@@ -101,35 +102,6 @@ const buildListUrl = (
 	const qs = params.toString();
 	const base = `${basePath}/resources/${resourceKey}`;
 	return qs ? `${base}?${qs}` : base;
-};
-
-/** Ellipsis marker used by `buildPageRange` to elide long runs of page numbers. */
-const PAGE_RANGE_ELLIPSIS = "…";
-
-/**
- * Elides a long page-number list down to the first 2, the last 2, and a window
- * of 3 pages on either side of the current page. Returns `page`-indexed
- * numbers (0-based) interleaved with `PAGE_RANGE_ELLIPSIS` markers wherever a
- * gap is skipped.
- */
-const buildPageRange = (
-	page: number,
-	pageCount: number,
-): (number | typeof PAGE_RANGE_ELLIPSIS)[] => {
-	const kept = new Set<number>();
-	for (let i = 0; i < Math.min(2, pageCount); i++) kept.add(i);
-	for (let i = Math.max(0, pageCount - 2); i < pageCount; i++) kept.add(i);
-	for (let i = Math.max(0, page - 3); i <= Math.min(pageCount - 1, page + 3); i++) kept.add(i);
-
-	const sorted = [...kept].sort((a, b) => a - b);
-	const range: (number | typeof PAGE_RANGE_ELLIPSIS)[] = [];
-	let previous: number | null = null;
-	for (const current of sorted) {
-		if (previous !== null && current - previous > 1) range.push(PAGE_RANGE_ELLIPSIS);
-		range.push(current);
-		previous = current;
-	}
-	return range;
 };
 
 /**
@@ -504,62 +476,6 @@ const FilterSidebar = ({
 	</div>
 );
 
-/**
- * Numbered pagination + result count, replacing the previous cursor-based
- * "next" link (`PaginationView`). The page-number list only renders when there
- * is more than one page (`pageCount > 1`); the result count is always shown.
- * Page numbers are displayed 1-based (`p + 1`) even though the `?p=` query
- * itself is 0-based, and the current page renders as plain text with
- * `aria-current="page"` rather than a link (mirrors a familiar admin-console's
- * `paginator_number` behavior).
- */
-const Paginator = ({
-	basePath,
-	resourceKey,
-	state,
-	page,
-	pageCount,
-	total,
-	label,
-	t,
-}: {
-	basePath: string;
-	resourceKey: string;
-	state: ListState;
-	page: number;
-	pageCount: number;
-	total: number;
-	label: string;
-	t: AdminT;
-}) => (
-	<nav class="paginator" aria-label="pagination">
-		{pageCount > 1 &&
-			buildPageRange(page, pageCount).map((entry) => {
-				if (entry === PAGE_RANGE_ELLIPSIS) {
-					return <span class="ellipsis">{PAGE_RANGE_ELLIPSIS}</span>;
-				}
-				if (entry === page) {
-					return (
-						<span class="this-page" aria-current="page">
-							{entry + 1}
-						</span>
-					);
-				}
-				return (
-					<a
-						href={buildListUrl(basePath, resourceKey, state, entry)}
-						aria-label={t("a11y.page", { n: entry + 1 })}
-					>
-						{entry + 1}
-					</a>
-				);
-			})}
-		<span class="result-count">
-			{total} {label}
-		</span>
-	</nav>
-);
-
 /** Resource list screen body. Renders the heading, new-record link, search form, list table (with a bulk-action form when `canDelete`), numbered pagination + result count, and (when `filters` is non-empty) the filter sidebar. */
 export const AdminResourceListView = ({
 	basePath,
@@ -632,15 +548,13 @@ export const AdminResourceListView = ({
 			) : (
 				table
 			)}
-			<Paginator
-				basePath={basePath}
-				resourceKey={resourceKey}
-				state={state}
+			<OffsetPaginationView
 				page={page}
 				pageCount={pageCount}
-				total={total}
-				label={label}
-				t={t}
+				buildUrl={(p) => buildListUrl(basePath, resourceKey, state, p)}
+				pageLabel={(n) => t("a11y.page", { n })}
+				summary={`${total} ${label}`}
+				attrs={{ class: "paginator" }}
 			/>
 		</>
 	);

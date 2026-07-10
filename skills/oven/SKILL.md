@@ -130,7 +130,7 @@ it depends on the `vite` package itself — it has no hard dependency on it).
 | `@tknf/oven/mailer`     | `Mailer`, `ConsoleMailer`, `FetchMailer`, `MailTemplate`, `DeliverMailJob`, `MailPreviewHandler`                                                                                                                                                                                                                                          |
 | `@tknf/oven/i18n`       | `Translator` (wraps Hono `languageDetector`)                                                                                                                                                                                                                                                                                              |
 | `@tknf/oven/admin`      | `AdminPanel` (extends RouteHandler), `AdminResource`, `fieldsFromTable`, `SQLiteAdminAccounts`/`PgAdminAccounts`/`MySqlAdminAccounts` (+ `sqliteAdminUsersTable` etc.), `SQLiteAdminGroups`/`PgAdminGroups`/`MySqlAdminGroups` (+ `sqliteAdminGroupsTable`/`sqliteAdminUserGroupsTable` etc.), `resourcePermission`/`resourcePermissions` |
-| `@tknf/oven/pagination` | `parsePaginationQuery`, `encodeCursor`/`decodeCursor`, `PaginationView`                                                                                                                                                                                                                                                                   |
+| `@tknf/oven/pagination` | `parsePaginationQuery`, `encodeCursor`/`decodeCursor`, `PaginationView`, `OffsetPaginationView`                                                                                                                                                                                                                                           |
 | `@tknf/oven/audit`      | `SQLiteAuditLog`/`PgAuditLog`/`MySqlAuditLog`                                                                                                                                                                                                                                                                                             |
 | `@tknf/oven/database`   | `DatabaseAccessor`                                                                                                                                                                                                                                                                                                                        |
 | `@tknf/oven/datasource` | `Datasource` (low-level `fetch` base), `RestDatasource` (retrieve/list/create/update/delete), `DatasourceError`, `DatasourceParseError`, `DatasourceValidationError`                                                                                                                                                                      |
@@ -176,7 +176,10 @@ area, example-first). Consult them for depth.
   `{ limit, cursor?, direction? }`; there is no `page` number. For an
   arbitrary-column-order, numbered-page listing (e.g. admin), use
   `Model#listPage({ where?, orderBy?, limit, offset? })` instead — offset-based,
-  so prefer `paginate` for large-scale public listings.
+  so prefer `paginate` for large-scale public listings. `PaginationView`
+  (cursor, "next" link only) and `OffsetPaginationView` (offset, numbered page
+  links + optional summary) are the matching `@tknf/oven/pagination` view
+  components for each.
 - **`Model` soft delete has no implicit global scope** — add
   `isNull(table.deletedAt)` to your own `where` when you want to exclude deleted
   rows. Concurrency uses `updateLocked` + a `lockVersion` column (`StaleRecordError`).
@@ -384,7 +387,9 @@ bodyLimitBytes })`) as the panel's very first middleware, ahead of CSRF
   ascending/descending, falling back to primary key descending when absent or
   out of range; `?p=<n>` selects the 0-based page. Clicking a column header or
   a filter link resets to page 0; only the paginator's own page links keep the
-  current sort/search/filters.
+  current sort/search/filters. Both the resource list and the accounts-user
+  list render this pagination with `OffsetPaginationView`
+  (`@tknf/oven/pagination`).
 - **`AdminResource#inlines()` renders and persists child rows, but not
   atomically.** Each `AdminInline` (child `model`/`table`/`primaryKey`/
   `foreignKey`/`form()`, plus `extra` blank rows, default 3) renders a

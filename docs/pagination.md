@@ -9,7 +9,7 @@ request-layer concern at the same time: the data layer returns
 `?cursor=...&limit=...` query string into arguments `paginate` accepts, keep
 the cursor value opaque as it travels through a URL, and render a "next page"
 link. `@tknf/oven/pagination` covers exactly that request-side slice, split
-into three independent pieces:
+into independent pieces:
 
 - **`parsePaginationQuery`** — extracts and validates `cursor`/`limit` from a
   Hono `Context`'s query parameters, in a shape ready to hand straight to
@@ -19,6 +19,11 @@ into three independent pieces:
   (e.g. a Snowflake id's embedded timestamp) never leaks into a URL.
 - **`PaginationView`** — a pure JSX component that renders a "next" link from
   a `paginate` result, with no dependency on Hono's `Context`.
+- **`OffsetPaginationView`** — a pure JSX component that renders numbered page
+  links from `Model#listPage`'s `page`/`pageCount` (plus an optional result
+  count), for screens that page by number instead of cursor (see
+  [Rendering numbered page links with `OffsetPaginationView`](#rendering-numbered-page-links-with-offsetpaginationview)
+  below).
 
 None of this replaces `Model#paginate`; it exists to sit on either side of it.
 
@@ -120,6 +125,50 @@ encoding it (with `encodeCursor`, if you use it) is the caller's job, matching
 the URL-structure-is-the-app's-responsibility design also used by
 `NamedRoutes`.
 
+### Rendering numbered page links with `OffsetPaginationView`
+
+`Model#listPage` (see
+[Models § Offset pagination with `listPage`](./models.md#offset-pagination-with-listpage))
+returns a bare row array, so `page`/`pageCount`/`total` are built by the
+caller from a separate `count()` call:
+
+```ts
+const PAGE_SIZE = 20;
+const page = Number(c.req.query("p") ?? "0") || 0;
+
+const [rows, total] = await Promise.all([
+  items.listPage({
+    orderBy: [{ column: items.name, direction: "asc" }],
+    limit: PAGE_SIZE,
+    offset: page * PAGE_SIZE,
+  }),
+  items.count(),
+]);
+const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
+```
+
+```tsx
+import { OffsetPaginationView } from "@tknf/oven/pagination";
+import { pathFor } from "./routes.js"; // NamedRoutes#pathFor, see routing.md
+
+<OffsetPaginationView
+  page={page}
+  pageCount={pageCount}
+  buildUrl={(p) => `${pathFor("items.index")}?p=${p}`}
+  pageLabel={(n) => t("pagination.page", { n })}
+  summary={t("pagination.total", { count: total })}
+/>;
+```
+
+`OffsetPaginationView` renders `null` when there is nothing to show (a single
+page and no `summary`). Otherwise it renders a page-number list — eliding long
+runs down to the first 2, the last 2, and a window of 3 pages around the
+current one — plus the optional `summary` text. `buildUrl` receives a 0-based
+page index; page numbers are displayed 1-based, and the current page renders
+as a `<span aria-current="page">` rather than a link. `AdminPanel`'s resource
+and accounts-user list screens both use this component for their `?p=`
+pagination.
+
 ## Gotchas / Security notes
 
 - **`maxLimit` is a real security boundary, not a formatting nicety.**
@@ -135,10 +184,14 @@ the URL-structure-is-the-app's-responsibility design also used by
   through normally. Don't repurpose `encodeCursor`/`decodeCursor` as a
   general-purpose signed token — there is no signature to verify.
 - **`paginate` uses keyset pagination (`WHERE pk > cursor ORDER BY pk`), not
-  `OFFSET`.** This is why there is no "jump to page N" support anywhere in
-  this module — an offset-based page number and a cursor are fundamentally
+  `OFFSET`** — an offset-based page number and a cursor are fundamentally
   different addressing schemes, and mixing them would silently break under
-  concurrent inserts/deletes.
+  concurrent inserts/deletes. `PaginationView` therefore only ever renders a
+  "next" link. Jumping to an arbitrary page needs `Model#listPage`'s `OFFSET`
+  instead, paired with `OffsetPaginationView`; prefer `paginate` for
+  large-scale public feeds and reach for `listPage`/`OffsetPaginationView`
+  only for bounded, internal-facing screens (e.g. an admin panel), where a
+  deep `offset`'s scan-and-discard cost is acceptable.
 - **A `decodeCursor` failure is fail-soft, not fail-closed.** A malformed or
   tampered cursor silently falls back to `undefined` (the first page) rather
   than throwing or returning a 400 — this is intentional (see the previous
@@ -149,7 +202,12 @@ the URL-structure-is-the-app's-responsibility design also used by
 ## See also
 
 - [Models](./models.md) — `Model#paginate`, the data-side half of cursor
-  pagination this module's query parsing and view are built around.
+  pagination this module's query parsing and view are built around, and
+  [`Model#listPage`](./models.md#offset-pagination-with-listpage), the
+  offset-based counterpart `OffsetPaginationView` pairs with.
 - [Routing](./routing.md) — `NamedRoutes#pathFor` for building the base path
-  passed to `PaginationView`'s `buildUrl`.
-- [View](./view.md) — where `PaginationView` fits into a page's JSX output.
+  passed to `PaginationView`'s/`OffsetPaginationView`'s `buildUrl`.
+- [View](./view.md) — where `PaginationView`/`OffsetPaginationView` fit into a
+  page's JSX output.
+- [Admin panel](./admin.md#sorting-and-paging-the-list-screen) — the resource
+  and accounts-user list screens that use `OffsetPaginationView`.

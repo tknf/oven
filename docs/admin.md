@@ -145,6 +145,9 @@ two query parameters, matching a familiar admin-console convention:
 
 Changing the sort or a filter always resets back to page 0; only the
 paginator's own page links preserve the current sort/search/filters.
+The page footer itself is rendered with `OffsetPaginationView` (see
+[Pagination](./pagination.md)) — the same component the accounts-user
+list screen uses for its own, sort/filter-free `?p=` pagination.
 
 
 

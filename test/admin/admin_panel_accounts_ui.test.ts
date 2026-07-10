@@ -288,6 +288,35 @@ describe("AdminPanel accounts management UI", () => {
 		});
 	});
 
+	describe("pagination", () => {
+		test("?p=1 shows the second page's users, and the paginator marks it as current", async () => {
+			const { app, users } = buildApp();
+			await users.createUser({ username: "root", password: "password-1", isSuperuser: true });
+			for (let i = 1; i <= 25; i++) {
+				const n = String(i).padStart(2, "0");
+				await users.createUser({ username: `member-${n}`, password: "password-123" });
+			}
+			const { cookie } = await loginAs(app, "root", "password-1");
+
+			const firstPage = await app.request("/admin/accounts/users", { headers: { Cookie: cookie } });
+			const secondPage = await app.request("/admin/accounts/users?p=1", {
+				headers: { Cookie: cookie },
+			});
+			const firstBody = await firstPage.text();
+			const secondBody = await secondPage.text();
+
+			// Users are listed alphabetically ascending, so "member-01".."member-20"
+			// fill the first page and "member-21".."member-25" plus "root" spill
+			// onto the second.
+			expect(firstBody).toContain("member-01");
+			expect(firstBody).not.toContain("member-21");
+			expect(secondBody).toContain("member-21");
+			expect(secondBody).not.toContain("member-01");
+			expect(secondBody).toContain('class="paginator"');
+			expect(secondBody).toContain('aria-current="page"');
+		});
+	});
+
 	describe("nav visibility", () => {
 		test("a superuser's dashboard nav includes the Accounts link", async () => {
 			const { app, users } = buildApp();
