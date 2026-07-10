@@ -14,6 +14,66 @@ const buildStorage = (fetchImpl: typeof fetch) =>
 		fetch: fetchImpl,
 	});
 
+/**
+ * Mirrors `S3Storage`'s private `MULTIPART_PART_SIZE_BYTES` (not exported,
+ * so duplicated here). Unlike `test/workers/r2_storage.test.ts`, which skips
+ * the above-threshold path for cost reasons, `S3Storage`'s fetch is mocked
+ * rather than hitting a real backend, so exercising a real >100MiB body is
+ * cheap. `LARGE_BODY` is allocated once and reused (read-only, via `.slice`)
+ * across the tests below instead of once per test.
+ */
+const MULTIPART_PART_SIZE_BYTES = 100 * 1024 * 1024;
+const LARGE_BODY = new ArrayBuffer(MULTIPART_PART_SIZE_BYTES + 1024);
+
+/**
+ * Builds a fetch stub that understands the S3 Multipart Upload request
+ * shape (`CreateMultipartUpload`/`UploadPart`/`CompleteMultipartUpload`/
+ * `AbortMultipartUpload`), routed by method + query params so each test can
+ * focus on the step it's exercising. Returns recorders (`calls`, `partSizes`,
+ * `getCompleteBody`) the test asserts against after calling `put`.
+ */
+const buildMultipartFetch = (
+	overrides: { uploadPartResponse?: (partNumber: number) => Response } = {},
+) => {
+	const uploadId = "upload-123";
+	const calls: string[] = [];
+	const partSizes: number[] = [];
+	let completeBody = "";
+
+	const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
+		if (!(input instanceof Request)) throw new Error("expected a Request instance");
+		const url = new URL(input.url);
+
+		if (input.method === "POST" && url.searchParams.has("uploads")) {
+			calls.push("create");
+			return new Response(
+				`<?xml version="1.0" encoding="UTF-8"?><InitiateMultipartUploadResult><UploadId>${uploadId}</UploadId></InitiateMultipartUploadResult>`,
+				{ status: 200 },
+			);
+		}
+		if (input.method === "PUT" && url.searchParams.has("partNumber")) {
+			const partNumber = Number(url.searchParams.get("partNumber"));
+			expect(url.searchParams.get("uploadId")).toBe(uploadId);
+			partSizes.push((await input.arrayBuffer()).byteLength);
+			calls.push(`upload-part-${partNumber}`);
+			if (overrides.uploadPartResponse) return overrides.uploadPartResponse(partNumber);
+			return new Response(null, { status: 200, headers: { ETag: `"etag-${partNumber}"` } });
+		}
+		if (input.method === "DELETE" && url.searchParams.has("uploadId")) {
+			calls.push("abort");
+			return new Response(null, { status: 204 });
+		}
+		if (input.method === "POST" && url.searchParams.has("uploadId")) {
+			completeBody = await input.text();
+			calls.push("complete");
+			return new Response(null, { status: 200 });
+		}
+		throw new Error(`unexpected multipart request: ${input.method} ${input.url}`);
+	});
+
+	return { fetch, calls, partSizes, getCompleteBody: () => completeBody };
+};
+
 describe("S3Storage", () => {
 	test("put issues a PUT request with a Content-Type header", async () => {
 		const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
@@ -151,5 +211,89 @@ describe("S3Storage", () => {
 		);
 
 		expect(fetch).toHaveBeenCalledOnce();
+	});
+
+	test("a put exactly at the multipart threshold still issues a single PUT (no multipart)", async () => {
+		const data = LARGE_BODY.slice(0, MULTIPART_PART_SIZE_BYTES);
+		const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
+			if (!(input instanceof Request)) throw new Error("expected a Request instance");
+			expect(input.method).toBe("PUT");
+			expect(new URL(input.url).searchParams.has("uploadId")).toBe(false);
+			return new Response(null, { status: 200 });
+		});
+		const storage = buildStorage(fetch);
+
+		await storage.put("media/at-threshold.bin", data, "application/octet-stream");
+
+		expect(fetch).toHaveBeenCalledOnce();
+	});
+
+	test("a put larger than the multipart threshold performs create -> upload parts -> complete", async () => {
+		const { fetch, calls, partSizes, getCompleteBody } = buildMultipartFetch();
+		const storage = buildStorage(fetch);
+
+		await storage.put("media/big.bin", LARGE_BODY, "application/octet-stream");
+
+		expect(calls).toEqual(["create", "upload-part-1", "upload-part-2", "complete"]);
+		expect(partSizes).toEqual([MULTIPART_PART_SIZE_BYTES, 1024]);
+		expect(getCompleteBody()).toBe(
+			'<?xml version="1.0" encoding="UTF-8"?><CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>"etag-1"</ETag></Part><Part><PartNumber>2</PartNumber><ETag>"etag-2"</ETag></Part></CompleteMultipartUpload>',
+		);
+	});
+
+	test("a failed part upload aborts the multipart upload and rethrows the original error", async () => {
+		const { fetch, calls } = buildMultipartFetch({
+			uploadPartResponse: () => new Response("boom", { status: 500 }),
+		});
+		const storage = buildStorage(fetch);
+
+		await expect(
+			storage.put("media/big.bin", LARGE_BODY, "application/octet-stream"),
+		).rejects.toThrow(/S3 UploadPart failed/);
+		expect(calls).toEqual(["create", "upload-part-1", "abort"]);
+	});
+
+	test("a part response missing an ETag header aborts and throws a clear error", async () => {
+		const { fetch, calls } = buildMultipartFetch({
+			uploadPartResponse: () => new Response(null, { status: 200 }),
+		});
+		const storage = buildStorage(fetch);
+
+		await expect(
+			storage.put("media/big.bin", LARGE_BODY, "application/octet-stream"),
+		).rejects.toThrow(/missing an ETag/);
+		expect(calls).toEqual(["create", "upload-part-1", "abort"]);
+	});
+
+	test("a create response missing an UploadId throws before any part is uploaded", async () => {
+		const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
+			if (!(input instanceof Request)) throw new Error("expected a Request instance");
+			return new Response("<InitiateMultipartUploadResult></InitiateMultipartUploadResult>", {
+				status: 200,
+			});
+		});
+		const storage = buildStorage(fetch);
+
+		await expect(
+			storage.put("media/big.bin", LARGE_BODY, "application/octet-stream"),
+		).rejects.toThrow(/missing an UploadId/);
+		expect(fetch).toHaveBeenCalledOnce();
+	});
+
+	test("maxBytes rejects an over-threshold body before any multipart request", async () => {
+		const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response(null, { status: 200 }));
+		const storage = new S3Storage({
+			endpoint: "https://dummy-account-id.r2.cloudflarestorage.com",
+			bucket: "dummy-bucket",
+			accessKeyId: "dummy-access-key-id",
+			secretAccessKey: "dummy-secret-access-key",
+			fetch,
+			maxBytes: MULTIPART_PART_SIZE_BYTES,
+		});
+
+		await expect(
+			storage.put("media/big.bin", LARGE_BODY, "application/octet-stream"),
+		).rejects.toThrow(/exceeds the limit/);
+		expect(fetch).not.toHaveBeenCalled();
 	});
 });
