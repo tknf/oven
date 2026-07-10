@@ -162,17 +162,31 @@ import { DurableObjectBroadcaster } from "@tknf/oven/cloudflare";
 export const makeBroadcaster = (namespace: DurableObjectNamespace) =>
   new DurableObjectBroadcaster(namespace, {
     onListenerError: (error, channel) => console.error(`listener failed on ${channel}`, error),
+    onDisconnect: (attempt, error, channel) => console.warn(`reconnecting ${channel}`, attempt, error),
+    onReconnect: (attempt, channel) => console.info(`reconnected ${channel}`, attempt),
   });
 ```
 
-Two things make this adapter's timing different from the others: `subscribe`
+One thing makes this adapter's timing different from the others: `subscribe`
 returns before the WebSocket to the DO finishes connecting, so a `publish`
 that lands in that short window is not delivered to that listener (the
 DB-backed adapters have the same kind of gap from polling; `InMemoryBroadcaster`
-does not); and if that WebSocket closes for any reason, the subscription just
-ends — this adapter does not reconnect. Both are fine for the
-request-scoped `broadcastSse`/`BroadcastWebSocket` connections shown above,
-since their own client already handles reconnecting from scratch.
+does not). This is fine for the request-scoped `broadcastSse`/`BroadcastWebSocket`
+connections shown above, since their own client already handles reconnecting
+from scratch.
+
+**If the WebSocket to the DO closes for any reason** (the DO instance
+erroring, an infrastructure hiccup, etc.), this adapter automatically retries
+the connection with exponential backoff (`reconnectInitialDelayMs`, doubling
+up to `reconnectMaxDelayMs`) until it succeeds or you call the `subscribe`
+return value to unsubscribe — set `reconnect: false` to opt back into the
+old behavior of leaving the subscription dead once its socket closes.
+Reconnecting only restores the subscription's liveness, not what was missed:
+a `publish` that lands while the socket is down (or reconnecting) is never
+redelivered, same as any other gap covered by the `Broadcaster` base
+contract's at-most-once guarantee. `onDisconnect`/`onReconnect` are
+observability hooks only (logging, metrics) — there is nothing to act on
+beyond that, since the adapter already retries on its own.
 
 ## Gotchas / Security notes
 
