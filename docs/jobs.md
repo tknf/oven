@@ -160,6 +160,53 @@ table directly (`listPending`, `listFailed`, `retryFailed(id)`,
 `deleteJob(id)`) — it has no HTTP or HTML surface of its own; wiring it
 into an admin endpoint is your app's job.
 
+**Pruning expired rows from a DB-backed `KeyValueStore`/`SessionStorage`**
+(`{Pg,SQLite,MySql}PruneExpiredRecordsJob`): the DB-backed `KeyValueStore`
+(`@tknf/oven/kv`) and `SessionStorage` (`@tknf/oven/session`) adapters only
+delete an expired row incidentally, the next time a `get` happens to hit it
+— nothing actively sweeps rows nobody reads again (see
+[Storage, Key-Value, and Cache](./storage-kv.md) and [Sessions](./sessions.md)).
+This job fills that gap: give it one or more `targets` (a table plus its
+primary key column and expiry column), and it batch-deletes every row whose
+expiry has passed, across every target, each time it runs.
+
+```ts
+import {
+  SQLitePruneExpiredRecordsJob,
+  Schedule,
+} from "@tknf/oven/jobs";
+import { sqliteKeyValueTable } from "@tknf/oven/kv";
+import { sqliteSessionsTable } from "@tknf/oven/session";
+import { db } from "./db.js";
+
+const kvTable = sqliteKeyValueTable();
+const sessionsTable = sqliteSessionsTable();
+
+const pruneJob = new SQLitePruneExpiredRecordsJob(db, [
+  { table: kvTable, pkColumn: kvTable.key, expiresAtColumn: kvTable.expiresAt },
+  { table: sessionsTable, pkColumn: sessionsTable.id, expiresAtColumn: sessionsTable.expiresAt },
+]);
+
+// Invoked directly (not enqueued) — see the Gotchas note on why.
+const schedule = new Schedule([
+  { name: "prune-expired-records", cron: "0 3 * * *", run: () => pruneJob.perform({}) },
+]);
+
+// Node long-running process:
+const controller = new AbortController();
+await schedule.run({ signal: controller.signal });
+
+// Or, driven from a Cloudflare `scheduled` handler via `ScheduledDispatcher`
+// (see Deployment): `run: () => pruneJob.perform({})` inside the matching entry.
+```
+
+`targets` accepts any table shaped like the KV/session record contracts (or
+your own — only `pkColumn`/`expiresAtColumn` matter), so one job instance
+can sweep both stores, or several KV/session tables with different table
+names, in a single run. `options.batchSize` (default 500) and
+`options.maxBatches` (default 1000) bound how much work one `perform()` call
+does per target — see the Gotchas note below.
+
 **Deploying to Cloudflare Queues:** see [Deployment](./deployment.md)
 for wiring `CloudflareJobQueue` (producer) and `QueueConsumer` (consumer,
 called from your Worker's `queue(batch, env, ctx)` handler) to a Queue
@@ -202,11 +249,22 @@ handler.
   type system — passing something that doesn't round-trip through
   `JSON.stringify`/`JSON.parse` (functions, `Date`, circular references)
   will silently corrupt the payload the consumer sees.
+- **`{Pg,SQLite,MySql}PruneExpiredRecordsJob` is meant to be invoked
+  directly** (`pruneJob.perform({})` from a `Schedule` entry or a
+  `scheduled` handler), not enqueued through a persistent `JobQueue` — it
+  always runs against the same `db` it was constructed with, so there is
+  nothing for a transport to carry. `options.maxBatches` (default 1000)
+  caps how many batches a single `perform()` call processes per target;
+  a backlog larger than `batchSize * maxBatches` is left for the next
+  scheduled run rather than blocking the current one indefinitely.
 
 ## See also
 
 - [Storage, Key-Value, and Cache](./storage-kv.md) — jobs and caching share
   the same backend-independent, constructor-injected design; the DB-backed
-  job queues sit next to the DB-backed `KeyValueStore` adapters.
+  job queues sit next to the DB-backed `KeyValueStore` adapters that
+  `{Pg,SQLite,MySql}PruneExpiredRecordsJob` GCs.
+- [Sessions](./sessions.md) — `{Pg,SQLite,MySql}PruneExpiredRecordsJob`
+  also GCs a dedicated `sessions` table.
 - [Concepts](./concepts.md) — the composition/constructor-injection
   convention used across oven, including `JobQueue`/`JobRegistry`.
