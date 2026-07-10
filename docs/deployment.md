@@ -166,6 +166,40 @@ The same `ScheduledDispatcher` entry can drive a database-backed job worker's
 `runOnce()` instead of (or alongside) a `Schedule` — see
 [Jobs § Running a DB-backed queue](./jobs.md#common-tasks).
 
+**Durable Objects** back `DurableObjectBroadcaster` (`@tknf/oven/cloudflare`),
+the multi-instance `Broadcaster` adapter for Cloudflare Workers — see
+[Realtime § Common tasks](./realtime.md#common-tasks) for what it delivers.
+Wiring it, like every other Cloudflare adapter, is explicit: oven does not
+write your `wrangler.jsonc`. Re-export the Durable Object class
+(`BroadcasterDurableObject`) from your Worker's entry point so its
+`class_name` resolves, and declare the binding and migration yourself:
+
+```ts
+// src/worker.ts
+export { BroadcasterDurableObject } from "@tknf/oven/cloudflare";
+
+export default {
+  fetch: app.fetch,
+} satisfies ExportedHandler<CloudflareBindings>;
+```
+
+```jsonc
+// wrangler.jsonc
+{
+  "durable_objects": {
+    "bindings": [{ "name": "BROADCASTER", "class_name": "BroadcasterDurableObject" }],
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["BroadcasterDurableObject"] }],
+}
+```
+
+```ts
+// src/lib/broadcaster.ts
+import { DurableObjectBroadcaster } from "@tknf/oven/cloudflare";
+
+export const broadcaster = new DurableObjectBroadcaster(env.BROADCASTER);
+```
+
 ### Wiring a Node deployment
 
 A Node deployment is a long-running process, typically behind a load balancer
