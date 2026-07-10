@@ -9,13 +9,21 @@
  * itself proof that `SQLiteAdminAccounts`/`SQLiteAdminGroups` satisfy
  * `AdminAccountsUsers`/`AdminAccountsGroups`; the other two dialects are
  * covered by the type-level contract test at the bottom.
+ *
+ * The "TOTP login flow" describe block covers the built-in second login step
+ * (`AdminPanel`'s `GET`/`POST "/login/totp"`), against the `adminTotpUsers`
+ * fixture table (`test/test_support/fixtures/schema.ts`) via a real
+ * `SQLiteAdminAccounts`. It runs under fake time (`vi.useFakeTimers`) so codes
+ * generated with `auth/totp.ts#generateTotpCode` land on a known RFC 6238
+ * step, matching `sqlite_admin_accounts.test.ts`'s `totp` describe block's
+ * convention.
  */
 import type { StandardSchemaV1 } from "@standard-schema/spec";
 import type { MySqlQueryResultHKT, PreparedQueryHKTBase } from "drizzle-orm/mysql-core";
 import type { PgQueryResultHKT } from "drizzle-orm/pg-core";
 import type { Env } from "hono";
 import { Hono } from "hono";
-import { afterEach, beforeEach, describe, expect, test } from "vite-plus/test";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vite-plus/test";
 import { AdminPanel } from "../../src/admin/admin_panel.js";
 import type { AdminPanelOptions } from "../../src/admin/admin_panel.js";
 import { resourcePermission } from "../../src/admin/admin_permissions.js";
@@ -42,10 +50,13 @@ import type {
 } from "../../src/admin/pg_admin_groups.js";
 import { SQLiteAdminAccounts } from "../../src/admin/sqlite_admin_accounts.js";
 import { SQLiteAdminGroups } from "../../src/admin/sqlite_admin_groups.js";
+import { generateTotpCode } from "../../src/auth/totp.js";
 import type { FieldDef } from "../../src/form/form.js";
 import { Form } from "../../src/form/form.js";
+import { InMemoryKeyValueStore } from "../../src/kv/in_memory_key_value_store.js";
 import { SQLiteModel } from "../../src/model/sqlite_model.js";
 import { Csrf } from "../../src/security/csrf.js";
+import { RateLimiter } from "../../src/security/rate_limiter.js";
 import { InMemorySessionStorage } from "../../src/session/in_memory_session_storage.js";
 import { SessionAccessor } from "../../src/session/session_accessor.js";
 import type { Session } from "../../src/session/session.js";
@@ -707,6 +718,313 @@ describe("AdminPanel accounts integration", () => {
 			expect(audit.recordCalls).toHaveLength(1);
 			expect(audit.recordCalls[0]?.action).toBe("resource.create");
 			expect(audit.recordCalls[0]?.actor).toBe("Wendy Writer");
+		});
+	});
+
+	describe("TOTP login flow", () => {
+		beforeEach(() => {
+			vi.useFakeTimers();
+			vi.setSystemTime(new Date("2026-07-06T00:00:00.000Z"));
+		});
+
+		afterEach(() => {
+			vi.useRealTimers();
+		});
+
+		/**
+		 * Builds an `AdminPanel` test app wired with session + CSRF + a REAL
+		 * SQLite accounts service over the TOTP-capable `adminTotpUsers` fixture
+		 * table (no groups/jobs/settings/audit/resources — this describe block
+		 * only exercises the login flow).
+		 */
+		const buildTotpApp = (overrides: { rateLimiter?: RateLimiter } = {}) => {
+			const storage = new InMemorySessionStorage();
+			const sessionAccessor = new SessionAccessor<SessionEnv, "session">("session", storage);
+			const csrf = new Csrf<SessionEnv>({ session: sessionAccessor.use });
+			const users = new SQLiteAdminAccounts(ctx.db, schema.adminTotpUsers);
+
+			const app = new Hono<SessionEnv>();
+			app.use(sessionAccessor.register);
+			app.route(
+				"/admin",
+				new AdminPanel<SessionEnv>({
+					session: sessionAccessor.use,
+					csrf,
+					accounts: { users },
+					rateLimiter: overrides.rateLimiter,
+				}),
+			);
+
+			return { app, users };
+		};
+
+		/** Same login-page-then-submit flow as `loginAs`, reused here for the totp-capable app/users pair. */
+		const loginAsTotp = async (app: Hono<SessionEnv>, username: string, password: string) => {
+			const pageRes = await app.request("/admin/login");
+			const pageCookie = pageRes.headers.get("Set-Cookie");
+			if (!pageCookie) throw new Error("Set-Cookie was not issued on GET /admin/login");
+			const token = extractCsrfToken(await pageRes.text());
+
+			const loginRes = await app.request("/admin/login", {
+				method: "POST",
+				headers: {
+					"content-type": "application/x-www-form-urlencoded",
+					Cookie: toCookieHeader(pageCookie),
+				},
+				body: new URLSearchParams({ username, password, csrf_token: token }).toString(),
+			});
+			const loginCookie = loginRes.headers.get("Set-Cookie");
+			const cookie = toCookieHeader(loginCookie ?? pageCookie);
+			return { loginRes, cookie, token };
+		};
+
+		/** Enrolls and confirms TOTP for `userId`, returning the confirmed secret. */
+		const enrollAndConfirm = async (
+			users: ReturnType<typeof buildTotpApp>["users"],
+			userId: string,
+		) => {
+			const enrollment = await users.beginTotpEnrollment(userId, { issuer: "Oven" });
+			if (!enrollment) throw new Error("expected an enrollment");
+			const code = await generateTotpCode({ secret: enrollment.secret, timestampMs: Date.now() });
+			await users.confirmTotpEnrollment(userId, code);
+			return enrollment.secret;
+		};
+
+		const submitTotpCode = (app: Hono<SessionEnv>, cookie: string, token: string, code: string) =>
+			app.request("/admin/login/totp", {
+				method: "POST",
+				headers: { Cookie: cookie, "content-type": "application/x-www-form-urlencoded" },
+				body: new URLSearchParams({ code, csrf_token: token }).toString(),
+			});
+
+		test("a non-enrolled user logs in directly with no totp step", async () => {
+			const { app, users } = buildTotpApp();
+			await users.createUser({ username: "alice", password: "password-1" });
+
+			const { loginRes, cookie } = await loginAsTotp(app, "alice", "password-1");
+
+			expect(loginRes.status).toBe(303);
+			expect(loginRes.headers.get("location")).toBe("/admin");
+			expect((await app.request("/admin", { headers: { Cookie: cookie } })).status).toBe(200);
+		});
+
+		test("an enrolled user's password step redirects to /login/totp, and the identity is not set yet", async () => {
+			const { app, users } = buildTotpApp();
+			const created = await users.createUser({ username: "alice", password: "password-1" });
+			await enrollAndConfirm(users, created.id);
+
+			const { loginRes, cookie } = await loginAsTotp(app, "alice", "password-1");
+
+			expect(loginRes.status).toBe(303);
+			expect(loginRes.headers.get("location")).toBe("/admin/login/totp");
+			/** A protected page still redirects to `/login` — the identity was never set. */
+			const dashboardRes = await app.request("/admin", { headers: { Cookie: cookie } });
+			expect(dashboardRes.status).toBe(302);
+			expect(dashboardRes.headers.get("location")).toBe("/admin/login?next=%2Fadmin");
+		});
+
+		test("GET /admin/login/totp renders the code-entry screen", async () => {
+			const { app, users } = buildTotpApp();
+			const created = await users.createUser({ username: "alice", password: "password-1" });
+			await enrollAndConfirm(users, created.id);
+			const { cookie } = await loginAsTotp(app, "alice", "password-1");
+
+			const res = await app.request("/admin/login/totp", { headers: { Cookie: cookie } });
+			const body = await res.text();
+
+			expect(res.status).toBe(200);
+			expect(body).toContain('action="/admin/login/totp"');
+			expect(body).toContain('name="code"');
+		});
+
+		test("GET /admin/login/totp redirects to /login when there is no pending state", async () => {
+			const { app } = buildTotpApp();
+
+			const res = await app.request("/admin/login/totp");
+
+			expect(res.status).toBe(303);
+			expect(res.headers.get("location")).toBe("/admin/login");
+		});
+
+		test("POST /admin/login/totp without a CSRF token returns 403, the same as /login", async () => {
+			const { app, users } = buildTotpApp();
+			const created = await users.createUser({ username: "alice", password: "password-1" });
+			const secret = await enrollAndConfirm(users, created.id);
+			const { cookie } = await loginAsTotp(app, "alice", "password-1");
+			const code = await generateTotpCode({ secret, timestampMs: Date.now() });
+
+			const res = await app.request("/admin/login/totp", {
+				method: "POST",
+				headers: { Cookie: cookie, "content-type": "application/x-www-form-urlencoded" },
+				body: new URLSearchParams({ code }).toString(),
+			});
+
+			expect(res.status).toBe(403);
+		});
+
+		test("a wrong code is rejected with 401 and the identity stays unset", async () => {
+			const { app, users } = buildTotpApp();
+			const created = await users.createUser({ username: "alice", password: "password-1" });
+			const secret = await enrollAndConfirm(users, created.id);
+			const { cookie, token } = await loginAsTotp(app, "alice", "password-1");
+			const correctCode = await generateTotpCode({ secret, timestampMs: Date.now() });
+			const wrongCode = correctCode === "000000" ? "111111" : "000000";
+
+			const res = await submitTotpCode(app, cookie, token, wrongCode);
+			const body = await res.text();
+
+			expect(res.status).toBe(401);
+			expect(body).toContain("Invalid authentication code.");
+			expect((await app.request("/admin", { headers: { Cookie: cookie } })).status).toBe(302);
+		});
+
+		test("the correct code completes login, sets the identity, and redirects to next", async () => {
+			const { app, users } = buildTotpApp();
+			const created = await users.createUser({ username: "alice", password: "password-1" });
+			const secret = await enrollAndConfirm(users, created.id);
+			/** Advances past the confirm-time step so this code's step has not already been consumed. */
+			vi.setSystemTime(Date.now() + 30_000);
+			const code = await generateTotpCode({ secret, timestampMs: Date.now() });
+			const { cookie, token } = await loginAsTotp(app, "alice", "password-1");
+
+			const res = await submitTotpCode(app, cookie, token, code);
+
+			expect(res.status).toBe(303);
+			expect(res.headers.get("location")).toBe("/admin");
+			/**
+			 * A successful TOTP step regenerates the session id (session-fixation
+			 * defense, same as the password step), so the dashboard request must
+			 * carry the NEW cookie from this response rather than the one from
+			 * `loginAsTotp`'s password step.
+			 */
+			const postTotpCookie = toCookieHeader(res.headers.get("Set-Cookie") ?? cookie);
+			expect((await app.request("/admin", { headers: { Cookie: postTotpCookie } })).status).toBe(
+				200,
+			);
+		});
+
+		test("a replayed code is rejected even against a fresh pending state for the same user", async () => {
+			const { app, users } = buildTotpApp();
+			const created = await users.createUser({ username: "alice", password: "password-1" });
+			const secret = await enrollAndConfirm(users, created.id);
+			vi.setSystemTime(Date.now() + 30_000);
+			const code = await generateTotpCode({ secret, timestampMs: Date.now() });
+
+			const first = await loginAsTotp(app, "alice", "password-1");
+			expect((await submitTotpCode(app, first.cookie, first.token, code)).status).toBe(303);
+
+			/**
+			 * A completely separate session (fresh cookie jar) reaches its own
+			 * pending state for the same user, but the replay guard is keyed by
+			 * user id, not by session — the same RFC 6238 step is still rejected.
+			 */
+			const second = await loginAsTotp(app, "alice", "password-1");
+			const replayRes = await submitTotpCode(app, second.cookie, second.token, code);
+
+			expect(replayRes.status).toBe(401);
+		});
+
+		test("GET /admin/login/totp redirects to /login once the pending state has expired", async () => {
+			const { app, users } = buildTotpApp();
+			const created = await users.createUser({ username: "alice", password: "password-1" });
+			await enrollAndConfirm(users, created.id);
+			const { cookie } = await loginAsTotp(app, "alice", "password-1");
+
+			/** `TOTP_PENDING_TTL_MS` in `admin_panel.tsx` is 5 minutes. */
+			vi.setSystemTime(Date.now() + 5 * 60 * 1000 + 1000);
+
+			const res = await app.request("/admin/login/totp", { headers: { Cookie: cookie } });
+
+			expect(res.status).toBe(303);
+			expect(res.headers.get("location")).toBe("/admin/login");
+		});
+
+		test("POST /admin/login/totp redirects to /login when the pending user was deactivated mid-flow", async () => {
+			const { app, users } = buildTotpApp();
+			const created = await users.createUser({ username: "alice", password: "password-1" });
+			const secret = await enrollAndConfirm(users, created.id);
+			const { cookie, token } = await loginAsTotp(app, "alice", "password-1");
+			await users.updateUser(created.id, { isActive: false });
+			const code = await generateTotpCode({ secret, timestampMs: Date.now() });
+
+			const res = await submitTotpCode(app, cookie, token, code);
+
+			expect(res.status).toBe(303);
+			expect(res.headers.get("location")).toBe("/admin/login");
+		});
+
+		test("POST /admin/login/totp redirects to /login when TOTP was disabled mid-flow", async () => {
+			const { app, users } = buildTotpApp();
+			const created = await users.createUser({ username: "alice", password: "password-1" });
+			const secret = await enrollAndConfirm(users, created.id);
+			const { cookie, token } = await loginAsTotp(app, "alice", "password-1");
+			await users.disableTotp(created.id);
+			const code = await generateTotpCode({ secret, timestampMs: Date.now() });
+
+			const res = await submitTotpCode(app, cookie, token, code);
+
+			expect(res.status).toBe(303);
+			expect(res.headers.get("location")).toBe("/admin/login");
+		});
+
+		describe("rate limiting", () => {
+			test("an attempt within the limit is checked normally against verifyTotp", async () => {
+				const rateLimiter = new RateLimiter(new InMemoryKeyValueStore());
+				const { app, users } = buildTotpApp({ rateLimiter });
+				const created = await users.createUser({ username: "alice", password: "password-1" });
+				const secret = await enrollAndConfirm(users, created.id);
+				vi.setSystemTime(Date.now() + 30_000);
+				const code = await generateTotpCode({ secret, timestampMs: Date.now() });
+				const { cookie, token } = await loginAsTotp(app, "alice", "password-1");
+
+				const res = await submitTotpCode(app, cookie, token, code);
+
+				expect(res.status).toBe(303);
+			});
+
+			test("an attempt past the limit is rejected with 429 before verifyTotp would even run", async () => {
+				const rateLimiter = new RateLimiter(new InMemoryKeyValueStore());
+				const { app, users } = buildTotpApp({ rateLimiter });
+				const created = await users.createUser({ username: "alice", password: "password-1" });
+				const secret = await enrollAndConfirm(users, created.id);
+				const { cookie, token } = await loginAsTotp(app, "alice", "password-1");
+				const correctCode = await generateTotpCode({ secret, timestampMs: Date.now() });
+				const wrongCode = correctCode === "000000" ? "111111" : "000000";
+
+				// The built-in budget is 5 attempts per pending user id per window; the first 5
+				// go through to `verifyTotp` (and fail on the wrong code), the 6th is rejected up front.
+				for (let i = 0; i < 5; i++) {
+					const res = await submitTotpCode(app, cookie, token, wrongCode);
+					expect(res.status).toBe(401);
+				}
+				const res = await submitTotpCode(app, cookie, token, wrongCode);
+				const body = await res.text();
+
+				expect(res.status).toBe(429);
+				expect(body).toContain("Too many attempts. Try again later.");
+			});
+
+			test("a successful totp login resets the rate limit budget for that user", async () => {
+				const rateLimiter = new RateLimiter(new InMemoryKeyValueStore());
+				const { app, users } = buildTotpApp({ rateLimiter });
+				const created = await users.createUser({ username: "alice", password: "password-1" });
+				const secret = await enrollAndConfirm(users, created.id);
+				vi.setSystemTime(Date.now() + 30_000);
+				const code = await generateTotpCode({ secret, timestampMs: Date.now() });
+				const { cookie, token } = await loginAsTotp(app, "alice", "password-1");
+				const wrongCode = code === "000000" ? "111111" : "000000";
+
+				// Burn 4 of the 5-attempt budget with wrong codes, then succeed on the 5th attempt.
+				for (let i = 0; i < 4; i++) {
+					expect((await submitTotpCode(app, cookie, token, wrongCode)).status).toBe(401);
+				}
+				expect((await submitTotpCode(app, cookie, token, code)).status).toBe(303);
+
+				/** A fresh pending state for the same user is not immediately blocked — the budget was reset. */
+				const second = await loginAsTotp(app, "alice", "password-1");
+				const freshRes = await submitTotpCode(app, second.cookie, second.token, wrongCode);
+				expect(freshRes.status).toBe(401);
+			});
 		});
 	});
 

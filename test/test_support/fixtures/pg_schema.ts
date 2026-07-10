@@ -25,6 +25,7 @@ import { bigint, pgTable, text, uniqueIndex } from "drizzle-orm/pg-core";
 import {
 	pgAdminUserColumns,
 	pgAdminUserLockoutColumns,
+	pgAdminUserTotpColumns,
 	pgAdminUsersTable,
 } from "../../../src/admin/pg_admin_accounts.js";
 import { pgAdminGroupsTable, pgAdminUserGroupsTable } from "../../../src/admin/pg_admin_groups.js";
@@ -73,4 +74,20 @@ export const adminLockoutUsers = pgTable(
 		...pgAdminUserLockoutColumns(),
 	},
 	(t) => [uniqueIndex("admin_lockout_users_username_idx").on(t.username)],
+);
+
+/**
+ * TOTP-capable admin-user table verifying the documented TOTP extension
+ * recipe (spreading `pgAdminUserColumns()` and `pgAdminUserTotpColumns()`
+ * into an app-defined table) through the migration generation/application
+ * path. A Postgres-dialect counterpart to the SQLite `adminTotpUsers`
+ * fixture table.
+ */
+export const adminTotpUsers = pgTable(
+	"admin_totp_users",
+	{
+		...pgAdminUserColumns(),
+		...pgAdminUserTotpColumns(),
+	},
+	(t) => [uniqueIndex("admin_totp_users_username_idx").on(t.username)],
 );

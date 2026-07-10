@@ -484,6 +484,76 @@ works even when `lockout` itself wasn't passed to the constructor.
 in this guide, migrations are your app's own responsibility — generate them
 with your drizzle-kit setup after adding the columns.
 
+### Add TOTP two-factor authentication
+
+Opt-in RFC 6238 TOTP (the codes a phone authenticator app generates), built
+on the standalone primitives in [Authentication](./auth.md#common-tasks)
+(`generateTotpSecret`/`buildOtpauthUrl`/`verifyTotpCode`). Spread
+`sqliteAdminUserTotpColumns()` alongside `sqliteAdminUserColumns()` into the
+users table — there is no constructor option (unlike `lockout`); the columns
+alone are enough:
+
+```ts
+import { sqliteTable, uniqueIndex } from "drizzle-orm/sqlite-core";
+import {
+  SQLiteAdminAccounts,
+  sqliteAdminUserColumns,
+  sqliteAdminUserTotpColumns,
+} from "@tknf/oven/admin";
+
+export const adminUsers = sqliteTable(
+  "admin_users",
+  { ...sqliteAdminUserColumns(), ...sqliteAdminUserTotpColumns() },
+  (t) => [uniqueIndex("admin_users_username_idx").on(t.username)],
+);
+
+export const accounts = new SQLiteAdminAccounts(db, adminUsers);
+```
+
+**Enrollment** is a two-step confirm flow, same shape as email verification:
+`beginTotpEnrollment` generates a secret and returns it with a scannable
+`otpauthUrl` (render it as a QR code app-side — bring your own library, or
+show the secret for manual entry); the operator scans it, then submits a
+code from their app to `confirmTotpEnrollment`, which only then flips TOTP on:
+
+```ts
+const enrollment = await accounts.beginTotpEnrollment(user.id, {
+  issuer: "My App",
+  accountName: user.username, // optional — defaults to the user's username
+});
+// enrollment: { secret, otpauthUrl } | undefined (undefined only if user.id doesn't exist)
+// Render `enrollment.otpauthUrl` as a QR code, or show `enrollment.secret` for manual entry.
+
+const confirmed = await accounts.confirmTotpEnrollment(user.id, submittedCode);
+// true once the first code verifies; false for a wrong code or a missing pending secret.
+```
+
+Calling `beginTotpEnrollment` again before confirming simply replaces the
+pending secret (e.g. the operator's QR scan failed and they want a fresh
+code) — `totpEnabledAt` stays `null` until `confirmTotpEnrollment` succeeds.
+
+**The built-in login gets a second step automatically once TOTP is
+enrolled** — no extra `AdminPanel` option. It activates per-operator by
+shape: `accounts.users` exposing `verifyTotp` AND the authenticated row's
+`totpEnabledAt` being non-null. A non-enrolled operator logs in exactly as
+before (one step); an enrolled operator's password success redirects to
+`/login/totp` instead of setting the session identity, and only a correct
+code there completes login. See
+[Admin panel](./admin.md#wiring-built-in-loginlogout) for what the screen
+looks like; there is nothing to wire beyond passing `accounts` as usual
+(see [Let the panel enforce permissions](#let-the-panel-enforce-permissions)).
+
+**Disable TOTP** (e.g. from a superuser tool, or the operator's own account
+settings) clears all three columns back to `null`:
+
+```ts
+await accounts.disableTotp(user.id);
+```
+
+`pgAdminUserTotpColumns`/`mysqlAdminUserTotpColumns` and
+`PgAdminAccounts`/`MySqlAdminAccounts` follow the same shape (see
+[Use Postgres or MySQL](#use-postgres-or-mysql) above).
+
 ## Gotchas / Security notes
 
 - **Migrations are your app's responsibility.** The `*AdminUsersTable`
@@ -588,6 +658,39 @@ with your drizzle-kit setup after adding the columns.
   username. There are two ways out of a lock — it expires on its own after
   `lockDurationSeconds`, or a superuser (or your own tooling) calls
   `unlockUser` — there is no third path.
+- **`totpSecret` is stored as plain Base32 text — a DB compromise exposes
+  every enrolled operator's secret**, letting an attacker generate valid
+  codes for as long as it stays unrotated. This mirrors `passwordHash`'s own
+  exposure (though a password hash at least costs PBKDF2 work per guess; a
+  TOTP secret directly generates valid codes). If this is a concern for your
+  threat model, encrypt the column at the app layer (e.g. wrap
+  `beginTotpEnrollment`'s returned secret before storing it and decrypt
+  before verification) — the columns and service make no assumption about
+  the secret's encoding beyond "a Base32 string `auth/totp.ts` can decode".
+- **`verifyTotp`'s replay guard accepts at most one code per RFC 6238 time
+  step, per user — not one code per login.** Every successful verification
+  (both `confirmTotpEnrollment` and `verifyTotp`) advances `totpLastUsedStep`
+  to the step it matched; a later call, even from a different login attempt
+  or a different session, is rejected if its step is not strictly greater
+  than the stored one. This is enforced as a single atomic conditional
+  UPDATE (`... WHERE totp_enabled_at IS NOT NULL AND (totp_last_used_step IS
+  NULL OR totp_last_used_step < :step)`), not a separate read-then-write, so
+  a code cannot be replayed even under concurrent requests.
+- **The drift window (`verifyTotpCode`'s `driftSteps`, default 1) is a
+  clock-skew tolerance, not a security boundary** — see
+  [Authentication](./auth.md#gotchas--security-notes) for the trade-off of
+  widening it. The admin accounts services always use the default; there is
+  no option to change it short of calling `auth/totp.ts`'s primitives
+  yourself instead of `verifyTotp`.
+- **Pair TOTP with [rate-limiting the built-in login](#gotchas--security-notes)
+  below, the same way as account lockout.** `rateLimiter`, when wired,
+  protects the TOTP step too: `POST /login/totp` is checked against the same
+  budget and window (`` `admin-totp:${pendingUserId}` ``, distinct from the
+  password step's `` `admin-login:${username}` `` key so the two steps don't
+  share a counter) before `verifyTotp` runs, and a successful code resets it.
+  Without a rate limiter, `verifyTotp`'s replay guard still stops any single
+  code from being reused, but nothing stops an attacker from submitting many
+  DIFFERENT guesses in a row.
 - **With `accounts` injected, both deactivation and a password change end
   every outstanding session on its very next request** — no extra wiring
   needed. Deactivation works through the per-request re-validation

@@ -6,9 +6,9 @@
  * and `pg_migrations` (the same harness as `test/audit/pg_audit_log.test.ts`).
  * The column-extension-recipe tests stay SQLite-only (the extended
  * `adminOperators` fixture table exists only in the SQLite fixture schema). The
- * `lockout` describe block is a focused parity subset of the full SQLite lockout
- * matrix, against the `adminLockoutUsers` table also present in this dialect's
- * fixture schema.
+ * `lockout` and `totp` describe blocks are focused parity subsets of the full
+ * SQLite lockout/TOTP matrices, against the `adminLockoutUsers`/`adminTotpUsers`
+ * tables also present in this dialect's fixture schema.
  */
 import { PGlite } from "@electric-sql/pglite";
 import { eq } from "drizzle-orm";
@@ -22,6 +22,7 @@ import type {
 	PgAdminAccountsUpdateUserPatch,
 } from "../../src/admin/pg_admin_accounts.js";
 import { verifyPassword } from "../../src/auth/password.js";
+import { generateTotpCode } from "../../src/auth/totp.js";
 import * as schema from "../test_support/fixtures/pg_schema.js";
 
 const migrationsFolder = new URL("../test_support/fixtures/pg_migrations", import.meta.url)
@@ -624,6 +625,170 @@ describe("PgAdminAccounts", () => {
 			const persisted = await users.retrieve(created.id);
 			expect(persisted?.failedAttempts).toBe(2);
 			expect(persisted?.lockedUntil).toBeNull();
+		});
+	});
+
+	describe("totp", () => {
+		const totpAccounts = () => new PgAdminAccounts(ctx.db, schema.adminTotpUsers);
+
+		/** Enrolls and confirms TOTP for a fresh user, returning its id and the confirmed secret. */
+		const enrollAndConfirm = async (users: ReturnType<typeof totpAccounts>) => {
+			const created = await users.createUser({ username: "alice", password: "password-1" });
+			const enrollment = await users.beginTotpEnrollment(created.id, { issuer: "Oven" });
+			if (!enrollment) throw new Error("expected an enrollment");
+			const code = await generateTotpCode({ secret: enrollment.secret, timestampMs: Date.now() });
+			await users.confirmTotpEnrollment(created.id, code);
+			return { id: created.id, secret: enrollment.secret };
+		};
+
+		test("beginTotpEnrollment generates a pending secret that is not yet enabled", async () => {
+			const users = totpAccounts();
+			const created = await users.createUser({ username: "alice", password: "password-1" });
+
+			const enrollment = await users.beginTotpEnrollment(created.id, { issuer: "Oven" });
+
+			expect(enrollment?.secret).toMatch(/^[A-Z2-7]+$/);
+			const persisted = await users.retrieve(created.id);
+			expect(persisted?.totpSecret).toBe(enrollment?.secret);
+			expect(persisted?.totpEnabledAt).toBeNull();
+			expect(persisted?.totpLastUsedStep).toBeNull();
+		});
+
+		test("confirmTotpEnrollment rejects a wrong code and leaves the account unconfirmed", async () => {
+			const users = totpAccounts();
+			const created = await users.createUser({ username: "alice", password: "password-1" });
+			const enrollment = await users.beginTotpEnrollment(created.id, { issuer: "Oven" });
+			if (!enrollment) throw new Error("expected an enrollment");
+			const correctCode = await generateTotpCode({
+				secret: enrollment.secret,
+				timestampMs: Date.now(),
+			});
+			const wrongCode = correctCode === "000000" ? "111111" : "000000";
+
+			expect(await users.confirmTotpEnrollment(created.id, wrongCode)).toBe(false);
+			expect((await users.retrieve(created.id))?.totpEnabledAt).toBeNull();
+		});
+
+		test("confirmTotpEnrollment with the correct code enables TOTP and stores the matched step", async () => {
+			const users = totpAccounts();
+			const created = await users.createUser({ username: "alice", password: "password-1" });
+			const enrollment = await users.beginTotpEnrollment(created.id, { issuer: "Oven" });
+			if (!enrollment) throw new Error("expected an enrollment");
+			const code = await generateTotpCode({ secret: enrollment.secret, timestampMs: Date.now() });
+
+			expect(await users.confirmTotpEnrollment(created.id, code)).toBe(true);
+			const persisted = await users.retrieve(created.id);
+			expect(persisted?.totpEnabledAt).toBe(Date.now());
+			expect(persisted?.totpLastUsedStep).toBe(Math.floor(Date.now() / 1000 / 30));
+		});
+
+		test("verifyTotp accepts a fresh code", async () => {
+			const users = totpAccounts();
+			const { id, secret } = await enrollAndConfirm(users);
+			vi.setSystemTime(Date.now() + 30_000);
+			const code = await generateTotpCode({ secret, timestampMs: Date.now() });
+
+			expect(await users.verifyTotp(id, code)).toBe(true);
+		});
+
+		test("verifyTotp rejects a replay of the same code/step", async () => {
+			const users = totpAccounts();
+			const { id, secret } = await enrollAndConfirm(users);
+			vi.setSystemTime(Date.now() + 30_000);
+			const code = await generateTotpCode({ secret, timestampMs: Date.now() });
+			expect(await users.verifyTotp(id, code)).toBe(true);
+
+			expect(await users.verifyTotp(id, code)).toBe(false);
+		});
+
+		test("verifyTotp accepts the next step's code after the current step was used", async () => {
+			const users = totpAccounts();
+			const { id, secret } = await enrollAndConfirm(users);
+			vi.setSystemTime(Date.now() + 30_000);
+			const firstCode = await generateTotpCode({ secret, timestampMs: Date.now() });
+			expect(await users.verifyTotp(id, firstCode)).toBe(true);
+			vi.setSystemTime(Date.now() + 30_000);
+			const nextCode = await generateTotpCode({ secret, timestampMs: Date.now() });
+
+			expect(await users.verifyTotp(id, nextCode)).toBe(true);
+		});
+
+		test("verifyTotp rejects a drift-window previous-step code once the current step was already used", async () => {
+			const users = totpAccounts();
+			const { id, secret } = await enrollAndConfirm(users);
+			vi.setSystemTime(Date.now() + 30_000);
+			const currentCode = await generateTotpCode({ secret, timestampMs: Date.now() });
+			expect(await users.verifyTotp(id, currentCode)).toBe(true);
+			const previousCode = await generateTotpCode({ secret, timestampMs: Date.now() - 30_000 });
+
+			expect(await users.verifyTotp(id, previousCode)).toBe(false);
+		});
+
+		test("disableTotp clears TOTP state and a subsequent verifyTotp fails", async () => {
+			const users = totpAccounts();
+			const { id, secret } = await enrollAndConfirm(users);
+			vi.setSystemTime(Date.now() + 30_000);
+			const code = await generateTotpCode({ secret, timestampMs: Date.now() });
+
+			await users.disableTotp(id);
+
+			const persisted = await users.retrieve(id);
+			expect(persisted?.totpSecret).toBeNull();
+			expect(persisted?.totpEnabledAt).toBeNull();
+			expect(persisted?.totpLastUsedStep).toBeNull();
+			expect(await users.verifyTotp(id, code)).toBe(false);
+		});
+
+		test("begin/confirm/verify are all safe no-ops on a missing user", async () => {
+			const users = totpAccounts();
+
+			expect(await users.beginTotpEnrollment("missing", { issuer: "Oven" })).toBeUndefined();
+			expect(await users.confirmTotpEnrollment("missing", "123456")).toBe(false);
+			expect(await users.verifyTotp("missing", "123456")).toBe(false);
+			await expect(users.disableTotp("missing")).resolves.toBeUndefined();
+		});
+
+		test("every method throws when the table has no totp columns", async () => {
+			const users = accounts();
+
+			await expect(users.beginTotpEnrollment("whatever", { issuer: "Oven" })).rejects.toThrow(
+				"spread pgAdminUserTotpColumns()",
+			);
+			await expect(users.confirmTotpEnrollment("whatever", "123456")).rejects.toThrow(
+				"spread pgAdminUserTotpColumns()",
+			);
+			await expect(users.verifyTotp("whatever", "123456")).rejects.toThrow(
+				"spread pgAdminUserTotpColumns()",
+			);
+			await expect(users.disableTotp("whatever")).rejects.toThrow(
+				"spread pgAdminUserTotpColumns()",
+			);
+		});
+
+		test("createUser and updateUser strip totpSecret/totpEnabledAt/totpLastUsedStep smuggled through extra input", async () => {
+			const users = totpAccounts();
+
+			const created = await users.createUser({
+				username: "alice",
+				password: "password-1",
+				totpSecret: "SMUGGLED",
+				totpEnabledAt: Date.now(),
+				totpLastUsedStep: 999,
+			} as PgAdminAccountsCreateUserInput<typeof schema.adminTotpUsers>);
+			expect(created.totpSecret).toBeNull();
+			expect(created.totpEnabledAt).toBeNull();
+			expect(created.totpLastUsedStep).toBeNull();
+
+			const updated = await users.updateUser(created.id, {
+				label: "Ops",
+				totpSecret: "SMUGGLED",
+				totpEnabledAt: Date.now(),
+				totpLastUsedStep: 999,
+			} as PgAdminAccountsUpdateUserPatch<typeof schema.adminTotpUsers>);
+			expect(updated?.label).toBe("Ops");
+			expect(updated?.totpSecret).toBeNull();
+			expect(updated?.totpEnabledAt).toBeNull();
+			expect(updated?.totpLastUsedStep).toBeNull();
 		});
 	});
 });

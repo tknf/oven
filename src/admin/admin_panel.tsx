@@ -98,6 +98,7 @@ import type {
 } from "./admin_resource_list_view.js";
 import { AdminResourceShowView } from "./admin_resource_show_view.js";
 import { AdminSettingsView } from "./admin_settings_view.js";
+import { AdminTotpView } from "./admin_totp_view.js";
 import type {
 	AdminAccountsGroupRow,
 	AdminAccountsGroups,
@@ -142,6 +143,47 @@ const ADMIN_IDENTITY_SESSION_KEY = "__oven_admin_identity__";
  * "Password changes end existing sessions" gotcha).
  */
 type AdminSessionIdentity = AdminIdentity & { passwordStamp?: string };
+
+/**
+ * Reserved session key holding a pending TOTP second-login-step state (see
+ * `AdminTotpPending`), set by `POST /login` when the authenticated user has
+ * TOTP enrolled (`totpSecondStepRequired`) and read/cleared by `GET`/`POST
+ * "/login/totp"`. Same reservation convention as `ADMIN_IDENTITY_SESSION_KEY`.
+ * Deliberately a SEPARATE session key from `ADMIN_IDENTITY_SESSION_KEY`: the
+ * two are mutually exclusive states (a request either has a logged-in
+ * identity or a pending TOTP step, never both) and keeping them apart means
+ * the accounts gate in `middleware()` never has to reason about a
+ * partially-authenticated identity.
+ */
+const ADMIN_TOTP_PENDING_SESSION_KEY = "__oven_admin_totp_pending__";
+
+/**
+ * How long a TOTP pending state stays valid after `POST /login`'s password
+ * check succeeds, in milliseconds. An operator who does not complete the
+ * second step within this window has to log in again from scratch (`GET
+ * /login/totp` redirects back to `/login` once `expiresAt` has passed).
+ */
+const TOTP_PENDING_TTL_MS = 5 * 60 * 1000;
+
+/**
+ * The session-stored shape of a pending TOTP second-login-step, set by `POST
+ * /login` once the password check succeeds for a user with TOTP enrolled.
+ * `next` is the already-sanitized redirect target carried over from the
+ * password step (see `sanitizeNext`), re-applied again at the end of `POST
+ * /login/totp` as defense in depth.
+ */
+type AdminTotpPending = { id: string; next: string; expiresAt: number };
+
+/** Whether `value` has the shape of an `AdminTotpPending`, as stored by `AdminPanel#setTotpPending`. */
+const isAdminTotpPending = (value: unknown): value is AdminTotpPending =>
+	typeof value === "object" &&
+	value !== null &&
+	"id" in value &&
+	typeof value.id === "string" &&
+	"next" in value &&
+	typeof value.next === "string" &&
+	"expiresAt" in value &&
+	typeof value.expiresAt === "number";
 
 /** Length, in base64url characters, of a `passwordStamp` (see `derivePasswordStamp`). */
 const PASSWORD_STAMP_LENGTH = 16;
@@ -1256,10 +1298,20 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 		];
 	}
 
-	/** Whether `c` targets this panel's built-in `/login` or `/logout` route (see `middleware()`'s auth gate). */
+	/**
+	 * Whether `c` targets this panel's built-in `/login`, `/login/totp`, or
+	 * `/logout` route (see `middleware()`'s auth gate). `/login/totp` is
+	 * exempt for the same reason as `/login` itself: a request mid-way through
+	 * the second login step has no logged-in identity yet, so the auth gate
+	 * must not redirect it away from the very screen that completes login.
+	 */
 	private isAuthRoute(c: Context<E>): boolean {
 		const basePath = this.resolveBasePath();
-		return c.req.path === `${basePath}/login` || c.req.path === `${basePath}/logout`;
+		return (
+			c.req.path === `${basePath}/login` ||
+			c.req.path === `${basePath}/login/totp` ||
+			c.req.path === `${basePath}/logout`
+		);
 	}
 
 	/**
@@ -1393,6 +1445,46 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 	/** Removes the logged-in identity from the session, if `panelOptions.session` is injected. */
 	private clearIdentity(c: Context<E>): void {
 		this.panelOptions?.session?.(c).unset(ADMIN_IDENTITY_SESSION_KEY);
+	}
+
+	/**
+	 * Reads the pending TOTP second-login-step state from the session, if
+	 * `panelOptions.session` is injected and holds a well-formed one. `null`
+	 * otherwise (no pending step, no session injected, or a malformed stored
+	 * value) — same fail-closed convention as `currentIdentity`.
+	 */
+	private currentTotpPending(c: Context<E>): AdminTotpPending | null {
+		const session = this.panelOptions?.session;
+		if (!session) return null;
+
+		const value = session(c).get(ADMIN_TOTP_PENDING_SESSION_KEY);
+		return isAdminTotpPending(value) ? value : null;
+	}
+
+	/** Stores `pending` in the session as the in-progress TOTP second-login-step state, if `panelOptions.session` is injected. */
+	private setTotpPending(c: Context<E>, pending: AdminTotpPending): void {
+		this.panelOptions?.session?.(c).set(ADMIN_TOTP_PENDING_SESSION_KEY, pending);
+	}
+
+	/** Removes the pending TOTP second-login-step state from the session, if `panelOptions.session` is injected. */
+	private clearTotpPending(c: Context<E>): void {
+		this.panelOptions?.session?.(c).unset(ADMIN_TOTP_PENDING_SESSION_KEY);
+	}
+
+	/**
+	 * Whether `row` (the just-authenticated operator) must complete the
+	 * built-in TOTP second login step before `AdminPanel#setIdentity` is
+	 * called: `users.verifyTotp` must be present on the injected accounts
+	 * service AND `row` must carry a non-null `totpEnabledAt` (read
+	 * structurally — `AdminAccountsUserRow` does not declare this column, but
+	 * a service backed by a table extended with `sqliteAdminUserTotpColumns()`
+	 * etc. returns a superset row that may have it; see `AdminAccountsUsers#verifyTotp`'s
+	 * JSDoc in `admin_types.ts`).
+	 */
+	private totpSecondStepRequired(users: AdminAccountsUsers, row: AdminAccountsUserRow): boolean {
+		if (typeof users.verifyTotp !== "function") return false;
+		const totpRow = row as AdminAccountsUserRow & { totpEnabledAt?: number | null };
+		return totpRow.totpEnabledAt !== undefined && totpRow.totpEnabledAt !== null;
 	}
 
 	/**
@@ -1844,13 +1936,25 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 	}
 
 	/**
-	 * Registers `GET`/`POST "/login"` and `POST "/logout"`, wired for an explicit
-	 * `auth` or one derived from `accounts` (`effectiveAuth`). The auth gate in
-	 * `middleware()` exempts these two paths from itself, the accounts gate, and
-	 * `authorize` (see `isAuthRoute`), so they are reachable both logged-out (to
-	 * log in) and logged-in-but-unauthorized (to log out). `POST "/login"` also
-	 * applies the `rateLimiter` gate (`AdminPanelOptions.rateLimiter`), when
-	 * injected, before `auth.authenticate` runs.
+	 * Registers `GET`/`POST "/login"`, `GET`/`POST "/login/totp"`, and `POST
+	 * "/logout"`, wired for an explicit `auth` or one derived from `accounts`
+	 * (`effectiveAuth`). The auth gate in `middleware()` exempts all four paths
+	 * from itself, the accounts gate, and `authorize` (see `isAuthRoute`), so
+	 * they are reachable both logged-out (to log in) and
+	 * logged-in-but-unauthorized (to log out). `POST "/login"` also applies the
+	 * `rateLimiter` gate (`AdminPanelOptions.rateLimiter`), when injected,
+	 * before `auth.authenticate` runs.
+	 *
+	 * **TOTP second step**: when `accounts` is injected and
+	 * `totpSecondStepRequired` says the just-authenticated row must complete
+	 * it, `POST /login` stops short of `setIdentity` — it stores a pending
+	 * state (`setTotpPending`) and redirects to `/login/totp` instead. `GET
+	 * /login/totp` renders the code-entry screen (or bounces back to `/login`
+	 * if there is no live pending state); `POST /login/totp` re-validates the
+	 * pending state and the row, applies the same `rateLimiter` gate keyed by
+	 * the pending user id, verifies the submitted code via
+	 * `accounts.users.verifyTotp`, and only then does what `POST /login`'s
+	 * success path does (`setIdentity` + redirect to `next`).
 	 */
 	private wireAuth(): void {
 		this.get("/login", async (c) => {
@@ -1958,9 +2062,24 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 			/**
 			 * Reissues the session id on a successful login (session-fixation defense:
 			 * `Session#regenerate`), keeping the session's existing data (including any
-			 * CSRF secret already issued to this browser) but with a fresh id.
+			 * CSRF secret already issued to this browser) but with a fresh id. Done
+			 * before branching into the TOTP second step too — a pending state is
+			 * just as much "a successful password check" as a completed login is.
 			 */
 			options.session?.(c).regenerate();
+
+			/**
+			 * `row` is guaranteed defined and active here whenever `accounts` is
+			 * injected (the guard above already rejected any other case). When it
+			 * additionally requires the TOTP second step, `setIdentity` is skipped
+			 * entirely in favor of a pending state redirecting to `/login/totp` —
+			 * see `wireAuth`'s module JSDoc.
+			 */
+			if (options.accounts && row && this.totpSecondStepRequired(options.accounts.users, row)) {
+				this.setTotpPending(c, { id: row.id, next, expiresAt: Date.now() + TOTP_PENDING_TTL_MS });
+				return c.redirect(`${basePath}/login/totp`, 303);
+			}
+
 			/**
 			 * `row` is guaranteed defined and active here whenever `accounts` is
 			 * injected (the guard above already rejected any other case), so this is
@@ -1975,6 +2094,125 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 				: identity;
 			this.setIdentity(c, sessionIdentity);
 			return c.redirect(next, 303);
+		});
+
+		this.get("/login/totp", async (c) => {
+			const options = this.panelOptions;
+			if (!options || !this.effectiveAuth()) return c.notFound();
+
+			const basePath = this.resolveBasePath();
+			const pending = this.currentTotpPending(c);
+			if (!pending || pending.expiresAt <= Date.now()) {
+				this.clearTotpPending(c);
+				return c.redirect(`${basePath}/login`, 303);
+			}
+
+			const t = bindAdminT(c);
+			return c.html(
+				<AdminTotpView
+					brand={options.brand ?? "Admin"}
+					basePath={basePath}
+					csrfToken={this.csrfToken(c)}
+					error={false}
+					lang={c.get("language") ?? "en"}
+					t={t}
+				/>,
+			);
+		});
+
+		this.post("/login/totp", async (c) => {
+			const options = this.panelOptions;
+			if (!options || !this.effectiveAuth()) return c.notFound();
+
+			const basePath = this.resolveBasePath();
+			const pending = this.currentTotpPending(c);
+			if (!pending || pending.expiresAt <= Date.now()) {
+				this.clearTotpPending(c);
+				return c.redirect(`${basePath}/login`, 303);
+			}
+
+			const body = await c.req.parseBody();
+			const code = typeof body.code === "string" ? body.code : "";
+
+			/** Same rate-limit budget and window as the password step, keyed by the pending user id instead of the submitted username. */
+			const rateLimiter = options.rateLimiter;
+			const rateLimitKey = `admin-totp:${pending.id}`;
+			if (
+				rateLimiter &&
+				!(await rateLimiter.consume(
+					rateLimitKey,
+					LOGIN_RATE_LIMIT,
+					LOGIN_RATE_LIMIT_WINDOW_SECONDS,
+				))
+			) {
+				const t = bindAdminT(c);
+				return c.html(
+					<AdminTotpView
+						brand={options.brand ?? "Admin"}
+						basePath={basePath}
+						csrfToken={this.csrfToken(c)}
+						error="tooManyAttempts"
+						lang={c.get("language") ?? "en"}
+						t={t}
+					/>,
+					429,
+				);
+			}
+
+			/**
+			 * Re-validated the same way the accounts gate in `middleware()`
+			 * re-validates a logged-in identity on every request: the row must
+			 * still exist, be active, and still require the TOTP step (e.g. an
+			 * operator who disabled TOTP mid-flow, in another tab, must not be able
+			 * to finish this stale pending state). Any failure here clears the
+			 * pending state and sends the browser back to start over at `/login`.
+			 */
+			const row = options.accounts ? await options.accounts.users.retrieve(pending.id) : undefined;
+			if (
+				!options.accounts ||
+				row === undefined ||
+				!row.isActive ||
+				!this.totpSecondStepRequired(options.accounts.users, row)
+			) {
+				this.clearTotpPending(c);
+				return c.redirect(`${basePath}/login`, 303);
+			}
+
+			/**
+			 * `totpSecondStepRequired` already confirmed `verifyTotp` is present on
+			 * `options.accounts.users`, but its optional-method type still requires
+			 * a runtime check here for TypeScript to call it without `!`.
+			 */
+			const verified =
+				typeof options.accounts.users.verifyTotp === "function" &&
+				(await options.accounts.users.verifyTotp(pending.id, code));
+			if (!verified) {
+				const t = bindAdminT(c);
+				return c.html(
+					<AdminTotpView
+						brand={options.brand ?? "Admin"}
+						basePath={basePath}
+						csrfToken={this.csrfToken(c)}
+						error="invalid"
+						lang={c.get("language") ?? "en"}
+						t={t}
+					/>,
+					401,
+				);
+			}
+
+			if (rateLimiter) await rateLimiter.reset(rateLimitKey);
+			this.clearTotpPending(c);
+			/** Session-fixation defense, same as `POST /login`'s successful path. */
+			options.session?.(c).regenerate();
+			const sessionIdentity: AdminSessionIdentity = {
+				id: row.id,
+				label: row.label ?? row.username,
+				passwordStamp: await derivePasswordStamp(row.passwordHash),
+			};
+			this.setIdentity(c, sessionIdentity);
+			/** Re-sanitized as defense in depth (see `AdminTotpPending`'s JSDoc). */
+			return c.redirect(this.sanitizeNext(pending.next), 303);
 		});
 
 		this.post("/logout", async (c) => {

@@ -10,3 +10,4 @@ export * from "./password.js";
 export * from "./password_reset.js";
 export * from "./policy.js";
 export * from "./remember_token.js";
+export * from "./totp.js";

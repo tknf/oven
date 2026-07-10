@@ -177,6 +177,19 @@ export type AdminAccountsUsers = {
 	}): Promise<AdminAccountsUserRow | null>;
 	retrieve(userId: string): Promise<AdminAccountsUserRow | undefined>;
 	userPermissions(userId: string): Promise<string[]>;
+	/**
+	 * Verifies a TOTP two-factor code for `userId` (see `SQLiteAdminAccounts#verifyTotp`
+	 * and its Postgres/MySQL counterparts). Entirely optional: the built-in
+	 * login flow's second step (`AdminPanel`'s `POST /login`/`GET`/`POST
+	 * "/login/totp"`) activates only when BOTH this method is present on the
+	 * injected service AND the authenticated user's row has a non-null
+	 * `totpEnabledAt` (read structurally — see `AdminAccountsUserRow`'s JSDoc
+	 * on returning a superset shape). A service backed by a table without the
+	 * opt-in TOTP columns simply never has `totpEnabledAt` truthy on any row,
+	 * so the second step never activates for it even when this method is
+	 * present but would throw if called.
+	 */
+	verifyTotp?(userId: string, code: string): Promise<boolean>;
 	createUser(input: {
 		username: string;
 		password: string;

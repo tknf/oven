@@ -37,12 +37,27 @@
  * `lastLoginAt`/`createdAt`/`updatedAt`; `failedAttempts` uses plain `int()`
  * since a failed-attempt count never approaches 32-bit range.
  *
+ * **Opt-in TOTP two-factor authentication** works the same way as the SQLite
+ * version (see its module JSDoc): spread `mysqlAdminUserTotpColumns()` into
+ * the table; there is no constructor option. `totpEnabledAt` uses
+ * `bigint(..., { mode: "number" })` for the same range reason as
+ * `lockedUntil`; `totpLastUsedStep` uses plain `int()`, same reasoning as
+ * `failedAttempts` (an RFC 6238 30-second step counter stays well within
+ * 32-bit range for centuries). `verifyTotp`'s atomic replay-guard UPDATE
+ * needs its affected-row count, obtained the same way as
+ * `MySqlAdminAccounts#unlockUser`'s sibling writes would if they needed
+ * it — reading `affectedRows` off mysql2's `[ResultSetHeader, FieldPacket[]]`
+ * result shape via a local `rowsAffectedFrom` helper (same technique as
+ * `MySqlJobsConsole#rowsAffectedFrom`; see `mysql_model.ts`'s module JSDoc,
+ * "Getting the affected-row count for updateWhere"). Only the mysql2 driver
+ * shape is supported; a non-mysql2 driver (e.g. PlanetScale) is not covered.
+ *
  * The type of `db` is `MySqlDatabase<TQueryResult, TPreparedQueryHKT, TSchema>`
  * (see the module JSDoc of `mysql_model.ts` for why both are promoted to class
  * type parameters), and `TSchema` is generic for the same reason as
  * `SQLiteAdminAccounts`.
  */
-import { and, asc, count as countRows, eq, or, sql } from "drizzle-orm";
+import { and, asc, count as countRows, eq, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import {
 	bigint,
@@ -62,10 +77,23 @@ import type {
 	TableConfig,
 } from "drizzle-orm/mysql-core";
 import { hashPassword, verifyPassword } from "../auth/password.js";
+import { buildOtpauthUrl, generateTotpSecret, verifyTotpCode } from "../auth/totp.js";
 import { SnowflakeIdGenerator } from "../support/id_generator.js";
 import type { IdGenerator } from "../support/id_generator.js";
 import { LastActiveSuperuserError } from "./admin_accounts_errors.js";
 import { parseStoredPermissions } from "./admin_permissions.js";
+
+/** Shape of a mysql2 driver `update`/`delete` result (`[ResultSetHeader, FieldPacket[]]`). Same as `MySqlJobsConsole`'s local copy — a private helper, duplicated rather than shared (see the `sleep` duplication precedent in `sqlite_database_job_worker.ts`). */
+type MySql2StyleResult = readonly [{ affectedRows: number }, ...unknown[]];
+
+/** Whether `value` has the mysql2 result shape read by `MySqlAdminAccounts#rowsAffectedFrom`. */
+const isMySql2StyleResult = (value: unknown): value is MySql2StyleResult =>
+	Array.isArray(value) &&
+	value.length > 0 &&
+	typeof value[0] === "object" &&
+	value[0] !== null &&
+	"affectedRows" in value[0] &&
+	typeof value[0].affectedRows === "number";
 
 /** Default lower bound on password length (overridable via `MySqlAdminAccountsOptions#minPasswordLength`). */
 const DEFAULT_MIN_PASSWORD_LENGTH = 8;
@@ -143,7 +171,10 @@ export type MySqlAdminUserRecord<TUsers extends MySqlAdminUserRecordTable> = TUs
  * through the extension mechanism. `failedAttempts`/`lockedUntil` are reserved
  * here even though they are optional columns (see
  * `mysqlAdminUserLockoutColumns`): when a table has them, only `authenticate`
- * and `unlockUser` may write them.
+ * and `unlockUser` may write them. `totpSecret`/`totpEnabledAt`/
+ * `totpLastUsedStep` are the same kind of optional reservation for
+ * `mysqlAdminUserTotpColumns`: when present, only `beginTotpEnrollment`/
+ * `confirmTotpEnrollment`/`verifyTotp`/`disableTotp` may write them.
  */
 type ReservedAdminUserColumnKey =
 	| "id"
@@ -157,7 +188,10 @@ type ReservedAdminUserColumnKey =
 	| "createdAt"
 	| "updatedAt"
 	| "failedAttempts"
-	| "lockedUntil";
+	| "lockedUntil"
+	| "totpSecret"
+	| "totpEnabledAt"
+	| "totpLastUsedStep";
 
 /** Runtime counterpart of `ReservedAdminUserColumnKey`, used to strip reserved keys from extra-column input. */
 const RESERVED_ADMIN_USER_COLUMN_KEYS: ReadonlySet<string> = new Set([
@@ -173,6 +207,9 @@ const RESERVED_ADMIN_USER_COLUMN_KEYS: ReadonlySet<string> = new Set([
 	"updatedAt",
 	"failedAttempts",
 	"lockedUntil",
+	"totpSecret",
+	"totpEnabledAt",
+	"totpLastUsedStep",
 ] satisfies ReservedAdminUserColumnKey[]);
 
 /**
@@ -238,6 +275,41 @@ const hasLockoutColumns = <TUsers extends MySqlAdminUserRecordTable>(
 type AdminUserLockoutBaseRow = {
 	failedAttempts: number;
 	lockedUntil: number | null;
+};
+
+/**
+ * The structural contract for a table that additionally carries the opt-in
+ * TOTP columns (see `mysqlAdminUserTotpColumns`), following the same
+ * per-field `AnyMySqlColumn<{...}>` idiom as `MySqlAdminUserLockoutRecordTable`.
+ * Checked at runtime via `hasTotpColumns` (called once at construction,
+ * independent of any constructor option — TOTP has none, unlike lockout).
+ */
+export type MySqlAdminUserTotpRecordTable = MySqlAdminUserRecordTable & {
+	totpSecret: AnyMySqlColumn<{ data: string; notNull: false }>;
+	totpEnabledAt: AnyMySqlColumn<{ data: number; notNull: false }>;
+	totpLastUsedStep: AnyMySqlColumn<{ data: number; notNull: false }>;
+};
+
+/**
+ * Runtime type guard for `MySqlAdminUserTotpRecordTable`: whether `table`
+ * actually carries `totpSecret`/`totpEnabledAt`/`totpLastUsedStep`. Checked
+ * once at construction (see `MySqlAdminAccounts#totpColumns`) and consulted
+ * by every TOTP method to produce a clear configuration error when absent.
+ */
+const hasTotpColumns = <TUsers extends MySqlAdminUserRecordTable>(
+	table: TUsers,
+): table is TUsers & MySqlAdminUserTotpRecordTable =>
+	"totpSecret" in table && "totpEnabledAt" in table && "totpLastUsedStep" in table;
+
+/**
+ * The TOTP columns' concrete data types, read off a row of the generic table
+ * the same way `AdminUserBaseRow`/`AdminUserLockoutBaseRow` do (see
+ * `totpBaseRow`).
+ */
+type AdminUserTotpBaseRow = {
+	totpSecret: string | null;
+	totpEnabledAt: number | null;
+	totpLastUsedStep: number | null;
 };
 
 /**
@@ -351,6 +423,13 @@ export class MySqlAdminAccounts<
 	 * `unlockUser` can work off column presence alone.
 	 */
 	private readonly lockoutColumns: (TUsers & MySqlAdminUserLockoutRecordTable) | undefined;
+	/**
+	 * The constructor's table, narrowed to `MySqlAdminUserTotpRecordTable` when
+	 * it actually carries the TOTP columns — `undefined` otherwise. There is no
+	 * constructor option for TOTP (unlike `lockout`): every TOTP method works
+	 * off this alone and throws a configuration error when it is `undefined`.
+	 */
+	private readonly totpColumns: (TUsers & MySqlAdminUserTotpRecordTable) | undefined;
 
 	constructor(
 		private readonly db: MySqlDatabase<TQueryResult, TPreparedQueryHKT, TSchema>,
@@ -375,6 +454,23 @@ export class MySqlAdminAccounts<
 			}
 		}
 		this.lockout = options.lockout;
+		this.totpColumns = hasTotpColumns(table) ? table : undefined;
+	}
+
+	/**
+	 * Reads the number of rows actually changed from the execution result of
+	 * `verifyTotp`'s conditional UPDATE (see the module JSDoc). Reads the
+	 * mysql2 result shape only; throws a clear message for any other driver's
+	 * result shape (same convention and message style as
+	 * `MySqlJobsConsole#rowsAffectedFrom`).
+	 */
+	protected rowsAffectedFrom(result: unknown): number {
+		if (isMySql2StyleResult(result)) return result[0].affectedRows;
+		throw new Error(
+			"MySqlAdminAccounts#rowsAffectedFrom: unknown execution result shape. " +
+				"When using a non-mysql2 driver (e.g. PlanetScale), override rowsAffectedFrom " +
+				"in a subclass to read the affected row count from that driver's result shape.",
+		);
 	}
 
 	/**
@@ -554,6 +650,146 @@ export class MySqlAdminAccounts<
 		await this.db
 			.update(this.table)
 			.set({ failedAttempts: 0, lockedUntil: null } as Partial<TUsers["$inferInsert"]>)
+			.where(eq(this.table.id, userId));
+	}
+
+	/**
+	 * Starts (or restarts) TOTP enrollment for the given user: generates a
+	 * fresh Base32 secret, stores it with `totpEnabledAt`/`totpLastUsedStep`
+	 * reset to `null` (a freshly-generated secret is not yet active — see
+	 * `confirmTotpEnrollment`), and returns it alongside a scannable
+	 * `otpauthUrl` (`auth/totp.ts#buildOtpauthUrl`; `options.accountName`
+	 * defaults to the user's username). Calling this again before confirming
+	 * simply replaces the pending secret. Returns `undefined` when the user
+	 * does not exist.
+	 */
+	async beginTotpEnrollment(
+		userId: string,
+		options: { issuer: string; accountName?: string },
+	): Promise<{ secret: string; otpauthUrl: string } | undefined> {
+		if (this.totpColumns === undefined) {
+			throw new Error(
+				"MySqlAdminAccounts#beginTotpEnrollment: the table has no totpSecret/totpEnabledAt/totpLastUsedStep columns — spread mysqlAdminUserTotpColumns() into it",
+			);
+		}
+		const row = await this.retrieve(userId);
+		if (row === undefined) return undefined;
+
+		const secret = generateTotpSecret();
+		const otpauthUrl = buildOtpauthUrl({
+			secret,
+			issuer: options.issuer,
+			accountName: options.accountName ?? this.baseRow(row).username,
+		});
+		await this.db
+			.update(this.table)
+			.set({
+				totpSecret: secret,
+				totpEnabledAt: null,
+				totpLastUsedStep: null,
+			} as Partial<TUsers["$inferInsert"]>)
+			.where(eq(this.table.id, userId));
+		return { secret, otpauthUrl };
+	}
+
+	/**
+	 * Confirms a pending TOTP enrollment (started by `beginTotpEnrollment`):
+	 * verifies `code` against the stored secret (`auth/totp.ts#verifyTotpCode`)
+	 * and, on a match, sets `totpEnabledAt` to now and `totpLastUsedStep` to the
+	 * matched step (so the very code used to confirm can never be replayed
+	 * against `verifyTotp`). Returns `false` when there is no pending secret
+	 * (`totpSecret` is `null`), `code` doesn't match, or the user does not
+	 * exist.
+	 */
+	async confirmTotpEnrollment(userId: string, code: string): Promise<boolean> {
+		if (this.totpColumns === undefined) {
+			throw new Error(
+				"MySqlAdminAccounts#confirmTotpEnrollment: the table has no totpSecret/totpEnabledAt/totpLastUsedStep columns — spread mysqlAdminUserTotpColumns() into it",
+			);
+		}
+		const row = await this.retrieve(userId);
+		if (row === undefined) return false;
+
+		const totpBase = this.totpBaseRow(row);
+		if (totpBase.totpSecret === null) return false;
+		const step = await verifyTotpCode({ secret: totpBase.totpSecret, code });
+		if (step === null) return false;
+
+		await this.db
+			.update(this.table)
+			.set({
+				totpEnabledAt: Date.now(),
+				totpLastUsedStep: step,
+			} as Partial<TUsers["$inferInsert"]>)
+			.where(eq(this.table.id, userId));
+		return true;
+	}
+
+	/**
+	 * Verifies a TOTP `code` for an enrolled user (`totpEnabledAt` non-null and
+	 * a stored secret). Returns `false` when the user does not exist, TOTP
+	 * isn't enabled for them, or `code` does not match any step in the drift
+	 * window.
+	 *
+	 * **Replay protection**: a matching code's step must be strictly greater
+	 * than the previously accepted step, enforced as a single atomic
+	 * conditional UPDATE — `totp_last_used_step = <step> WHERE id = ? AND
+	 * totp_enabled_at IS NOT NULL AND (totp_last_used_step IS NULL OR
+	 * totp_last_used_step < <step>)` — rather than a separate read-then-write.
+	 * `verifyTotpCode`'s own drift window (default: the previous, current, and
+	 * next 30s step) can otherwise re-match an already-used step's code, so
+	 * this UPDATE's `WHERE` is what actually stops it from being reused: it
+	 * only succeeds (and only then does this method return `true`) when the
+	 * UPDATE's `affectedRows` (via `rowsAffectedFrom`; MySQL has no RETURNING —
+	 * see the module JSDoc) confirms a row was still affected, i.e. `step` had
+	 * not already been consumed by an earlier `verifyTotp` call for this user.
+	 */
+	async verifyTotp(userId: string, code: string): Promise<boolean> {
+		if (this.totpColumns === undefined) {
+			throw new Error(
+				"MySqlAdminAccounts#verifyTotp: the table has no totpSecret/totpEnabledAt/totpLastUsedStep columns — spread mysqlAdminUserTotpColumns() into it",
+			);
+		}
+		const totpColumns = this.totpColumns;
+		const row = await this.retrieve(userId);
+		if (row === undefined) return false;
+
+		const totpBase = this.totpBaseRow(row);
+		if (totpBase.totpEnabledAt === null || totpBase.totpSecret === null) return false;
+		const step = await verifyTotpCode({ secret: totpBase.totpSecret, code });
+		if (step === null) return false;
+
+		const result = await this.db
+			.update(this.table)
+			.set({ totpLastUsedStep: step } as Partial<TUsers["$inferInsert"]>)
+			.where(
+				and(
+					eq(this.table.id, userId),
+					isNotNull(totpColumns.totpEnabledAt),
+					or(isNull(totpColumns.totpLastUsedStep), lt(totpColumns.totpLastUsedStep, step)),
+				),
+			);
+		return this.rowsAffectedFrom(result) === 1;
+	}
+
+	/**
+	 * Disables TOTP for the given user, clearing `totpSecret`/`totpEnabledAt`/
+	 * `totpLastUsedStep` back to `null`. A missing user is a no-op (the UPDATE
+	 * simply matches zero rows), matching `setPassword`'s convention.
+	 */
+	async disableTotp(userId: string): Promise<void> {
+		if (this.totpColumns === undefined) {
+			throw new Error(
+				"MySqlAdminAccounts#disableTotp: the table has no totpSecret/totpEnabledAt/totpLastUsedStep columns — spread mysqlAdminUserTotpColumns() into it",
+			);
+		}
+		await this.db
+			.update(this.table)
+			.set({
+				totpSecret: null,
+				totpEnabledAt: null,
+				totpLastUsedStep: null,
+			} as Partial<TUsers["$inferInsert"]>)
 			.where(eq(this.table.id, userId));
 	}
 
@@ -761,6 +997,16 @@ export class MySqlAdminAccounts<
 		return row as AdminUserLockoutBaseRow;
 	}
 
+	/**
+	 * Reads `totpSecret`/`totpEnabledAt`/`totpLastUsedStep` off a row of the
+	 * generic table, for the same reason and with the same `as` justification
+	 * as `baseRow`. Only called after `this.totpColumns` has already confirmed
+	 * the table carries these columns.
+	 */
+	private totpBaseRow(row: MySqlAdminUserRecord<TUsers>): AdminUserTotpBaseRow {
+		return row as AdminUserTotpBaseRow;
+	}
+
 	/** Whether the given row is currently both a superuser and active. */
 	private isActiveSuperuser(row: MySqlAdminUserRecord<TUsers>): boolean {
 		const base = this.baseRow(row);
@@ -932,4 +1178,35 @@ export const mysqlAdminUsersTable = (tableName = "admin_users") =>
 export const mysqlAdminUserLockoutColumns = () => ({
 	failedAttempts: int("failed_attempts").notNull().default(0),
 	lockedUntil: bigint("locked_until", { mode: "number" }),
+});
+
+/**
+ * Returns a fresh record of the column builders for the opt-in TOTP
+ * two-factor authentication columns. Spread alongside `mysqlAdminUserColumns()`
+ * into the same table to enable `MySqlAdminAccounts#beginTotpEnrollment`/
+ * `#confirmTotpEnrollment`/`#verifyTotp`/`#disableTotp`:
+ *
+ * ```ts
+ * export const adminUsers = mysqlTable(
+ *   "admin_users",
+ *   { ...mysqlAdminUserColumns(), ...mysqlAdminUserTotpColumns() },
+ *   (t) => [uniqueIndex("admin_users_username_idx").on(t.username)],
+ * );
+ * ```
+ *
+ * `totpSecret` holds the Base32-encoded shared secret (`null` until
+ * enrollment begins); `totpEnabledAt` is `null` while a secret is pending
+ * confirmation (or TOTP was never enrolled) and an epoch-ms timestamp once
+ * confirmed (`bigint(..., { mode: "number" })` for the same range reason as
+ * `lockedUntil`); `totpLastUsedStep` is the last accepted RFC 6238 time step,
+ * `null` until the first successful verification, used to reject a replayed
+ * code (see `verifyTotp`'s JSDoc). All three are reserved columns (see
+ * `ReservedAdminUserColumnKey`) — only the four TOTP methods ever write them.
+ * There is no constructor option unlocking these methods (unlike
+ * `MySqlAdminAccountsOptions#lockout`): column presence alone is enough.
+ */
+export const mysqlAdminUserTotpColumns = () => ({
+	totpSecret: text("totp_secret"),
+	totpEnabledAt: bigint("totp_enabled_at", { mode: "number" }),
+	totpLastUsedStep: int("totp_last_used_step"),
 });

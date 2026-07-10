@@ -41,11 +41,22 @@
  * columns alone regardless of whether `lockout` was configured. See
  * `authenticate`'s JSDoc for the algorithm.
  *
+ * **Opt-in TOTP two-factor authentication**: apps that want RFC 6238 TOTP
+ * spread `sqliteAdminUserTotpColumns()` into the same table. Unlike lockout,
+ * there is no constructor option — `beginTotpEnrollment`/`confirmTotpEnrollment`/
+ * `verifyTotp`/`disableTotp` all work off column presence alone (throwing a
+ * clear configuration error, naming the factory, when the columns are
+ * absent), the same way `unlockUser` does. The secret is stored as plain
+ * Base32 text (`totpSecret`): a DB compromise exposes it, so encrypt the
+ * column at the app layer if that's a concern (see `auth/totp.ts` for the
+ * underlying primitives and `docs/admin-accounts.md`'s TOTP section for the
+ * full enrollment/login flow and this trade-off).
+ *
  * The type of `db` is made generic over `TSchema` for the same reason as
  * `SQLiteModel` (accepting a `db` built by passing a concrete schema, e.g.
  * `drizzle(client, { schema })`, as-is).
  */
-import { and, asc, count as countRows, eq, or, sql } from "drizzle-orm";
+import { and, asc, count as countRows, eq, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import { integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 import type {
@@ -55,6 +66,7 @@ import type {
 	TableConfig,
 } from "drizzle-orm/sqlite-core";
 import { hashPassword, verifyPassword } from "../auth/password.js";
+import { buildOtpauthUrl, generateTotpSecret, verifyTotpCode } from "../auth/totp.js";
 import { SnowflakeIdGenerator } from "../support/id_generator.js";
 import type { IdGenerator } from "../support/id_generator.js";
 import { LastActiveSuperuserError } from "./admin_accounts_errors.js";
@@ -137,7 +149,10 @@ export type SQLiteAdminUserRecord<TUsers extends SQLiteAdminUserRecordTable> =
  * `passwordHash` through the extension mechanism. `failedAttempts`/
  * `lockedUntil` are reserved here even though they are optional columns (see
  * `sqliteAdminUserLockoutColumns`): when a table has them, only `authenticate`
- * and `unlockUser` may write them.
+ * and `unlockUser` may write them. `totpSecret`/`totpEnabledAt`/
+ * `totpLastUsedStep` are the same kind of optional reservation for
+ * `sqliteAdminUserTotpColumns`: when present, only `beginTotpEnrollment`/
+ * `confirmTotpEnrollment`/`verifyTotp`/`disableTotp` may write them.
  */
 type ReservedAdminUserColumnKey =
 	| "id"
@@ -151,7 +166,10 @@ type ReservedAdminUserColumnKey =
 	| "createdAt"
 	| "updatedAt"
 	| "failedAttempts"
-	| "lockedUntil";
+	| "lockedUntil"
+	| "totpSecret"
+	| "totpEnabledAt"
+	| "totpLastUsedStep";
 
 /** Runtime counterpart of `ReservedAdminUserColumnKey`, used to strip reserved keys from extra-column input. */
 const RESERVED_ADMIN_USER_COLUMN_KEYS: ReadonlySet<string> = new Set([
@@ -167,6 +185,9 @@ const RESERVED_ADMIN_USER_COLUMN_KEYS: ReadonlySet<string> = new Set([
 	"updatedAt",
 	"failedAttempts",
 	"lockedUntil",
+	"totpSecret",
+	"totpEnabledAt",
+	"totpLastUsedStep",
 ] satisfies ReservedAdminUserColumnKey[]);
 
 /**
@@ -232,6 +253,41 @@ const hasLockoutColumns = <TUsers extends SQLiteAdminUserRecordTable>(
 type AdminUserLockoutBaseRow = {
 	failedAttempts: number;
 	lockedUntil: number | null;
+};
+
+/**
+ * The structural contract for a table that additionally carries the opt-in
+ * TOTP columns (see `sqliteAdminUserTotpColumns`), following the same
+ * per-field `AnySQLiteColumn<{...}>` idiom as `SQLiteAdminUserLockoutRecordTable`.
+ * Checked at runtime via `hasTotpColumns` (called once at construction,
+ * independent of any constructor option — TOTP has none, unlike lockout).
+ */
+export type SQLiteAdminUserTotpRecordTable = SQLiteAdminUserRecordTable & {
+	totpSecret: AnySQLiteColumn<{ data: string; notNull: false }>;
+	totpEnabledAt: AnySQLiteColumn<{ data: number; notNull: false }>;
+	totpLastUsedStep: AnySQLiteColumn<{ data: number; notNull: false }>;
+};
+
+/**
+ * Runtime type guard for `SQLiteAdminUserTotpRecordTable`: whether `table`
+ * actually carries `totpSecret`/`totpEnabledAt`/`totpLastUsedStep`. Checked
+ * once at construction (see `SQLiteAdminAccounts#totpColumns`) and consulted
+ * by every TOTP method to produce a clear configuration error when absent.
+ */
+const hasTotpColumns = <TUsers extends SQLiteAdminUserRecordTable>(
+	table: TUsers,
+): table is TUsers & SQLiteAdminUserTotpRecordTable =>
+	"totpSecret" in table && "totpEnabledAt" in table && "totpLastUsedStep" in table;
+
+/**
+ * The TOTP columns' concrete data types, read off a row of the generic table
+ * the same way `AdminUserBaseRow`/`AdminUserLockoutBaseRow` do (see
+ * `totpBaseRow`).
+ */
+type AdminUserTotpBaseRow = {
+	totpSecret: string | null;
+	totpEnabledAt: number | null;
+	totpLastUsedStep: number | null;
 };
 
 /**
@@ -343,6 +399,13 @@ export class SQLiteAdminAccounts<
 	 * `unlockUser` can work off column presence alone.
 	 */
 	private readonly lockoutColumns: (TUsers & SQLiteAdminUserLockoutRecordTable) | undefined;
+	/**
+	 * The constructor's table, narrowed to `SQLiteAdminUserTotpRecordTable` when
+	 * it actually carries the TOTP columns — `undefined` otherwise. There is no
+	 * constructor option for TOTP (unlike `lockout`): every TOTP method works
+	 * off this alone and throws a configuration error when it is `undefined`.
+	 */
+	private readonly totpColumns: (TUsers & SQLiteAdminUserTotpRecordTable) | undefined;
 
 	constructor(
 		private readonly db: BaseSQLiteDatabase<"async", unknown, TSchema>,
@@ -367,6 +430,7 @@ export class SQLiteAdminAccounts<
 			}
 		}
 		this.lockout = options.lockout;
+		this.totpColumns = hasTotpColumns(table) ? table : undefined;
 	}
 
 	/**
@@ -536,6 +600,146 @@ export class SQLiteAdminAccounts<
 		await this.db
 			.update(this.table)
 			.set({ failedAttempts: 0, lockedUntil: null } as Partial<TUsers["$inferInsert"]>)
+			.where(eq(this.table.id, userId));
+	}
+
+	/**
+	 * Starts (or restarts) TOTP enrollment for the given user: generates a
+	 * fresh Base32 secret, stores it with `totpEnabledAt`/`totpLastUsedStep`
+	 * reset to `null` (a freshly-generated secret is not yet active — see
+	 * `confirmTotpEnrollment`), and returns it alongside a scannable
+	 * `otpauthUrl` (`auth/totp.ts#buildOtpauthUrl`; `options.accountName`
+	 * defaults to the user's username). Calling this again before confirming
+	 * simply replaces the pending secret. Returns `undefined` when the user
+	 * does not exist.
+	 */
+	async beginTotpEnrollment(
+		userId: string,
+		options: { issuer: string; accountName?: string },
+	): Promise<{ secret: string; otpauthUrl: string } | undefined> {
+		if (this.totpColumns === undefined) {
+			throw new Error(
+				"SQLiteAdminAccounts#beginTotpEnrollment: the table has no totpSecret/totpEnabledAt/totpLastUsedStep columns — spread sqliteAdminUserTotpColumns() into it",
+			);
+		}
+		const row = await this.retrieve(userId);
+		if (row === undefined) return undefined;
+
+		const secret = generateTotpSecret();
+		const otpauthUrl = buildOtpauthUrl({
+			secret,
+			issuer: options.issuer,
+			accountName: options.accountName ?? this.baseRow(row).username,
+		});
+		await this.db
+			.update(this.table)
+			.set({
+				totpSecret: secret,
+				totpEnabledAt: null,
+				totpLastUsedStep: null,
+			} as Partial<TUsers["$inferInsert"]>)
+			.where(eq(this.table.id, userId));
+		return { secret, otpauthUrl };
+	}
+
+	/**
+	 * Confirms a pending TOTP enrollment (started by `beginTotpEnrollment`):
+	 * verifies `code` against the stored secret (`auth/totp.ts#verifyTotpCode`)
+	 * and, on a match, sets `totpEnabledAt` to now and `totpLastUsedStep` to the
+	 * matched step (so the very code used to confirm can never be replayed
+	 * against `verifyTotp`). Returns `false` when there is no pending secret
+	 * (`totpSecret` is `null`), `code` doesn't match, or the user does not
+	 * exist.
+	 */
+	async confirmTotpEnrollment(userId: string, code: string): Promise<boolean> {
+		if (this.totpColumns === undefined) {
+			throw new Error(
+				"SQLiteAdminAccounts#confirmTotpEnrollment: the table has no totpSecret/totpEnabledAt/totpLastUsedStep columns — spread sqliteAdminUserTotpColumns() into it",
+			);
+		}
+		const row = await this.retrieve(userId);
+		if (row === undefined) return false;
+
+		const totpBase = this.totpBaseRow(row);
+		if (totpBase.totpSecret === null) return false;
+		const step = await verifyTotpCode({ secret: totpBase.totpSecret, code });
+		if (step === null) return false;
+
+		await this.db
+			.update(this.table)
+			.set({
+				totpEnabledAt: Date.now(),
+				totpLastUsedStep: step,
+			} as Partial<TUsers["$inferInsert"]>)
+			.where(eq(this.table.id, userId));
+		return true;
+	}
+
+	/**
+	 * Verifies a TOTP `code` for an enrolled user (`totpEnabledAt` non-null and
+	 * a stored secret). Returns `false` when the user does not exist, TOTP
+	 * isn't enabled for them, or `code` does not match any step in the drift
+	 * window.
+	 *
+	 * **Replay protection**: a matching code's step must be strictly greater
+	 * than the previously accepted step, enforced as a single atomic
+	 * conditional UPDATE — `totp_last_used_step = <step> WHERE id = ? AND
+	 * totp_enabled_at IS NOT NULL AND (totp_last_used_step IS NULL OR
+	 * totp_last_used_step < <step>)` — rather than a separate read-then-write.
+	 * `verifyTotpCode`'s own drift window (default: the previous, current, and
+	 * next 30s step) can otherwise re-match an already-used step's code, so
+	 * this UPDATE's `WHERE` is what actually stops it from being reused: it
+	 * only succeeds (and only then does this method return `true`) when the
+	 * row was still affected, i.e. `step` had not already been consumed by an
+	 * earlier `verifyTotp` call for this user.
+	 */
+	async verifyTotp(userId: string, code: string): Promise<boolean> {
+		if (this.totpColumns === undefined) {
+			throw new Error(
+				"SQLiteAdminAccounts#verifyTotp: the table has no totpSecret/totpEnabledAt/totpLastUsedStep columns — spread sqliteAdminUserTotpColumns() into it",
+			);
+		}
+		const totpColumns = this.totpColumns;
+		const row = await this.retrieve(userId);
+		if (row === undefined) return false;
+
+		const totpBase = this.totpBaseRow(row);
+		if (totpBase.totpEnabledAt === null || totpBase.totpSecret === null) return false;
+		const step = await verifyTotpCode({ secret: totpBase.totpSecret, code });
+		if (step === null) return false;
+
+		const accepted = await this.db
+			.update(this.table)
+			.set({ totpLastUsedStep: step } as Partial<TUsers["$inferInsert"]>)
+			.where(
+				and(
+					eq(this.table.id, userId),
+					isNotNull(totpColumns.totpEnabledAt),
+					or(isNull(totpColumns.totpLastUsedStep), lt(totpColumns.totpLastUsedStep, step)),
+				),
+			)
+			.returning({ id: this.table.id });
+		return accepted.length > 0;
+	}
+
+	/**
+	 * Disables TOTP for the given user, clearing `totpSecret`/`totpEnabledAt`/
+	 * `totpLastUsedStep` back to `null`. A missing user is a no-op (the UPDATE
+	 * simply matches zero rows), matching `setPassword`'s convention.
+	 */
+	async disableTotp(userId: string): Promise<void> {
+		if (this.totpColumns === undefined) {
+			throw new Error(
+				"SQLiteAdminAccounts#disableTotp: the table has no totpSecret/totpEnabledAt/totpLastUsedStep columns — spread sqliteAdminUserTotpColumns() into it",
+			);
+		}
+		await this.db
+			.update(this.table)
+			.set({
+				totpSecret: null,
+				totpEnabledAt: null,
+				totpLastUsedStep: null,
+			} as Partial<TUsers["$inferInsert"]>)
 			.where(eq(this.table.id, userId));
 	}
 
@@ -740,6 +944,16 @@ export class SQLiteAdminAccounts<
 		return row as AdminUserLockoutBaseRow;
 	}
 
+	/**
+	 * Reads `totpSecret`/`totpEnabledAt`/`totpLastUsedStep` off a row of the
+	 * generic table, for the same reason and with the same `as` justification
+	 * as `baseRow`. Only called after `this.totpColumns` has already confirmed
+	 * the table carries these columns.
+	 */
+	private totpBaseRow(row: SQLiteAdminUserRecord<TUsers>): AdminUserTotpBaseRow {
+		return row as AdminUserTotpBaseRow;
+	}
+
 	/** Whether the given row is currently both a superuser and active. */
 	private isActiveSuperuser(row: SQLiteAdminUserRecord<TUsers>): boolean {
 		const base = this.baseRow(row);
@@ -892,4 +1106,34 @@ export const sqliteAdminUsersTable = (tableName = "admin_users") =>
 export const sqliteAdminUserLockoutColumns = () => ({
 	failedAttempts: integer("failed_attempts").notNull().default(0),
 	lockedUntil: integer("locked_until"),
+});
+
+/**
+ * Returns a fresh record of the column builders for the opt-in TOTP
+ * two-factor authentication columns. Spread alongside `sqliteAdminUserColumns()`
+ * into the same table to enable `SQLiteAdminAccounts#beginTotpEnrollment`/
+ * `#confirmTotpEnrollment`/`#verifyTotp`/`#disableTotp`:
+ *
+ * ```ts
+ * export const adminUsers = sqliteTable(
+ *   "admin_users",
+ *   { ...sqliteAdminUserColumns(), ...sqliteAdminUserTotpColumns() },
+ *   (t) => [uniqueIndex("admin_users_username_idx").on(t.username)],
+ * );
+ * ```
+ *
+ * `totpSecret` holds the Base32-encoded shared secret (`null` until
+ * enrollment begins); `totpEnabledAt` is `null` while a secret is pending
+ * confirmation (or TOTP was never enrolled) and an epoch-ms timestamp once
+ * confirmed; `totpLastUsedStep` is the last accepted RFC 6238 time step,
+ * `null` until the first successful verification, used to reject a replayed
+ * code (see `verifyTotp`'s JSDoc). All three are reserved columns (see
+ * `ReservedAdminUserColumnKey`) — only the four TOTP methods ever write them.
+ * There is no constructor option unlocking these methods (unlike
+ * `SQLiteAdminAccountsOptions#lockout`): column presence alone is enough.
+ */
+export const sqliteAdminUserTotpColumns = () => ({
+	totpSecret: text("totp_secret"),
+	totpEnabledAt: integer("totp_enabled_at"),
+	totpLastUsedStep: integer("totp_last_used_step"),
 });

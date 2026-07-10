@@ -25,6 +25,12 @@ rather than folded into a single "auth module":
   (rotating "remember me" cookies), `EmailVerification`/`PasswordReset`
   (signed, expiring one-time links), and `OAuthClient` (a thin OAuth2 code
   exchange helper).
+- **TOTP two-factor codes** — `totp.ts`'s `generateTotpSecret`/
+  `buildOtpauthUrl`/`generateTotpCode`/`verifyTotpCode` implement RFC 6238
+  (Time-Based One-Time Password) on Web Crypto alone, no dependency. Admin
+  accounts' built-in enrollment/login flow (see
+  [Admin accounts](./admin-accounts.md)) is the primary consumer, but these
+  are standalone primitives any app can use for its own 2FA.
 
 The primary way to exempt a path from `Guard` is still Hono's own routing —
 mount `require` only on the sub-app or path range that needs protection. But
@@ -216,6 +222,54 @@ const payload = await verifyWithJwks(idToken, {
 Both throw on a signature/claims mismatch and, on success, already return
 the decoded payload — once you've verified, `decodeIdToken` is redundant.
 
+**RFC 6238 TOTP two-factor codes.** `generateTotpSecret` returns a random
+Base32 secret; `buildOtpauthUrl` turns it into an `otpauth://totp/...`
+provisioning URL (the "Key URI Format" most authenticator apps and QR-code
+libraries understand — QR rendering itself is out of scope, bring your own
+library); `generateTotpCode`/`verifyTotpCode` generate/check codes against
+it. All four default to HMAC-SHA1, 6 digits, and a 30-second period (the
+values every mainstream authenticator app assumes); `algorithm` also accepts
+`"SHA-256"`/`"SHA-512"` if your app controls both ends.
+
+```ts
+import { buildOtpauthUrl, generateTotpSecret, verifyTotpCode } from "@tknf/oven/auth";
+
+// Enrollment: generate a secret, show it as a QR code (bring your own QR library).
+const secret = generateTotpSecret();
+const otpauthUrl = buildOtpauthUrl({ secret, issuer: "My App", accountName: user.email });
+// Persist `secret` against the user once they confirm a code (see below).
+
+// Verification: `driftSteps` (default 1) accepts the previous/current/next 30s step,
+// tolerating small clock drift between the server and the operator's device.
+const step = await verifyTotpCode({ secret, code: submittedCode });
+if (step === null) {
+  // reject — no step in the drift window matched
+}
+```
+
+`verifyTotpCode` returns the MATCHED time step (not just `true`/`false`)
+specifically so you can persist it and reject a future verification against
+that same step — a code is otherwise valid for the whole `periodSeconds`
+window and anyone who observes it (over someone's shoulder, in a log, ...)
+could replay it until the window closes. Store the returned step (e.g. in a
+`lastUsedStep` column) and only accept a NEW verification whose step is
+strictly greater:
+
+```ts
+const previousStep = await loadLastUsedStep(userId); // from your own storage
+const step = await verifyTotpCode({ secret, code: submittedCode });
+if (step === null || (previousStep !== null && step <= previousStep)) {
+  // reject — no match, or a replay of an already-used step
+}
+await saveLastUsedStep(userId, step);
+```
+
+`@tknf/oven/admin`'s accounts services implement exactly this pattern as a
+single atomic conditional UPDATE — see
+[Admin accounts' "Add TOTP two-factor authentication"](./admin-accounts.md#add-totp-two-factor-authentication)
+for the ready-made version (enrollment, replay protection, and the built-in
+login second step) instead of wiring the primitives above by hand.
+
 ## Gotchas / Security notes
 
 - **`RememberToken`'s cookie `secure` attribute is not on by default**,
@@ -252,6 +306,17 @@ the decoded payload — once you've verified, `decodeIdToken` is redundant.
   directly from the provider's token endpoint over TLS — verify with
   `hono/jwt`'s `verify`/`verifyWithJwks` first for any ID token that
   arrives by another path (see "Decoding an OAuth ID token" above).
+- **`verifyTotpCode` alone does not stop replay** — it only checks whether
+  `code` matches some step in the drift window, and by itself would accept
+  the same code again on a second call within that window. Persisting and
+  comparing the returned step (see "RFC 6238 TOTP two-factor codes" above)
+  is what actually prevents replay; do this even if you don't use the
+  admin-accounts services, which already do it for you.
+- **A wider `driftSteps` trades security for clock-skew tolerance** —
+  each extra step doubles the number of codes that verify at any given
+  moment (a 30-second window per step on each side). The default (`1`, ±30s)
+  already covers ordinary clock drift; only widen it if you have a specific
+  reason to expect more.
 
 ## See also
 
@@ -261,3 +326,6 @@ the decoded payload — once you've verified, `decodeIdToken` is redundant.
   protections that typically sit alongside `Guard` on write routes.
 - [Concepts](./concepts.md) — the `register`/`use` convention shared by
   `Guard` and every other `ContextAccessor` subclass.
+- [Admin accounts](./admin-accounts.md) — the ready-made TOTP
+  enrollment/verification/login-second-step wiring built on top of
+  `totp.ts`'s primitives.
