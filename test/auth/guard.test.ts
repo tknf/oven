@@ -4,7 +4,8 @@
  * identifier, delegation to `onFailure` on provider failure, `use` on success, `use`
  * throwing on a route without the middleware applied, the identity-provider pattern,
  * the default `Cache-Control: no-store` behavior and disabling it, `require` operating
- * as the same instance as `register`, and `remember` (remember-me token) integration.
+ * as the same instance as `register`, `remember` (remember-me token) integration, and
+ * the `except` exact-match path exclusion.
  */
 import type { Env } from "hono";
 import { Hono } from "hono";
@@ -331,5 +332,83 @@ describe("Guard", () => {
 
 		expect(res.status).toBe(303);
 		expect(res.headers.get("Location")).toBe("/login");
+	});
+
+	describe("except", () => {
+		/** Builds a test app that protects `/admin/*` with a single Guard except `/admin/login`. */
+		const buildAppWithExcept = () => {
+			const storage = new InMemorySessionStorage();
+			const sessionAccessor = new SessionAccessor<AppEnv, "session">("session", storage);
+			const accounts = new Map<string, Account>([["acc_1", { id: "acc_1", name: "Alice" }]]);
+
+			const accountGuard = new Guard<AppEnv, "account">("account", {
+				session: sessionAccessor.use,
+				identityKey: "accountId",
+				provider: (identity) => accounts.get(identity),
+				onFailure: (c) => c.redirect("/admin/login", 303),
+				except: ["/admin/login"],
+			});
+
+			const app = new Hono<AppEnv>();
+			app.use(sessionAccessor.register);
+			app.post("/login", (c) => {
+				const id = c.req.query("id") ?? "acc_1";
+				sessionAccessor.use(c).set("accountId", id);
+				return c.text("logged in");
+			});
+			app.use("/admin/*", accountGuard.require);
+			app.get("/admin/login", (c) => c.text("login page"));
+			app.get("/admin/login/sub", (c) => c.text("sub page"));
+			app.get("/admin", (c) => c.text("admin root"));
+			app.get("/admin/dashboard", (c) => c.text(accountGuard.use(c).name));
+
+			return { app, accountGuard };
+		};
+
+		test("a path that exactly matches except passes through without authentication", async () => {
+			const { app } = buildAppWithExcept();
+
+			const res = await app.request("/admin/login");
+
+			expect(res.status).toBe(200);
+			expect(await res.text()).toBe("login page");
+		});
+
+		test("an excepted path does not attach Cache-Control: no-store", async () => {
+			const { app } = buildAppWithExcept();
+
+			const res = await app.request("/admin/login");
+
+			expect(res.headers.get("Cache-Control")).toBeNull();
+		});
+
+		test("a path not listed in except remains protected", async () => {
+			const { app } = buildAppWithExcept();
+
+			const res = await app.request("/admin/dashboard");
+
+			expect(res.status).toBe(303);
+			expect(res.headers.get("Location")).toBe("/admin/login");
+		});
+
+		test("except only matches exactly: a sub-path or a prefix of the excepted path stays protected", async () => {
+			const { app } = buildAppWithExcept();
+
+			const subRes = await app.request("/admin/login/sub");
+			const rootRes = await app.request("/admin");
+
+			expect(subRes.status).toBe(303);
+			expect(rootRes.status).toBe(303);
+		});
+
+		test("an authenticated user hitting an excepted path also passes through without subject resolution", async () => {
+			const { app } = buildAppWithExcept();
+			const cookieHeader = await login(app);
+
+			const res = await app.request("/admin/login", { headers: { Cookie: cookieHeader } });
+
+			expect(res.status).toBe(200);
+			expect(await res.text()).toBe("login page");
+		});
 	});
 });

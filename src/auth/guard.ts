@@ -19,19 +19,19 @@
  * for cases where the session value alone is used for the decision, without a
  * DB lookup) — both are expressible with the same class.
  *
- * **Design decision 1: Guard does not have a public-path exclusion feature**.
- * This concern is already sufficiently expressible by Hono itself (per-path
+ * **Design decision 1: path exclusion is exact-match `except`, not patterns**.
+ * The primary way to exclude a path is still Hono's own routing (per-path
  * middleware application via `app.on`, sub-app mount ranges, omitting
- * `require` on individual routes), and re-implementing exclusion pattern
- * matching inside Guard would make it carry the dual responsibility of
- * "authentication decision" and "routing". Paths meant to be excluded are
- * expressed by placing them outside the range where `require` is applied
- * (e.g.:
- * ```ts
- * app.get("/admin/login", loginHandler); // require is not applied
- * app.use("/admin/*", guard.require); // only what follows is protected
- * ```
- * ).
+ * `require` on individual routes) — that stays the first choice. But relying
+ * on routing alone means the guarantee lives entirely in registration order
+ * (e.g. mounting a public login handler before `app.use("/admin/*",
+ * guard.require)`), and a future reordering mistake becomes a silent
+ * authentication bypass with no error to catch it. `except` (a list of exact
+ * request paths, mirroring `Csrf`'s `exceptions`) lets that guarantee be
+ * expressed directly in the Guard's own configuration instead of depending on
+ * registration order. It intentionally stays exact-match only — no glob or
+ * prefix matching — so Guard never grows a second responsibility of pattern-
+ * based routing on top of its authentication decision.
  *
  * **Design decision 2: `Cache-Control: no-store` after passing authentication
  * is ON by default (can be disabled via `cacheControl`)**. This prevents an
@@ -98,6 +98,24 @@ export type GuardOptions<E extends Env, K extends keyof E["Variables"] & string>
 	 * as a structural type, so there is no direct dependency).
 	 */
 	remember?: { consume: (c: Context<E>) => Promise<string | null> };
+	/**
+	 * Request paths (`c.req.path`) that are exempted from this Guard entirely.
+	 * A path is exempted only on an **exact match** — no glob/prefix matching.
+	 * Keep the list minimal.
+	 *
+	 * On an exempted request, `handle` does nothing but `await next()`: it does
+	 * not read the session, does not call `provider`, does not `c.set` the
+	 * subject, and does not attach `Cache-Control`. Because the subject is
+	 * never set, calling this Guard's `use(c)` inside a handler mounted on an
+	 * excepted path will throw (per `ContextAccessor#use`'s contract) — only
+	 * use `except` for genuinely public routes that don't call `use`.
+	 *
+	 * Intended use: opening a small number of public paths (e.g. a login page)
+	 * inside an otherwise-protected range without relying solely on
+	 * registration order (mounting the public handler before `require`), where
+	 * a future reordering mistake would silently bypass authentication.
+	 */
+	except?: string[];
 };
 
 export class Guard<E extends Env, K extends keyof E["Variables"] & string> extends ContextAccessor<
@@ -126,7 +144,13 @@ export class Guard<E extends Env, K extends keyof E["Variables"] & string> exten
 			onFailure,
 			cacheControl = true,
 			remember,
+			except = [],
 		} = this.options;
+
+		if (except.includes(c.req.path)) {
+			await next();
+			return;
+		}
 
 		const session = useSession(c);
 		let identity = session.get(identityKey);

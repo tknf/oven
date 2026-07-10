@@ -163,6 +163,10 @@ area, example-first). Consult them for depth.
   `set`/`flash` made on that same instance earlier or later in the request (e.g.
   a "logged out" flash before destroying) does not get auto-committed and
   re-append a reviving `Set-Cookie` after the `Max-Age=0` destroy cookie.
+- **`Guard`'s `except` is an exact-match public-path allowlist**, kept as a
+  fallback to routing-order exclusion (mounting a public handler before
+  `require`) — `except: ["/admin/login"]` skips session/provider resolution
+  entirely for that path (no glob/prefix matching, so keep the list minimal).
 - **`secrets` must be high-entropy random ~32 bytes** (`Encrypter`, `UrlSigner`,
   `CookieSessionStorage`, ...). Weak/short secrets only emit a `console.warn`,
   never throw — do not rely on the runtime to catch it.
