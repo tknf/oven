@@ -183,7 +183,7 @@ deliberately excluded from it and must be imported from their own subpath.
 
 | Subpath | Provides |
 | --- | --- |
-| `@tknf/oven` | Aggregate re-export of the modules below (excludes `cloudflare`, `node`, `test`) |
+| `@tknf/oven` | Aggregate re-export of the modules below (excludes `cloudflare`, `node`, `test`, `vite`) |
 | `@tknf/oven/admin` | `AdminPanel`/`AdminResource` — an admin CRUD surface built on the same routing conventions — plus the operator-accounts service (`SQLiteAdminAccounts` and the other dialects), the operator-groups service (`SQLiteAdminGroups` and the other dialects), and permission-string helpers |
 | `@tknf/oven/audit` | Audit log recording (e.g. `PgAuditLog` and other backend adapters) |
 | `@tknf/oven/auth` | `Guard`, `Policy`, `ApiToken`, `OAuthClient`, `PasswordReset`, `EmailVerification`, `RememberToken` |

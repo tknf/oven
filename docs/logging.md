@@ -17,6 +17,17 @@ extra bound fields). `child` is the intended way to attach per-request
 context, such as the `requestId` `hono/request-id` issues, without
 threading it through every call site by hand.
 
+**Access logs vs. application logs.** oven does not reimplement
+per-request access logging — that's already Hono's
+[`hono/logger`](https://hono.dev/docs/middleware/builtin/logger), which
+prints a `<-- METHOD /path` line on the way in and a
+`--> METHOD /path STATUS TIME` line on the way out. `Logger` covers a
+different concern: structured events your own application code emits
+(`logger.info("item created", { itemId })`), not the request/response
+line itself. The two are meant to run side by side, with `hono/logger`'s
+output routed through the same `Logger` instance so both end up in one
+place — see "Bridging `hono/logger` into `Logger`" below.
+
 ## Minimal example
 
 ```ts
@@ -37,6 +48,38 @@ subsequent call carries it automatically:
 ```ts
 const requestLogger = logger.child({ requestId: c.get("requestId") });
 requestLogger.warn("rate limit close to exhausted", { remaining: 3 });
+```
+
+**Bridging `hono/logger` into `Logger`.** `hono/logger`'s middleware
+factory takes a `PrintFunc` (`(str: string, ...rest: string[]) => void`,
+called once per line) — pass an arrow function that forwards `str` to a
+`Logger` instead of the default `console.log`, so the access log and your
+own structured logs share one output path:
+
+```ts
+import { Hono } from "hono";
+import { logger as honoLogger } from "hono/logger";
+import { ConsoleLogger } from "@tknf/oven/logging";
+
+const appLogger = new ConsoleLogger({ service: "checkout" });
+
+const app = new Hono();
+app.use(honoLogger((message) => appLogger.info(message)));
+```
+
+`PrintFunc` only receives the formatted line, with no `Context` to read a
+`requestId` off of, so this bridge alone cannot tag the access-log line
+with `requestId`. Add `hono/request-id` upstream of `honoLogger` anyway —
+it also sends the id back as a response header — and use `child` (see the
+next task) to attach that same id to every *application* log line for the
+request; the two logs still correlate by timing even though only the
+application log line carries the id explicitly:
+
+```ts
+import { requestId } from "hono/request-id";
+
+app.use(requestId());
+app.use(honoLogger((message) => appLogger.info(message)));
 ```
 
 **Wiring a per-request `Logger` with `ScopedValueAccessor`** (see
