@@ -24,25 +24,40 @@
  * `selector`/`validatorHash` returned by `issue` into its own token table, it is
  * free to add extra columns (e.g. `abilities`).
  *
- * Example combined with `Guard` (extracting the token from `Authorization: Bearer
- * <token>` is the application handler's responsibility):
+ * Extracting the token from `Authorization: Bearer <token>` and rejecting the
+ * request when it's missing/invalid is exactly what Hono's own
+ * `hono/bearer-auth` already does, so `ApiToken` is meant to plug into its
+ * `verifyToken` option rather than a hand-rolled header parse:
  * ```ts
+ * import { bearerAuth } from "hono/bearer-auth";
+ *
  * const apiToken = new ApiToken({ prefix: "oven_" });
- * app.use(async (c, next) => {
- *   const header = c.req.header("Authorization");
- *   const token = header?.startsWith("Bearer ") ? header.slice(7) : null;
- *   const record = token
- *     ? await apiToken.verify(token, (selector) => db.apiTokens.findBySelector(selector))
- *     : null;
- *   if (record) c.set("apiTokenRecord", record);
- *   await next();
- * });
+ * app.use(
+ *   bearerAuth({
+ *     verifyToken: async (token, c) => {
+ *       const record = await apiToken.verify(token, (selector) =>
+ *         db.apiTokens.findBySelector(selector),
+ *       );
+ *       if (!record) return false;
+ *       c.set("apiTokenRecord", record);
+ *       return true;
+ *     },
+ *   }),
+ * );
  * ```
+ * `verifyToken` returns a `boolean` (not the record itself), so the record is
+ * stashed onto `c` from inside the callback for downstream handlers to read.
  * Resolving the token's subject (e.g. a user) from `record` via `provider` is the
  * application's responsibility.
  */
-import { decodeBase64Url, encodeBase64Url } from "../support/base64url.js";
+import { decodeBase64Url } from "../support/base64url.js";
 import { constantTimeEqual } from "../support/constant_time.js";
+import {
+	hashValidator,
+	randomToken,
+	SELECTOR_BYTE_LENGTH,
+	VALIDATOR_BYTE_LENGTH,
+} from "./selector_validator.js";
 
 export type ApiTokenOptions = {
 	/** Identifying prefix placed at the start of the token string (e.g. `"oven_"`, for secret-scanning support and visual identification). Default `""`. */
@@ -58,19 +73,7 @@ export type IssuedApiToken = {
 	validatorHash: string;
 };
 
-const SELECTOR_BYTE_LENGTH = 16;
-const VALIDATOR_BYTE_LENGTH = 32;
 const DEFAULT_PREFIX = "";
-
-/** Returns a random value of `byteLength` bytes as a base64url string. */
-const randomToken = (byteLength: number): string =>
-	encodeBase64Url(crypto.getRandomValues(new Uint8Array(byteLength)));
-
-/** Returns the SHA-256 hash of `validator` as a base64url string. */
-const hashValidator = async (validator: string): Promise<string> => {
-	const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(validator));
-	return encodeBase64Url(new Uint8Array(digest));
-};
 
 /**
  * Issues and verifies API tokens. `issue`/`verify` are declared as arrow-function

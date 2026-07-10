@@ -34,6 +34,7 @@
  *   `PgDatabaseSessionStorage` instead.
  */
 import { decodeBase64Url, encodeBase64Url } from "../support/base64url.js";
+import { HMAC_ALGORITHM, importHmacKey } from "../support/hmac.js";
 import { warnWeakSecrets } from "../support/secret_strength_warning.js";
 import type { SessionData } from "./session.js";
 import { isSessionData, Session } from "./session.js";
@@ -50,25 +51,8 @@ export type CookieSessionStorageOptions = SessionCookieOptions & {
 	secrets: string[];
 };
 
-const HMAC_ALGORITHM = { name: "HMAC", hash: "SHA-256" } as const;
-
-const importHmacKey = (secret: string): Promise<CryptoKey> =>
-	crypto.subtle.importKey("raw", new TextEncoder().encode(secret), HMAC_ALGORITHM, false, [
-		"sign",
-		"verify",
-	]);
-
 export class CookieSessionStorage extends SessionStorage {
 	private readonly secrets: string[];
-
-	/**
-	 * Instance-level memoization of `importHmacKey` results. Since the constructor
-	 * cannot `await` asynchronous work, key import is deferred to first access and
-	 * the resulting `Promise` itself is cached (as `secrets` is immutable after
-	 * construction, there is never a need to invalidate an already-created
-	 * `CryptoKey`).
-	 */
-	private readonly keyCache = new Map<string, Promise<CryptoKey>>();
 
 	constructor(options: CookieSessionStorageOptions) {
 		const { secrets, ...cookieOptions } = options;
@@ -113,21 +97,11 @@ export class CookieSessionStorage extends SessionStorage {
 		return this.buildDestroyCookie();
 	}
 
-	/** Returns the `CryptoKey` for `secret`, memoizing it. */
-	private importKeyCached(secret: string): Promise<CryptoKey> {
-		const cached = this.keyCache.get(secret);
-		if (cached) return cached;
-
-		const promise = importHmacKey(secret);
-		this.keyCache.set(secret, promise);
-		return promise;
-	}
-
 	/** Builds the cookie value as `payload.<base64url signature>`, always signing with the first key. */
 	private async sign(data: SessionData): Promise<string> {
 		const payload = encodeBase64Url(new TextEncoder().encode(JSON.stringify(data)));
 		// The constructor rejects `secrets.length === 0`, so the first element always exists.
-		const key = await this.importKeyCached(this.secrets[0]);
+		const key = await importHmacKey(this.secrets[0]);
 		const signature = await crypto.subtle.sign(
 			HMAC_ALGORITHM.name,
 			key,
@@ -157,7 +131,7 @@ export class CookieSessionStorage extends SessionStorage {
 		}
 
 		for (const secret of this.secrets) {
-			const key = await this.importKeyCached(secret);
+			const key = await importHmacKey(secret);
 			const valid = await crypto.subtle.verify(HMAC_ALGORITHM.name, key, signature, payloadBytes);
 			if (!valid) continue;
 

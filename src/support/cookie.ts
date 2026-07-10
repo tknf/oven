@@ -60,7 +60,14 @@ export class CookieAccessor {
 	}
 }
 
-/** Cookie definition for `SignedCookieAccessor`. `secret` is the shared key used to sign and verify. */
+/**
+ * Cookie definition for `SignedCookieAccessor`. `secret` is the shared key used to sign and verify.
+ *
+ * @deprecated Scheduled for removal in the next major. Use `CookieAccessor`
+ * combined with explicit signing (the pattern `UrlSigner` and
+ * `CookieSessionStorage` use), or call Hono's `getSignedCookie`/
+ * `setSignedCookie` (`hono/cookie`) directly.
+ */
 export interface SignedCookieDefinition extends CookieDefinition {
 	/** Secret key used for HMAC signing (same type as `hono/cookie`'s `getSignedCookie`/`setSignedCookie`). */
 	readonly secret: string | BufferSource;
@@ -74,6 +81,11 @@ export interface SignedCookieDefinition extends CookieDefinition {
  * with), matching `hono/cookie`'s type definitions. Callers may treat both
  * cases as "not a valid value", but can distinguish them with `=== false`
  * if needed.
+ *
+ * @deprecated Scheduled for removal in the next major. Use `CookieAccessor`
+ * with explicit signing (see the `UrlSigner` / `CookieSessionStorage`
+ * patterns), or call Hono's `getSignedCookie`/`setSignedCookie` (`hono/cookie`)
+ * directly.
  */
 export class SignedCookieAccessor {
 	constructor(private readonly definition: SignedCookieDefinition) {}
