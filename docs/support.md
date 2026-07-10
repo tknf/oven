@@ -3,11 +3,11 @@
 ## What / Why
 
 `@tknf/oven/support` is a set of small, independent primitives that other
-oven modules build on: id generation, typed cookie access, base64url
-encoding, constant-time comparison, fetch timeouts, env validation, and two
-runtime security warnings. Like `@tknf/oven/helpers`, there's no single
-"support" object — each export is a standalone class or function you wire
-in where needed.
+oven modules build on: id generation, typed cookie access, base64url and
+Base32 encoding, constant-time comparison, fetch timeouts, env validation,
+and two runtime security warnings. Like `@tknf/oven/helpers`, there's no
+single "support" object — each export is a standalone class or function you
+wire in where needed.
 
 ## Minimal example
 
@@ -124,6 +124,13 @@ const isValid = constantTimeEqual(submittedBytes, expectedBytes);
 - **`decodeBase64Url`/`encodeBase64Url` avoid Node-only APIs** (`Buffer`)
   and are built on `btoa`/`atob`, so they work the same in Workers,
   browsers, and Node.
+- **`encodeBase32`/`decodeBase32` are RFC 4648 §6 Base32** (distinct from
+  Base64URL — different alphabet, used where the encoded form must be
+  human-typeable/scannable, e.g. a TOTP secret in
+  [Authentication](./auth.md#common-tasks)). `encodeBase32` always produces
+  uppercase, unpadded output; `decodeBase32` tolerates lowercase input and
+  trailing `=` padding but throws `TypeError` on any other character
+  outside the alphabet.
 - **`timeoutSignal` returns `undefined` when `timeoutMs` is not given** —
   Workers' `fetch` has no default timeout, so an unbounded outbound call
   can hang and consume execution time/concurrency; pass an explicit

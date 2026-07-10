@@ -19,6 +19,7 @@ import { integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core
 import {
 	sqliteAdminUserColumns,
 	sqliteAdminUserLockoutColumns,
+	sqliteAdminUserTotpColumns,
 	sqliteAdminUsersTable,
 } from "../../../src/admin/sqlite_admin_accounts.js";
 import {
@@ -97,4 +98,20 @@ export const adminLockoutUsers = sqliteTable(
 		...sqliteAdminUserLockoutColumns(),
 	},
 	(t) => [uniqueIndex("admin_lockout_users_username_idx").on(t.username)],
+);
+
+/**
+ * TOTP-capable admin-user table verifying the documented TOTP extension
+ * recipe (spreading `sqliteAdminUserColumns()` and `sqliteAdminUserTotpColumns()`
+ * into an app-defined table) through the migration generation/application
+ * path, and backing the panel-level TOTP login flow tests
+ * (`test/admin/admin_panel_accounts.test.ts`).
+ */
+export const adminTotpUsers = sqliteTable(
+	"admin_totp_users",
+	{
+		...sqliteAdminUserColumns(),
+		...sqliteAdminUserTotpColumns(),
+	},
+	(t) => [uniqueIndex("admin_totp_users_username_idx").on(t.username)],
 );

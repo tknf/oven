@@ -24,6 +24,7 @@ import { bigint, mysqlTable, uniqueIndex, varchar } from "drizzle-orm/mysql-core
 import {
 	mysqlAdminUserColumns,
 	mysqlAdminUserLockoutColumns,
+	mysqlAdminUserTotpColumns,
 	mysqlAdminUsersTable,
 } from "../../../src/admin/mysql_admin_accounts.js";
 import {
@@ -75,4 +76,20 @@ export const adminLockoutUsers = mysqlTable(
 		...mysqlAdminUserLockoutColumns(),
 	},
 	(t) => [uniqueIndex("admin_lockout_users_username_idx").on(t.username)],
+);
+
+/**
+ * TOTP-capable admin-user table verifying the documented TOTP extension
+ * recipe (spreading `mysqlAdminUserColumns()` and `mysqlAdminUserTotpColumns()`
+ * into an app-defined table) through the migration generation/application
+ * path. A MySQL-dialect counterpart to the SQLite `adminTotpUsers` fixture
+ * table.
+ */
+export const adminTotpUsers = mysqlTable(
+	"admin_totp_users",
+	{
+		...mysqlAdminUserColumns(),
+		...mysqlAdminUserTotpColumns(),
+	},
+	(t) => [uniqueIndex("admin_totp_users_username_idx").on(t.username)],
 );

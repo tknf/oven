@@ -2,11 +2,14 @@
  * Tests `SQLiteAdminAccounts` (admin-panel operator accounts backed by a Drizzle
  * sqlite-core table; `src/admin/sqlite_admin_accounts.ts`). Uses `createTestDb`
  * (`src/test/db.ts`) with this repo's minimal fixture schema (the `adminUsers`,
- * `adminOperators`, and `adminLockoutUsers` tables in
+ * `adminOperators`, `adminLockoutUsers`, and `adminTotpUsers` tables in
  * `test/test_support/fixtures/schema.ts`), following the same approach as
  * `test/audit/sqlite_audit_log.test.ts`. The `lockout` describe block covers
  * `SQLiteAdminAccountsOptions#lockout` and `unlockUser` (opt-in failed-attempt
- * account lockout).
+ * account lockout). The `totp` describe block covers `beginTotpEnrollment`/
+ * `confirmTotpEnrollment`/`verifyTotp`/`disableTotp` (opt-in RFC 6238 TOTP
+ * two-factor authentication), generating real codes against the enrolled
+ * secret via `auth/totp.ts#generateTotpCode` under fake time.
  */
 import { eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vite-plus/test";
@@ -17,8 +20,10 @@ import type {
 	SQLiteAdminAccountsUpdateUserPatch,
 	SQLiteAdminUserLockoutRecordTable,
 	SQLiteAdminUserRecordTable,
+	SQLiteAdminUserTotpRecordTable,
 } from "../../src/admin/sqlite_admin_accounts.js";
 import { verifyPassword } from "../../src/auth/password.js";
+import { generateTotpCode } from "../../src/auth/totp.js";
 import { createTestDb } from "../../src/test/db.js";
 import * as schema from "../test_support/fixtures/schema.js";
 
@@ -697,6 +702,268 @@ describe("SQLiteAdminAccounts", () => {
 			const persisted = await users.retrieve(created.id);
 			expect(persisted?.failedAttempts).toBe(2);
 			expect(persisted?.lockedUntil).toBeNull();
+		});
+	});
+
+	describe("totp", () => {
+		const totpAccounts = () => new SQLiteAdminAccounts(ctx.db, schema.adminTotpUsers);
+
+		/** Enrolls and confirms TOTP for a fresh user, returning its id and the confirmed secret. */
+		const enrollAndConfirm = async (users: ReturnType<typeof totpAccounts>) => {
+			const created = await users.createUser({ username: "alice", password: "password-1" });
+			const enrollment = await users.beginTotpEnrollment(created.id, { issuer: "Oven" });
+			if (!enrollment) throw new Error("expected an enrollment");
+			const code = await generateTotpCode({ secret: enrollment.secret, timestampMs: Date.now() });
+			await users.confirmTotpEnrollment(created.id, code);
+			return { id: created.id, secret: enrollment.secret };
+		};
+
+		test("the totp fixture table satisfies the totp structural contract (type-level)", () => {
+			/**
+			 * `satisfies` fails compilation if the spread-extended table (TOTP
+			 * columns) stops matching the contract; the runtime assertion is a
+			 * formality.
+			 */
+			const table = schema.adminTotpUsers satisfies SQLiteAdminUserTotpRecordTable;
+			expect(table).toBe(schema.adminTotpUsers);
+		});
+
+		describe("beginTotpEnrollment", () => {
+			test("generates a pending secret that is not yet enabled", async () => {
+				const users = totpAccounts();
+				const created = await users.createUser({ username: "alice", password: "password-1" });
+
+				const enrollment = await users.beginTotpEnrollment(created.id, { issuer: "Oven" });
+
+				expect(enrollment?.secret).toMatch(/^[A-Z2-7]+$/);
+				expect(enrollment?.otpauthUrl).toContain(
+					`otpauth://totp/Oven:${encodeURIComponent("alice")}`,
+				);
+				const persisted = await users.retrieve(created.id);
+				expect(persisted?.totpSecret).toBe(enrollment?.secret);
+				expect(persisted?.totpEnabledAt).toBeNull();
+				expect(persisted?.totpLastUsedStep).toBeNull();
+			});
+
+			test("defaults accountName to the user's username", async () => {
+				const users = totpAccounts();
+				const created = await users.createUser({ username: "bob", password: "password-1" });
+
+				const enrollment = await users.beginTotpEnrollment(created.id, { issuer: "Oven" });
+
+				expect(enrollment?.otpauthUrl).toContain(`:${encodeURIComponent("bob")}?`);
+			});
+
+			test("on a missing user returns undefined", async () => {
+				expect(
+					await totpAccounts().beginTotpEnrollment("missing", { issuer: "Oven" }),
+				).toBeUndefined();
+			});
+
+			test("throws when the table has no totp columns", async () => {
+				await expect(
+					accounts().beginTotpEnrollment("whatever", { issuer: "Oven" }),
+				).rejects.toThrow("spread sqliteAdminUserTotpColumns()");
+			});
+		});
+
+		describe("confirmTotpEnrollment", () => {
+			test("rejects a wrong code and leaves the account unconfirmed", async () => {
+				const users = totpAccounts();
+				const created = await users.createUser({ username: "alice", password: "password-1" });
+				const enrollment = await users.beginTotpEnrollment(created.id, { issuer: "Oven" });
+				if (!enrollment) throw new Error("expected an enrollment");
+				const correctCode = await generateTotpCode({
+					secret: enrollment.secret,
+					timestampMs: Date.now(),
+				});
+				const wrongCode = correctCode === "000000" ? "111111" : "000000";
+
+				expect(await users.confirmTotpEnrollment(created.id, wrongCode)).toBe(false);
+				const persisted = await users.retrieve(created.id);
+				expect(persisted?.totpEnabledAt).toBeNull();
+			});
+
+			test("with the correct code enables TOTP and stores the matched step", async () => {
+				const users = totpAccounts();
+				const created = await users.createUser({ username: "alice", password: "password-1" });
+				const enrollment = await users.beginTotpEnrollment(created.id, { issuer: "Oven" });
+				if (!enrollment) throw new Error("expected an enrollment");
+				const code = await generateTotpCode({ secret: enrollment.secret, timestampMs: Date.now() });
+
+				const confirmed = await users.confirmTotpEnrollment(created.id, code);
+
+				expect(confirmed).toBe(true);
+				const persisted = await users.retrieve(created.id);
+				expect(persisted?.totpEnabledAt).toBe(Date.now());
+				expect(persisted?.totpLastUsedStep).toBe(Math.floor(Date.now() / 1000 / 30));
+			});
+
+			test("without a pending secret returns false", async () => {
+				const users = totpAccounts();
+				const created = await users.createUser({ username: "alice", password: "password-1" });
+
+				expect(await users.confirmTotpEnrollment(created.id, "123456")).toBe(false);
+			});
+
+			test("on a missing user returns false", async () => {
+				expect(await totpAccounts().confirmTotpEnrollment("missing", "123456")).toBe(false);
+			});
+
+			test("throws when the table has no totp columns", async () => {
+				await expect(accounts().confirmTotpEnrollment("whatever", "123456")).rejects.toThrow(
+					"spread sqliteAdminUserTotpColumns()",
+				);
+			});
+		});
+
+		describe("verifyTotp", () => {
+			test("accepts a fresh code", async () => {
+				const users = totpAccounts();
+				const { id, secret } = await enrollAndConfirm(users);
+				vi.setSystemTime(Date.now() + 30_000);
+				const code = await generateTotpCode({ secret, timestampMs: Date.now() });
+
+				expect(await users.verifyTotp(id, code)).toBe(true);
+			});
+
+			test("rejects a replay of the same code/step", async () => {
+				const users = totpAccounts();
+				const { id, secret } = await enrollAndConfirm(users);
+				vi.setSystemTime(Date.now() + 30_000);
+				const code = await generateTotpCode({ secret, timestampMs: Date.now() });
+				expect(await users.verifyTotp(id, code)).toBe(true);
+
+				expect(await users.verifyTotp(id, code)).toBe(false);
+			});
+
+			test("accepts the next step's code after the current step was used", async () => {
+				const users = totpAccounts();
+				const { id, secret } = await enrollAndConfirm(users);
+				vi.setSystemTime(Date.now() + 30_000);
+				const firstCode = await generateTotpCode({ secret, timestampMs: Date.now() });
+				expect(await users.verifyTotp(id, firstCode)).toBe(true);
+				vi.setSystemTime(Date.now() + 30_000);
+				const nextCode = await generateTotpCode({ secret, timestampMs: Date.now() });
+
+				expect(await users.verifyTotp(id, nextCode)).toBe(true);
+			});
+
+			test("rejects a drift-window previous-step code once the current step was already used", async () => {
+				const users = totpAccounts();
+				const { id, secret } = await enrollAndConfirm(users);
+				vi.setSystemTime(Date.now() + 30_000);
+				const currentCode = await generateTotpCode({ secret, timestampMs: Date.now() });
+				expect(await users.verifyTotp(id, currentCode)).toBe(true);
+				/** Still inside `verifyTotpCode`'s default drift window, but its step is no longer greater than `totpLastUsedStep`. */
+				const previousCode = await generateTotpCode({ secret, timestampMs: Date.now() - 30_000 });
+
+				expect(await users.verifyTotp(id, previousCode)).toBe(false);
+			});
+
+			test("rejects an unknown code", async () => {
+				const users = totpAccounts();
+				const { id, secret } = await enrollAndConfirm(users);
+				vi.setSystemTime(Date.now() + 30_000);
+				const correctCode = await generateTotpCode({ secret, timestampMs: Date.now() });
+				const wrongCode = correctCode === "000000" ? "111111" : "000000";
+
+				expect(await users.verifyTotp(id, wrongCode)).toBe(false);
+			});
+
+			test("rejects an unknown user", async () => {
+				expect(await totpAccounts().verifyTotp("missing", "123456")).toBe(false);
+			});
+
+			test("rejects when TOTP was never enrolled", async () => {
+				const users = totpAccounts();
+				const created = await users.createUser({ username: "bob", password: "password-1" });
+
+				expect(await users.verifyTotp(created.id, "123456")).toBe(false);
+			});
+
+			test("rejects while enrollment is only pending (not yet confirmed)", async () => {
+				const users = totpAccounts();
+				const created = await users.createUser({ username: "carol", password: "password-1" });
+				const enrollment = await users.beginTotpEnrollment(created.id, { issuer: "Oven" });
+				if (!enrollment) throw new Error("expected an enrollment");
+				const code = await generateTotpCode({ secret: enrollment.secret, timestampMs: Date.now() });
+
+				expect(await users.verifyTotp(created.id, code)).toBe(false);
+			});
+
+			test("throws when the table has no totp columns", async () => {
+				await expect(accounts().verifyTotp("whatever", "123456")).rejects.toThrow(
+					"spread sqliteAdminUserTotpColumns()",
+				);
+			});
+		});
+
+		describe("disableTotp", () => {
+			test("clears TOTP state and a subsequent verifyTotp fails", async () => {
+				const users = totpAccounts();
+				const { id, secret } = await enrollAndConfirm(users);
+				vi.setSystemTime(Date.now() + 30_000);
+				const code = await generateTotpCode({ secret, timestampMs: Date.now() });
+
+				await users.disableTotp(id);
+
+				const persisted = await users.retrieve(id);
+				expect(persisted?.totpSecret).toBeNull();
+				expect(persisted?.totpEnabledAt).toBeNull();
+				expect(persisted?.totpLastUsedStep).toBeNull();
+				expect(await users.verifyTotp(id, code)).toBe(false);
+			});
+
+			test("on a missing user is a no-op", async () => {
+				await expect(totpAccounts().disableTotp("missing")).resolves.toBeUndefined();
+			});
+
+			test("throws when the table has no totp columns", async () => {
+				await expect(accounts().disableTotp("whatever")).rejects.toThrow(
+					"spread sqliteAdminUserTotpColumns()",
+				);
+			});
+		});
+
+		test("createUser strips totpSecret/totpEnabledAt/totpLastUsedStep smuggled through extra input", async () => {
+			const users = totpAccounts();
+			const smuggled = {
+				username: "alice",
+				password: "password-1",
+				totpSecret: "SMUGGLED",
+				totpEnabledAt: Date.now(),
+				totpLastUsedStep: 999,
+			};
+
+			const created = await users.createUser(
+				smuggled as SQLiteAdminAccountsCreateUserInput<typeof schema.adminTotpUsers>,
+			);
+
+			expect(created.totpSecret).toBeNull();
+			expect(created.totpEnabledAt).toBeNull();
+			expect(created.totpLastUsedStep).toBeNull();
+		});
+
+		test("updateUser strips totpSecret/totpEnabledAt/totpLastUsedStep smuggled through extra input", async () => {
+			const users = totpAccounts();
+			const created = await users.createUser({ username: "alice", password: "password-1" });
+			const smuggled = {
+				label: "Ops",
+				totpSecret: "SMUGGLED",
+				totpEnabledAt: Date.now(),
+				totpLastUsedStep: 999,
+			};
+
+			const updated = await users.updateUser(
+				created.id,
+				smuggled as SQLiteAdminAccountsUpdateUserPatch<typeof schema.adminTotpUsers>,
+			);
+
+			expect(updated?.label).toBe("Ops");
+			expect(updated?.totpSecret).toBeNull();
+			expect(updated?.totpEnabledAt).toBeNull();
+			expect(updated?.totpLastUsedStep).toBeNull();
 		});
 	});
 });

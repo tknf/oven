@@ -71,6 +71,13 @@
 			"when": 1783700380410,
 			"tag": "0009_soft_the_spike",
 			"breakpoints": true
+		},
+		{
+			"idx": 10,
+			"version": "7",
+			"when": 1783706214600,
+			"tag": "0010_faulty_thor",
+			"breakpoints": true
 		}
 	]
 }

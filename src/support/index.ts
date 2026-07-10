@@ -1,6 +1,7 @@
 /**
  * Public entry point for `@tknf/oven/support`.
  */
+export * from "./base32.js";
 export * from "./base64url.js";
 export * from "./constant_time.js";
 export * from "./cookie.js";

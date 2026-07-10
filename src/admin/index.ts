@@ -22,3 +22,4 @@ export * from "./admin_accounts_users_delete_view.js";
 export * from "./admin_accounts_groups_list_view.js";
 export * from "./admin_accounts_groups_form_view.js";
 export * from "./admin_accounts_groups_delete_view.js";
+export * from "./admin_totp_view.js";
