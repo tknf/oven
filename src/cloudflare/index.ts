@@ -5,6 +5,7 @@
  */
 export * from "./broadcaster_durable_object.js";
 export * from "./cloudflare_cache_store.js";
+export * from "./cloudflare_email_mailer.js";
 export * from "./cloudflare_job_queue.js";
 export * from "./cloudflare_kv_store.js";
 export * from "./durable_object_broadcaster.js";

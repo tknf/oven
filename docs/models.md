@@ -172,6 +172,199 @@ await db.transaction(async (tx) => {
 });
 ```
 
+### Tenant-scoped models (multi-tenant recipe)
+
+A common shape for a shared-database multi-tenant app is one set of tables
+with a tenant/account column that every query must be filtered by. That
+column is exactly the kind of condition a model's `where` does *not* add for
+you — forgetting it on one call site doesn't error, it silently reads or
+writes across every tenant. oven has no built-in scoping hook (no implicit
+`baseWhere()` merged into every query): `SQLiteModel`/`PgModel`/`MySqlModel`
+are three intentionally parallel implementations with no shared base to hook
+into, and rewriting a caller's query behind their back would conflict with
+the "no magic" principle the rest of this base class follows. Instead, write
+the scope as an explicit subclass: bind the tenant id in the constructor, add
+a `scope()` helper that ANDs it onto any `where` (`and()` drops `undefined`
+operands, so it reads correctly whether a caller passes a `where` or not),
+and override every method that could otherwise leak across tenants.
+
+```ts
+// src/models/tenant_item_model.ts
+import { and, eq } from "drizzle-orm";
+import type { SQL } from "drizzle-orm";
+import type { BaseSQLiteDatabase } from "drizzle-orm/sqlite-core";
+import { SQLiteModel } from "@tknf/oven/model";
+import type { IdGenerator } from "@tknf/oven/support";
+import { items } from "../db/schema.js"; // has an `accountId` column
+
+const schema = { items };
+
+export class TenantItemModel extends SQLiteModel<typeof items, typeof items.id, typeof schema> {
+  constructor(
+    db: BaseSQLiteDatabase<"async", unknown, typeof schema>,
+    private readonly tenantId: string,
+    idGenerator?: IdGenerator,
+    maxInValues?: number,
+  ) {
+    super(db, idGenerator, maxInValues);
+  }
+
+  protected get table() {
+    return items;
+  }
+  protected get primaryKey() {
+    return items.id;
+  }
+
+  private scope(where?: SQL): SQL | undefined {
+    return and(eq(items.accountId, this.tenantId), where);
+  }
+
+  list(where?: SQL) {
+    return super.list(this.scope(where));
+  }
+
+  retrieveBy(where: SQL | undefined) {
+    return super.retrieveBy(this.scope(where));
+  }
+
+  retrieve(pk: string) {
+    return this.retrieveBy(eq(items.id, pk));
+  }
+}
+```
+
+The same substitution — `super.method(this.scope(where))` — covers `count`,
+`exists`, `pluck`, `updateWhere`, and the `where` option of `paginate`/
+`listPage`.
+
+**PK-only methods bypass `where` entirely** (`retrieve`, `update`,
+`updateLocked`, `touch`, `increment`/`decrement`, `delete`), so scoping them
+means re-deriving them instead of passing a `where` through. `retrieve`
+above is one example (routed through the now-scoped `retrieveBy`); the rest
+follow the same idea, reaching `this.db`/`this.table` directly where the base
+class has no `where`-accepting equivalent to delegate to (both are `protected`
+on the base class, so a subclass can use them):
+
+```ts
+async update(pk: string, patch: Partial<typeof items.$inferInsert>) {
+  const updated = await super.updateWhere(this.scope(eq(items.id, pk)), patch);
+  return updated === 0 ? undefined : this.retrieve(pk);
+}
+
+async delete(pk: string) {
+  const [row] = await this.db
+    .delete(this.table)
+    .where(this.scope(eq(items.id, pk)))
+    .returning();
+  return row;
+}
+
+async touch(pk: string): Promise<void> {
+  await this.db
+    .update(this.table)
+    .set({ updatedAt: Date.now() })
+    .where(this.scope(eq(items.id, pk)));
+}
+```
+
+`increment`/`updateLocked` have no `where`-accepting counterpart either, so
+they need the same direct-`this.db` treatment (mirror the base class's own
+`increment`/`updateLocked` implementation in `sqlite_model.ts`, adding
+`this.scope(...)` to the `where`). `decrement` needs no override of its own —
+the base implementation calls `this.increment(...)`, which already resolves
+to your overridden, scoped version through normal method dispatch. The same
+applies to `softDelete`/`restore`: both delegate to `this.update(...)`, so
+overriding `update` as above scopes them for free.
+
+**`listIn`/`groupedIn`/`retrieveMany` don't accept a `where` at all** (they
+build an `inArray` condition internally), so a scoped version can't delegate
+to `super`. Compose the equivalent from the now-scoped `list`/`retrieveBy`
+instead, e.g. `tenantItems.list(inArray(items.id, ids))` for the `listIn`
+case; `groupedIn`/`retrieveMany`'s `Map`-building needs reimplementing on top
+of that same scoped `list` if you need them.
+
+**`create`/`createMany`/`upsert` can't be protected by a `where` at all** —
+scoping an insert means never trusting the tenant column from the caller's
+input and always setting it from `this.tenantId`:
+
+```ts
+type ScopedItemInput = Omit<typeof items.$inferInsert, "id" | "createdAt" | "updatedAt" | "accountId"> &
+  Partial<Pick<typeof items.$inferInsert, "id" | "createdAt" | "updatedAt">>;
+
+create(input: ScopedItemInput) {
+  return super.create({ ...input, accountId: this.tenantId });
+}
+
+createMany(inputs: ScopedItemInput[]) {
+  return super.createMany(inputs.map((input) => ({ ...input, accountId: this.tenantId })));
+}
+```
+
+**`with(tx)` needs its own override too.** The base implementation
+reconstructs `this.constructor` assuming the unchanged `(db, idGenerator?,
+maxInValues?)` signature; once the subclass's constructor takes `tenantId` as
+well, the base's `with` would drop it silently. Re-declare it with the wider
+constructor shape:
+
+```ts
+with(tx: BaseSQLiteDatabase<"async", unknown, typeof schema>): this {
+  const Ctor = this.constructor as new (
+    db: BaseSQLiteDatabase<"async", unknown, typeof schema>,
+    tenantId: string,
+  ) => this;
+  return new Ctor(tx, this.tenantId);
+}
+```
+
+Because this recipe depends on knowing every method the base class exposes,
+guard it with a test that fails the day oven adds a new one — a prompt to
+reconsider whether the new method needs scoping too:
+
+```ts
+import { SQLiteModel } from "@tknf/oven/model";
+
+test("SQLiteModel's public surface hasn't grown past what TenantItemModel scopes", () => {
+  // Includes `constructor` and the compile-time-only "private" methods too —
+  // `private` is a type-checker concept, not a runtime one, so both still
+  // show up in this enumeration alongside the public methods above.
+  expect(Object.getOwnPropertyNames(SQLiteModel.prototype).sort()).toEqual(
+    [
+      "constructor",
+      "retrieve",
+      "retrieveBy",
+      "list",
+      "exists",
+      "count",
+      "pluck",
+      "listIn",
+      "groupedIn",
+      "retrieveMany",
+      "paginate",
+      "listPage",
+      "create",
+      "createMany",
+      "update",
+      "updateWhere",
+      "updateLocked",
+      "softDelete",
+      "restore",
+      "upsert",
+      "touch",
+      "increment",
+      "decrement",
+      "delete",
+      "with",
+      "withAutoFields",
+      "withTouchedUpdatedAt",
+      "lockVersionColumn",
+      "assertDeletedAtColumn",
+      "assertWithinMaxInValues",
+    ].sort(),
+  );
+});
+```
+
 ## Gotchas / Security notes
 
 - **`maxInValues` upper bound.** `listIn`/`groupedIn`/`retrieveMany` throw
@@ -188,6 +381,12 @@ await db.transaction(async (tx) => {
   `deletedAt`; every read call site is responsible for filtering it out
   when that's the desired behavior (a deliberate consequence of the
   "no magic" design principle).
+- **No built-in tenant/row-level scope, either.** A shared-database
+  multi-tenant table has the same "no magic" consequence as soft delete: every
+  `where` is caller-composed, and PK-only methods (`retrieve`/`update`/
+  `delete`/...) bypass `where` entirely. See
+  [Tenant-scoped models](#tenant-scoped-models-multi-tenant-recipe) for the
+  full recipe.
 - **Automatic `id` generation assumes a string primary key.** The base
   class fills in `id` from an `IdGenerator` (Snowflake by default) only
   when the table has an `id` column and it wasn't supplied — this assumes

@@ -126,6 +126,28 @@ export class PostmarkMailer extends FetchMailer {
 }
 ```
 
+**Sending through a Cloudflare Email Sending binding with
+`CloudflareEmailMailer`.** `@tknf/oven/cloudflare` ships a ready-made
+`Mailer` that wraps a `SendEmail` binding (configured as `send_email` in
+`wrangler.jsonc`; see [Deployment § Email Sending](./deployment.md#email-sending)
+for the binding config). Unlike `FetchMailer` subclasses, it needs no
+`buildRequest` override — construct it directly with the binding:
+
+```ts
+import { CloudflareEmailMailer } from "@tknf/oven/cloudflare";
+
+export const mailer = new CloudflareEmailMailer(env.SEND_EMAIL);
+```
+
+It validates the message with `assertNoMailHeaderInjection` itself (like
+`FetchMailer`, just implemented directly since it doesn't extend
+`FetchMailer`), then hands the message to the binding's
+`EmailMessageBuilder` overload — the binding composes the outgoing MIME
+message, so this adapter never constructs raw MIME. `MailAttachment.content`
+is base64-encoded automatically unless it's already `encoding: "base64"`,
+since the binding requires attachment content to be base64 when it's a
+`string`.
+
 **Mounting `MailPreviewHandler` for development.** It takes a table of
 preview name → factory returning a `MailMessage`, and exposes a listing
 page plus one detail page per preview (`?part=text` shows the plain-text
@@ -191,7 +213,9 @@ as-is on any `JobQueue` backend, including ones that persist the payload.
   `textBody`/`htmlBody` are body content and are intentionally excluded from
   this check. If you extend `Mailer` directly instead of `FetchMailer`,
   you're responsible for running the same validation yourself before
-  sending.
+  sending — `CloudflareEmailMailer` is the one adapter oven ships that does
+  this (it calls `assertNoMailHeaderInjection` itself, since it extends
+  `Mailer` directly rather than `FetchMailer`).
 - **`MailTemplate`'s HTML is auto-escaped through Hono's JSX, but only
   values passed as JSX children/attributes** — anything you construct as a
   raw string outside of JSX (e.g. string-concatenating into `html()`
@@ -216,3 +240,5 @@ as-is on any `JobQueue` backend, including ones that persist the payload.
   backend-agnostic abstractions.
 - [Jobs](./jobs.md) — `Job`, `JobRegistry`, and `JobQueue`, which
   `DeliverMailJob` builds on.
+- [Deployment § Email Sending](./deployment.md#email-sending) — wiring the
+  `SendEmail` binding that `CloudflareEmailMailer` wraps.

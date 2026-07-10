@@ -136,7 +136,7 @@ except `cloudflare`, `node`, and `test`.
 | `@tknf/oven/helpers`    | CSV, `formatCurrency`/`formatDateTime`, `domId`                                                                                                                                                                                                                                                                                           |
 | `@tknf/oven/support`    | `IdGenerator` variants, `CookieAccessor`/`SignedCookieAccessor`, base64url, `validateEnv`, `constantTimeEqual`                                                                                                                                                                                                                            |
 | `@tknf/oven/vite`       | `ViteAssets`, `parseViteManifest`                                                                                                                                                                                                                                                                                                         |
-| `@tknf/oven/cloudflare` | `CloudflareKVStore`, `R2Storage`, `CloudflareCacheStore`, `CloudflareJobQueue`, `QueueConsumer`, `ScheduledDispatcher`, `DurableObjectBroadcaster`, `BroadcasterDurableObject`                                                                                                                                                            |
+| `@tknf/oven/cloudflare` | `CloudflareKVStore`, `R2Storage`, `CloudflareCacheStore`, `CloudflareJobQueue`, `QueueConsumer`, `ScheduledDispatcher`, `CloudflareEmailMailer`, `DurableObjectBroadcaster`, `BroadcasterDurableObject`                                                                                                                                   |
 | `@tknf/oven/node`       | `FileKeyValueStore`, `FileStorage`                                                                                                                                                                                                                                                                                                        |
 | `@tknf/oven/test`       | `createTestDb`, `defineFactory`, `actingAs`, `TestJobQueue`, `TestMailer`, `stubBinding`                                                                                                                                                                                                                                                  |
 
@@ -178,6 +178,14 @@ area, example-first). Consult them for depth.
 - **`Model` soft delete has no implicit global scope** — add
   `isNull(table.deletedAt)` to your own `where` when you want to exclude deleted
   rows. Concurrency uses `updateLocked` + a `lockVersion` column (`StaleRecordError`).
+- **`Model` has no built-in tenant/row-level scope either.** `where` is always
+  composed by the caller, and PK-only methods (`retrieve`/`update`/`delete`/
+  `touch`/`increment`/`decrement`/`updateLocked`) bypass `where` entirely — a
+  forgotten tenant condition silently reads/writes across every tenant. Write
+  the scope as an explicit subclass (bind the tenant id, override every
+  method that can leak); see the "Tenant-scoped models" recipe in
+  `docs/models.md` for the full pattern, including `with(tx)` and the
+  INSERT-side pitfall.
 - **CSRF is not automatic on `AdminPanel`** — inject a `Csrf` instance so write
   routes are verified.
 - **`AdminPanel`'s header user-tools block is opt-in** — inject
