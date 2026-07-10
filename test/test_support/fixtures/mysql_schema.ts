@@ -19,9 +19,13 @@
  * `varchar(4096)`, `lastError` as `varchar(2048)`) are unified into the default schema's `text`
  * columns (this column type change is intentional).
  */
-import { bigint, mysqlTable, varchar } from "drizzle-orm/mysql-core";
+import { bigint, mysqlTable, uniqueIndex, varchar } from "drizzle-orm/mysql-core";
 /** Direct-file import (not `src/admin/index.js`): the admin index star-exports `.tsx` view modules, which drizzle-kit (which loads this schema) should not have to parse. */
-import { mysqlAdminUsersTable } from "../../../src/admin/mysql_admin_accounts.js";
+import {
+	mysqlAdminUserColumns,
+	mysqlAdminUserLockoutColumns,
+	mysqlAdminUsersTable,
+} from "../../../src/admin/mysql_admin_accounts.js";
 import {
 	mysqlAdminGroupsTable,
 	mysqlAdminUserGroupsTable,
@@ -56,3 +60,19 @@ export const adminUsers = mysqlAdminUsersTable();
 export const adminGroups = mysqlAdminGroupsTable();
 
 export const adminUserGroups = mysqlAdminUserGroupsTable();
+
+/**
+ * Lockout-capable admin-user table verifying the documented lockout extension
+ * recipe (spreading `mysqlAdminUserColumns()` and `mysqlAdminUserLockoutColumns()`
+ * into an app-defined table) through the migration generation/application
+ * path. A MySQL-dialect counterpart to the SQLite `adminLockoutUsers` fixture
+ * table.
+ */
+export const adminLockoutUsers = mysqlTable(
+	"admin_lockout_users",
+	{
+		...mysqlAdminUserColumns(),
+		...mysqlAdminUserLockoutColumns(),
+	},
+	(t) => [uniqueIndex("admin_lockout_users_username_idx").on(t.username)],
+);

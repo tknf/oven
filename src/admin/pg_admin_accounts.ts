@@ -22,13 +22,20 @@
  * SQLite version. The one behavioral divergence is `listUsers`/`count` search:
  * Postgres `LIKE` is case-sensitive (see `searchCondition`).
  *
+ * **Opt-in account lockout** works the same way as the SQLite version (see its
+ * module JSDoc): spread `pgAdminUserLockoutColumns()` into the table and pass
+ * a `lockout` option to the constructor. `lockedUntil` uses
+ * `bigint(..., { mode: "number" })` for the same range reason as
+ * `lastLoginAt`/`createdAt`/`updatedAt`; `failedAttempts` uses plain
+ * `integer()` since a failed-attempt count never approaches 32-bit range.
+ *
  * The type of `db` is `PgDatabase<TQueryResult, TSchema>` (see the module JSDoc
  * of `pg_model.ts` for why `TQueryResult` is promoted to a class type
  * parameter), and `TSchema` is generic for the same reason as `SQLiteAdminAccounts`.
  */
 import { and, asc, count as countRows, eq, or, sql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
-import { bigint, boolean, pgTable, text, uniqueIndex } from "drizzle-orm/pg-core";
+import { bigint, boolean, integer, pgTable, text, uniqueIndex } from "drizzle-orm/pg-core";
 import type {
 	AnyPgColumn,
 	PgDatabase,
@@ -113,7 +120,9 @@ export type PgAdminUserRecord<TUsers extends PgAdminUserRecordTable> = TUsers["$
  * Column keys owned and managed by `PgAdminAccounts`. They are excluded from
  * the extra-column input type (`PgAdminUserExtraInput`) and stripped from extra
  * input at runtime, so callers can never smuggle e.g. a `passwordHash` through
- * the extension mechanism.
+ * the extension mechanism. `failedAttempts`/`lockedUntil` are reserved here
+ * even though they are optional columns (see `pgAdminUserLockoutColumns`):
+ * when a table has them, only `authenticate` and `unlockUser` may write them.
  */
 type ReservedAdminUserColumnKey =
 	| "id"
@@ -125,7 +134,9 @@ type ReservedAdminUserColumnKey =
 	| "permissions"
 	| "lastLoginAt"
 	| "createdAt"
-	| "updatedAt";
+	| "updatedAt"
+	| "failedAttempts"
+	| "lockedUntil";
 
 /** Runtime counterpart of `ReservedAdminUserColumnKey`, used to strip reserved keys from extra-column input. */
 const RESERVED_ADMIN_USER_COLUMN_KEYS: ReadonlySet<string> = new Set([
@@ -139,6 +150,8 @@ const RESERVED_ADMIN_USER_COLUMN_KEYS: ReadonlySet<string> = new Set([
 	"lastLoginAt",
 	"createdAt",
 	"updatedAt",
+	"failedAttempts",
+	"lockedUntil",
 ] satisfies ReservedAdminUserColumnKey[]);
 
 /**
@@ -171,6 +184,42 @@ type AdminUserBaseRow = {
 };
 
 /**
+ * The structural contract for a table that additionally carries the opt-in
+ * lockout columns (see `pgAdminUserLockoutColumns`), following the same
+ * per-field `AnyPgColumn<{...}>` idiom as `PgAdminUserRecordTable`.
+ * `PgAdminAccountsOptions#lockout` requires the constructor's table to satisfy
+ * this (checked at runtime via `hasLockoutColumns`, since the base
+ * `PgAdminUserRecordTable` contract does not guarantee it).
+ */
+export type PgAdminUserLockoutRecordTable = PgAdminUserRecordTable & {
+	failedAttempts: AnyPgColumn<{ data: number; notNull: true }>;
+	lockedUntil: AnyPgColumn<{ data: number; notNull: false }>;
+};
+
+/**
+ * Runtime type guard for `PgAdminUserLockoutRecordTable`: whether `table`
+ * actually carries `failedAttempts`/`lockedUntil`. The base contract doesn't
+ * guarantee these (they're an opt-in extension), so this is checked once at
+ * construction (when `PgAdminAccountsOptions#lockout` is set) and again by
+ * `unlockUser` (which works off column presence alone, independent of whether
+ * `lockout` was configured).
+ */
+const hasLockoutColumns = <TUsers extends PgAdminUserRecordTable>(
+	table: TUsers,
+): table is TUsers & PgAdminUserLockoutRecordTable =>
+	"failedAttempts" in table && "lockedUntil" in table;
+
+/**
+ * The lockout columns' concrete data types, read off a row of the generic
+ * table the same way `AdminUserBaseRow` reads the base columns (see
+ * `lockoutBaseRow`).
+ */
+type AdminUserLockoutBaseRow = {
+	failedAttempts: number;
+	lockedUntil: number | null;
+};
+
+/**
  * Copies extra-column input into a fresh record, dropping any reserved key.
  * The type level already excludes reserved keys (`PgAdminUserExtraInput`), so
  * this is a runtime backstop for callers that bypass the types.
@@ -191,6 +240,20 @@ const sanitizeExtraColumns = (extras: object): Record<string, unknown> => {
 	return sanitized;
 };
 
+/**
+ * Opt-in failed-attempt lockout configuration, passed as
+ * `PgAdminAccountsOptions#lockout`. Requires the constructor's table to
+ * satisfy `PgAdminUserLockoutRecordTable` (spread `pgAdminUserLockoutColumns()`
+ * into it) — the constructor throws otherwise. See `PgAdminAccounts#authenticate`
+ * for the algorithm.
+ */
+export type PgAdminAccountsLockoutOptions = {
+	/** Number of consecutive failed attempts that locks the account. Must be at least 1. */
+	maxAttempts: number;
+	/** How long, in seconds, a triggered lock lasts before it expires on its own. Must be at least 1. */
+	lockDurationSeconds: number;
+};
+
 /** Options for constructing a `PgAdminAccounts`. */
 export type PgAdminAccountsOptions = {
 	/** `IdGenerator` used for id generation. Defaults to `SnowflakeIdGenerator` (same convention as `PgModel`). */
@@ -199,6 +262,12 @@ export type PgAdminAccountsOptions = {
 	iterations?: number;
 	/** Minimum accepted password length. Defaults to 8. The hard maximum is always 1024 (see `MAX_PASSWORD_LENGTH`). */
 	minPasswordLength?: number;
+	/**
+	 * Opt-in per-account failed-attempt lockout. Omitted (the default) means
+	 * `authenticate` never reads or writes `failedAttempts`/`lockedUntil`, even
+	 * when the table has them.
+	 */
+	lockout?: PgAdminAccountsLockoutOptions;
 };
 
 /** Input for `PgAdminAccounts#createUser` (plus the extended table's extra columns, when present). */
@@ -252,6 +321,14 @@ export class PgAdminAccounts<
 	private readonly idGenerator: IdGenerator;
 	private readonly iterations: number | undefined;
 	private readonly minPasswordLength: number;
+	private readonly lockout: PgAdminAccountsLockoutOptions | undefined;
+	/**
+	 * The constructor's table, narrowed to `PgAdminUserLockoutRecordTable` when
+	 * it actually carries the lockout columns — `undefined` otherwise. Computed
+	 * once regardless of whether `lockout` was configured, so `unlockUser` can
+	 * work off column presence alone.
+	 */
+	private readonly lockoutColumns: (TUsers & PgAdminUserLockoutRecordTable) | undefined;
 
 	constructor(
 		private readonly db: PgDatabase<TQueryResult, TSchema>,
@@ -261,6 +338,21 @@ export class PgAdminAccounts<
 		this.idGenerator = options.idGenerator ?? new SnowflakeIdGenerator();
 		this.iterations = options.iterations;
 		this.minPasswordLength = options.minPasswordLength ?? DEFAULT_MIN_PASSWORD_LENGTH;
+		this.lockoutColumns = hasLockoutColumns(table) ? table : undefined;
+		if (options.lockout !== undefined) {
+			if (options.lockout.maxAttempts < 1) {
+				throw new Error("PgAdminAccounts: lockout.maxAttempts must be at least 1");
+			}
+			if (options.lockout.lockDurationSeconds < 1) {
+				throw new Error("PgAdminAccounts: lockout.lockDurationSeconds must be at least 1");
+			}
+			if (this.lockoutColumns === undefined) {
+				throw new Error(
+					"PgAdminAccounts: lockout requires failedAttempts/lockedUntil columns on the table — spread pgAdminUserLockoutColumns() into it",
+				);
+			}
+		}
+		this.lockout = options.lockout;
 	}
 
 	/**
@@ -335,7 +427,8 @@ export class PgAdminAccounts<
 	 * far as this method controls: when no user matches, `verifyPassword` still
 	 * runs against a fixed dummy hash (account-enumeration defense per
 	 * `auth/password.ts`); when the user exists, the hash is verified BEFORE the
-	 * `isActive` check, so an inactive account costs the same as an active one.
+	 * `isActive` check (and before the lockout check below), so an inactive or
+	 * locked account costs the same as an active, unlocked one.
 	 *
 	 * A password longer than `MAX_PASSWORD_LENGTH` is rejected up front, before
 	 * any user lookup, so the early return applies uniformly and cannot reveal
@@ -347,6 +440,21 @@ export class PgAdminAccounts<
 	 * deliberately NOT touched: it tracks profile edits, and a login is not an
 	 * edit. The returned row carries the new `lastLoginAt` patched in memory (no
 	 * re-select).
+	 *
+	 * **When `PgAdminAccountsOptions#lockout` is configured** (and only then —
+	 * otherwise this method never reads or writes `failedAttempts`/
+	 * `lockedUntil`), a currently-locked account (`lockedUntil` in the future)
+	 * still runs `verifyPassword` for timing parity, then always returns `null`
+	 * with no writes, regardless of whether the password was correct — the same
+	 * `null` an unlocked account gets for a wrong password, so a locked account
+	 * is not distinguishable from a merely-wrong-password one. A wrong password
+	 * on an unlocked account increments `failedAttempts` and conditionally sets
+	 * `lockedUntil` in a single atomic UPDATE (`recordFailedAttempt`), counted
+	 * regardless of `isActive` for the same timing-parity reason. A successful
+	 * login resets both columns to their unlocked state as part of the same
+	 * UPDATE that sets `lastLoginAt`. An expired lock (`lockedUntil` in the
+	 * past) simply stops blocking; the stale counter is reset by the next
+	 * successful login, or explicitly via `unlockUser`.
 	 */
 	async authenticate(credentials: {
 		username: string;
@@ -360,19 +468,39 @@ export class PgAdminAccounts<
 		}
 		const base = this.baseRow(row);
 		const matched = await verifyPassword(credentials.password, base.passwordHash);
-		if (!matched) return null;
+		if (this.lockout !== undefined && this.lockoutColumns !== undefined) {
+			const lockoutBase = this.lockoutBaseRow(row);
+			if (lockoutBase.lockedUntil !== null && lockoutBase.lockedUntil > Date.now()) {
+				return null;
+			}
+			if (!matched) {
+				await this.recordFailedAttempt(this.lockoutColumns, this.lockout, base.id);
+				return null;
+			}
+		} else if (!matched) {
+			return null;
+		}
 		if (!base.isActive) return null;
 		const lastLoginAt = Date.now();
+		const update: Record<string, unknown> = { lastLoginAt };
+		if (this.lockout !== undefined) {
+			update.failedAttempts = 0;
+			update.lockedUntil = null;
+		}
 		await this.db
 			.update(this.pgTable)
-			.set({ lastLoginAt } as Partial<TUsers["$inferInsert"]>)
+			.set(update as Partial<TUsers["$inferInsert"]>)
 			.where(eq(this.table.id, base.id));
 		/**
 		 * Spreading the generic row loses its identity with `$inferSelect` at the
-		 * type level even though only `lastLoginAt` (a contract column) changes,
-		 * so `as` is used only here.
+		 * type level even though only contract columns change, so `as` is used
+		 * only here.
 		 */
-		return { ...row, lastLoginAt } as PgAdminUserRecord<TUsers>;
+		return {
+			...row,
+			lastLoginAt,
+			...(this.lockout !== undefined ? { failedAttempts: 0, lockedUntil: null } : {}),
+		} as PgAdminUserRecord<TUsers>;
 	}
 
 	/**
@@ -386,6 +514,28 @@ export class PgAdminAccounts<
 		await this.db
 			.update(this.pgTable)
 			.set({ passwordHash, updatedAt: Date.now() } as Partial<TUsers["$inferInsert"]>)
+			.where(eq(this.table.id, userId));
+	}
+
+	/**
+	 * Clears the lockout state of the given user (`failedAttempts = 0`,
+	 * `lockedUntil = null`). A missing user is a no-op (the UPDATE simply
+	 * matches zero rows), matching `setPassword`'s convention.
+	 *
+	 * Gated purely on column presence: this works whenever the table has
+	 * `failedAttempts`/`lockedUntil`, whether or not
+	 * `PgAdminAccountsOptions#lockout` was passed to the constructor, and
+	 * throws when the columns are absent.
+	 */
+	async unlockUser(userId: string): Promise<void> {
+		if (this.lockoutColumns === undefined) {
+			throw new Error(
+				"PgAdminAccounts#unlockUser: the table has no failedAttempts/lockedUntil columns — spread pgAdminUserLockoutColumns() into it",
+			);
+		}
+		await this.db
+			.update(this.pgTable)
+			.set({ failedAttempts: 0, lockedUntil: null } as Partial<TUsers["$inferInsert"]>)
 			.where(eq(this.table.id, userId));
 	}
 
@@ -585,10 +735,46 @@ export class PgAdminAccounts<
 		return row as AdminUserBaseRow;
 	}
 
+	/**
+	 * Reads `failedAttempts`/`lockedUntil` off a row of the generic table, for
+	 * the same reason and with the same `as` justification as `baseRow`. Only
+	 * called from `authenticate` after `this.lockoutColumns` has already
+	 * confirmed the table carries these columns.
+	 */
+	private lockoutBaseRow(row: PgAdminUserRecord<TUsers>): AdminUserLockoutBaseRow {
+		return row as AdminUserLockoutBaseRow;
+	}
+
 	/** Whether the given row is currently both a superuser and active. */
 	private isActiveSuperuser(row: PgAdminUserRecord<TUsers>): boolean {
 		const base = this.baseRow(row);
 		return base.isSuperuser && base.isActive;
+	}
+
+	/**
+	 * Records one failed login attempt as a single atomic UPDATE:
+	 * `failedAttempts` is incremented, and `lockedUntil` is set to
+	 * `Date.now() + lockDurationSeconds * 1000` only when the incremented count
+	 * reaches `maxAttempts` (otherwise it is left as-is via the `CASE WHEN` —
+	 * SQL, not a read-then-write, so a concurrent request cannot race past the
+	 * threshold check). Called from `authenticate` for a wrong password on an
+	 * unlocked account.
+	 */
+	private async recordFailedAttempt(
+		lockoutTable: TUsers & PgAdminUserLockoutRecordTable,
+		lockout: PgAdminAccountsLockoutOptions,
+		userId: string,
+	): Promise<void> {
+		const lockedUntilOnThreshold = Date.now() + lockout.lockDurationSeconds * 1000;
+		/** `Record<string, unknown>` + `as`, same convention as `createUser`'s `values`. */
+		const update: Record<string, unknown> = {
+			failedAttempts: sql`${lockoutTable.failedAttempts} + 1`,
+			lockedUntil: sql`case when ${lockoutTable.failedAttempts} + 1 >= ${lockout.maxAttempts} then ${lockedUntilOnThreshold} else ${lockoutTable.lockedUntil} end`,
+		};
+		await this.db
+			.update(this.pgTable)
+			.set(update as Partial<TUsers["$inferInsert"]>)
+			.where(eq(this.table.id, userId));
 	}
 
 	/**
@@ -689,3 +875,28 @@ export const pgAdminUsersTable = (tableName = "admin_users") =>
 		/** Uniqueness of the (normalized) username; `createUser`'s pre-check is advisory, this index is authoritative. */
 		uniqueIndex(`${tableName}_username_idx`).on(t.username),
 	]) satisfies PgAdminUserRecordTable;
+
+/**
+ * Returns a fresh record of the column builders for the opt-in lockout
+ * columns. Spread alongside `pgAdminUserColumns()` into the same table to
+ * enable `PgAdminAccountsOptions#lockout`:
+ *
+ * ```ts
+ * export const adminUsers = pgTable(
+ *   "admin_users",
+ *   { ...pgAdminUserColumns(), ...pgAdminUserLockoutColumns() },
+ *   (t) => [uniqueIndex("admin_users_username_idx").on(t.username)],
+ * );
+ * ```
+ *
+ * `failedAttempts` counts consecutive failed logins (defaults to 0);
+ * `lockedUntil` is `null` while unlocked and an epoch-ms timestamp while
+ * locked (`bigint(..., { mode: "number" })` for the same range reason as
+ * `lastLoginAt`). Both are reserved columns (see `ReservedAdminUserColumnKey`)
+ * — only `PgAdminAccounts#authenticate` and `#unlockUser` ever write them. See
+ * `authenticate`'s JSDoc for the algorithm.
+ */
+export const pgAdminUserLockoutColumns = () => ({
+	failedAttempts: integer("failed_attempts").notNull().default(0),
+	lockedUntil: bigint("locked_until", { mode: "number" }),
+});

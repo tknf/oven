@@ -20,9 +20,13 @@
  * `pgAdminUsersTable`/`pgAdminGroupsTable`/`pgAdminUserGroupsTable`) as-is. This verifies the
  * factory-produced default schemas themselves through the migration generation/application path.
  */
-import { bigint, pgTable, text } from "drizzle-orm/pg-core";
+import { bigint, pgTable, text, uniqueIndex } from "drizzle-orm/pg-core";
 /** Direct-file import (not `src/admin/index.js`): the admin index star-exports `.tsx` view modules, which drizzle-kit (which loads this schema) should not have to parse. */
-import { pgAdminUsersTable } from "../../../src/admin/pg_admin_accounts.js";
+import {
+	pgAdminUserColumns,
+	pgAdminUserLockoutColumns,
+	pgAdminUsersTable,
+} from "../../../src/admin/pg_admin_accounts.js";
 import { pgAdminGroupsTable, pgAdminUserGroupsTable } from "../../../src/admin/pg_admin_groups.js";
 import { pgAuditsTable } from "../../../src/audit/index.js";
 import { pgJobsTable } from "../../../src/jobs/index.js";
@@ -54,3 +58,19 @@ export const adminUsers = pgAdminUsersTable();
 export const adminGroups = pgAdminGroupsTable();
 
 export const adminUserGroups = pgAdminUserGroupsTable();
+
+/**
+ * Lockout-capable admin-user table verifying the documented lockout extension
+ * recipe (spreading `pgAdminUserColumns()` and `pgAdminUserLockoutColumns()`
+ * into an app-defined table) through the migration generation/application
+ * path. A Postgres-dialect counterpart to the SQLite `adminLockoutUsers`
+ * fixture table.
+ */
+export const adminLockoutUsers = pgTable(
+	"admin_lockout_users",
+	{
+		...pgAdminUserColumns(),
+		...pgAdminUserLockoutColumns(),
+	},
+	(t) => [uniqueIndex("admin_lockout_users_username_idx").on(t.username)],
+);
