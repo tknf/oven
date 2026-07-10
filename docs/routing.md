@@ -204,6 +204,39 @@ supported language. Pass `options.t` (a `Translator<C>`'s `t`, see
 - **The Hono RPC client (`hc`) type chain is not preserved** across
   `RouteHandler` subclassing. This is an accepted tradeoff for oven's
   server-rendered target (Hono/JSX SSR, not an RPC client workflow).
+- **Mounting at the app root (`app.route("/", handler)`) leaks `layout()`
+  and `middleware()` onto the whole parent app.** Both compile down to a
+  path-less `this.use(...)` in the constructor, which Hono registers under
+  its internal `"*"` path; `app.route(path, handler)` lifts that
+  registration onto the parent via `mergePath(path, "*")`. For any other
+  `path` this merges to a scoped `"<path>/*"`, but for `path === "/"` it
+  merges to `"/*"` — every route on the parent, not just this handler's
+  own routes:
+
+  ```ts
+  // Leaks: every route on `app`, not just SystemHandler's own, now runs
+  // through AdminLayout and requireAdminAuth.
+  class SystemHandler extends RouteHandler {
+    protected layout() { return AdminLayout; }
+    protected middleware() { return [requireAdminAuth]; }
+    protected register() { this.get("/up", (c) => c.text("ok")); }
+  }
+  app.route("/", new SystemHandler());
+  ```
+
+  ```ts
+  // Scoped: mount on a dedicated base path instead of "/".
+  app.route("/system", new SystemHandler());
+
+  // Or, if it must stay at the root, leave layout()/middleware() unset and
+  // apply them per route inside register() instead.
+  class SystemHandler extends RouteHandler {
+    protected register() {
+      this.get("/up", requireAdminAuth, jsxRenderer(AdminLayout), (c) => c.text("ok"));
+    }
+  }
+  app.route("/", new SystemHandler());
+  ```
 - `ContextAccessor#use(c)` throws (naming the missing key) rather than
   returning `undefined` when `register` was never applied to that route —
   treat that error as "you forgot `app.use(x.register)`" rather than an

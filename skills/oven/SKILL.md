@@ -150,6 +150,12 @@ area, example-first). Consult them for depth.
 - **Reserved names.** A `RouteHandler` subclass must not reuse names Hono holds
   (`get`, `post`, `use`, `route`, `routes`, `fetch`, `onError`, ...). Shadowing
   `routes` breaks the instance.
+- **`app.route("/", handler)` leaks `layout()`/`middleware()` to the whole
+  app.** Both compile to a path-less `this.use(...)`, registered under Hono's
+  internal `"*"`; mounting merges that to `"<path>/*"` via `mergePath`, which
+  for `path === "/"` is `"/*"` — every route on the parent app. Mount on a
+  dedicated base path instead, or, if the handler must sit at the root, leave
+  `layout()`/`middleware()` unset and apply them per route inside `register()`.
 - **`secure` cookie attribute is OFF by default** (session cookie, remember
   token). Set `secure: true` explicitly in production via the cookie options.
 - **`storage.destroy(session)` always wins over `SessionAccessor`'s auto-commit.**
