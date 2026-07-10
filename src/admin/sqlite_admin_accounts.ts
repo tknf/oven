@@ -32,6 +32,15 @@
  * `SQLiteAdminUserRecordTable`, and `SQLiteAdminAccounts` is generic over the
  * concrete table so the extra columns stay typed on inputs and returned rows.
  *
+ * **Opt-in account lockout**: apps that want failed-attempt lockout spread
+ * `sqliteAdminUserLockoutColumns()` into the same table (alongside
+ * `sqliteAdminUserColumns()`) and pass a `lockout` option to the constructor.
+ * The columns and the option are both optional and independent of each
+ * other's presence: `authenticate` only reads/writes `failedAttempts`/
+ * `lockedUntil` when `lockout` is configured, and `unlockUser` works off the
+ * columns alone regardless of whether `lockout` was configured. See
+ * `authenticate`'s JSDoc for the algorithm.
+ *
  * The type of `db` is made generic over `TSchema` for the same reason as
  * `SQLiteModel` (accepting a `db` built by passing a concrete schema, e.g.
  * `drizzle(client, { schema })`, as-is).
@@ -125,7 +134,10 @@ export type SQLiteAdminUserRecord<TUsers extends SQLiteAdminUserRecordTable> =
  * Column keys owned and managed by `SQLiteAdminAccounts`. They are excluded
  * from the extra-column input type (`SQLiteAdminUserExtraInput`) and stripped
  * from extra input at runtime, so callers can never smuggle e.g. a
- * `passwordHash` through the extension mechanism.
+ * `passwordHash` through the extension mechanism. `failedAttempts`/
+ * `lockedUntil` are reserved here even though they are optional columns (see
+ * `sqliteAdminUserLockoutColumns`): when a table has them, only `authenticate`
+ * and `unlockUser` may write them.
  */
 type ReservedAdminUserColumnKey =
 	| "id"
@@ -137,7 +149,9 @@ type ReservedAdminUserColumnKey =
 	| "permissions"
 	| "lastLoginAt"
 	| "createdAt"
-	| "updatedAt";
+	| "updatedAt"
+	| "failedAttempts"
+	| "lockedUntil";
 
 /** Runtime counterpart of `ReservedAdminUserColumnKey`, used to strip reserved keys from extra-column input. */
 const RESERVED_ADMIN_USER_COLUMN_KEYS: ReadonlySet<string> = new Set([
@@ -151,6 +165,8 @@ const RESERVED_ADMIN_USER_COLUMN_KEYS: ReadonlySet<string> = new Set([
 	"lastLoginAt",
 	"createdAt",
 	"updatedAt",
+	"failedAttempts",
+	"lockedUntil",
 ] satisfies ReservedAdminUserColumnKey[]);
 
 /**
@@ -183,6 +199,42 @@ type AdminUserBaseRow = {
 };
 
 /**
+ * The structural contract for a table that additionally carries the opt-in
+ * lockout columns (see `sqliteAdminUserLockoutColumns`), following the same
+ * per-field `AnySQLiteColumn<{...}>` idiom as `SQLiteAdminUserRecordTable`.
+ * `SQLiteAdminAccountsOptions#lockout` requires the constructor's table to
+ * satisfy this (checked at runtime via `hasLockoutColumns`, since the base
+ * `SQLiteAdminUserRecordTable` contract does not guarantee it).
+ */
+export type SQLiteAdminUserLockoutRecordTable = SQLiteAdminUserRecordTable & {
+	failedAttempts: AnySQLiteColumn<{ data: number; notNull: true }>;
+	lockedUntil: AnySQLiteColumn<{ data: number; notNull: false }>;
+};
+
+/**
+ * Runtime type guard for `SQLiteAdminUserLockoutRecordTable`: whether `table`
+ * actually carries `failedAttempts`/`lockedUntil`. The base contract doesn't
+ * guarantee these (they're an opt-in extension), so this is checked once at
+ * construction (when `SQLiteAdminAccountsOptions#lockout` is set) and again by
+ * `unlockUser` (which works off column presence alone, independent of whether
+ * `lockout` was configured).
+ */
+const hasLockoutColumns = <TUsers extends SQLiteAdminUserRecordTable>(
+	table: TUsers,
+): table is TUsers & SQLiteAdminUserLockoutRecordTable =>
+	"failedAttempts" in table && "lockedUntil" in table;
+
+/**
+ * The lockout columns' concrete data types, read off a row of the generic
+ * table the same way `AdminUserBaseRow` reads the base columns (see
+ * `lockoutBaseRow`).
+ */
+type AdminUserLockoutBaseRow = {
+	failedAttempts: number;
+	lockedUntil: number | null;
+};
+
+/**
  * Copies extra-column input into a fresh record, dropping any reserved key.
  * The type level already excludes reserved keys (`SQLiteAdminUserExtraInput`),
  * so this is a runtime backstop for callers that bypass the types.
@@ -203,6 +255,20 @@ const sanitizeExtraColumns = (extras: object): Record<string, unknown> => {
 	return sanitized;
 };
 
+/**
+ * Opt-in failed-attempt lockout configuration, passed as
+ * `SQLiteAdminAccountsOptions#lockout`. Requires the constructor's table to
+ * satisfy `SQLiteAdminUserLockoutRecordTable` (spread
+ * `sqliteAdminUserLockoutColumns()` into it) — the constructor throws
+ * otherwise. See `SQLiteAdminAccounts#authenticate` for the algorithm.
+ */
+export type SQLiteAdminAccountsLockoutOptions = {
+	/** Number of consecutive failed attempts that locks the account. Must be at least 1. */
+	maxAttempts: number;
+	/** How long, in seconds, a triggered lock lasts before it expires on its own. Must be at least 1. */
+	lockDurationSeconds: number;
+};
+
 /** Options for constructing a `SQLiteAdminAccounts`. */
 export type SQLiteAdminAccountsOptions = {
 	/** `IdGenerator` used for id generation. Defaults to `SnowflakeIdGenerator` (same convention as `SQLiteModel`). */
@@ -211,6 +277,12 @@ export type SQLiteAdminAccountsOptions = {
 	iterations?: number;
 	/** Minimum accepted password length. Defaults to 8. The hard maximum is always 1024 (see `MAX_PASSWORD_LENGTH`). */
 	minPasswordLength?: number;
+	/**
+	 * Opt-in per-account failed-attempt lockout. Omitted (the default) means
+	 * `authenticate` never reads or writes `failedAttempts`/`lockedUntil`, even
+	 * when the table has them.
+	 */
+	lockout?: SQLiteAdminAccountsLockoutOptions;
 };
 
 /** Input for `SQLiteAdminAccounts#createUser` (plus the extended table's extra columns, when present). */
@@ -263,6 +335,14 @@ export class SQLiteAdminAccounts<
 	private readonly idGenerator: IdGenerator;
 	private readonly iterations: number | undefined;
 	private readonly minPasswordLength: number;
+	private readonly lockout: SQLiteAdminAccountsLockoutOptions | undefined;
+	/**
+	 * The constructor's table, narrowed to `SQLiteAdminUserLockoutRecordTable`
+	 * when it actually carries the lockout columns — `undefined` otherwise.
+	 * Computed once regardless of whether `lockout` was configured, so
+	 * `unlockUser` can work off column presence alone.
+	 */
+	private readonly lockoutColumns: (TUsers & SQLiteAdminUserLockoutRecordTable) | undefined;
 
 	constructor(
 		private readonly db: BaseSQLiteDatabase<"async", unknown, TSchema>,
@@ -272,6 +352,21 @@ export class SQLiteAdminAccounts<
 		this.idGenerator = options.idGenerator ?? new SnowflakeIdGenerator();
 		this.iterations = options.iterations;
 		this.minPasswordLength = options.minPasswordLength ?? DEFAULT_MIN_PASSWORD_LENGTH;
+		this.lockoutColumns = hasLockoutColumns(table) ? table : undefined;
+		if (options.lockout !== undefined) {
+			if (options.lockout.maxAttempts < 1) {
+				throw new Error("SQLiteAdminAccounts: lockout.maxAttempts must be at least 1");
+			}
+			if (options.lockout.lockDurationSeconds < 1) {
+				throw new Error("SQLiteAdminAccounts: lockout.lockDurationSeconds must be at least 1");
+			}
+			if (this.lockoutColumns === undefined) {
+				throw new Error(
+					"SQLiteAdminAccounts: lockout requires failedAttempts/lockedUntil columns on the table — spread sqliteAdminUserLockoutColumns() into it",
+				);
+			}
+		}
+		this.lockout = options.lockout;
 	}
 
 	/**
@@ -332,7 +427,8 @@ export class SQLiteAdminAccounts<
 	 * far as this method controls: when no user matches, `verifyPassword` still
 	 * runs against a fixed dummy hash (account-enumeration defense per
 	 * `auth/password.ts`); when the user exists, the hash is verified BEFORE the
-	 * `isActive` check, so an inactive account costs the same as an active one.
+	 * `isActive` check (and before the lockout check below), so an inactive or
+	 * locked account costs the same as an active, unlocked one.
 	 *
 	 * A password longer than `MAX_PASSWORD_LENGTH` is rejected up front, before
 	 * any user lookup, so the early return applies uniformly and cannot reveal
@@ -344,6 +440,21 @@ export class SQLiteAdminAccounts<
 	 * deliberately NOT touched: it tracks profile edits, and a login is not an
 	 * edit. The returned row carries the new `lastLoginAt` patched in memory (no
 	 * re-select).
+	 *
+	 * **When `SQLiteAdminAccountsOptions#lockout` is configured** (and only
+	 * then — otherwise this method never reads or writes `failedAttempts`/
+	 * `lockedUntil`), a currently-locked account (`lockedUntil` in the future)
+	 * still runs `verifyPassword` for timing parity, then always returns `null`
+	 * with no writes, regardless of whether the password was correct — the same
+	 * `null` an unlocked account gets for a wrong password, so a locked account
+	 * is not distinguishable from a merely-wrong-password one. A wrong password
+	 * on an unlocked account increments `failedAttempts` and conditionally sets
+	 * `lockedUntil` in a single atomic UPDATE (`recordFailedAttempt`), counted
+	 * regardless of `isActive` for the same timing-parity reason. A successful
+	 * login resets both columns to their unlocked state as part of the same
+	 * UPDATE that sets `lastLoginAt`. An expired lock (`lockedUntil` in the
+	 * past) simply stops blocking; the stale counter is reset by the next
+	 * successful login, or explicitly via `unlockUser`.
 	 */
 	async authenticate(credentials: {
 		username: string;
@@ -357,19 +468,39 @@ export class SQLiteAdminAccounts<
 		}
 		const base = this.baseRow(row);
 		const matched = await verifyPassword(credentials.password, base.passwordHash);
-		if (!matched) return null;
+		if (this.lockout !== undefined && this.lockoutColumns !== undefined) {
+			const lockoutBase = this.lockoutBaseRow(row);
+			if (lockoutBase.lockedUntil !== null && lockoutBase.lockedUntil > Date.now()) {
+				return null;
+			}
+			if (!matched) {
+				await this.recordFailedAttempt(this.lockoutColumns, this.lockout, base.id);
+				return null;
+			}
+		} else if (!matched) {
+			return null;
+		}
 		if (!base.isActive) return null;
 		const lastLoginAt = Date.now();
+		const update: Record<string, unknown> = { lastLoginAt };
+		if (this.lockout !== undefined) {
+			update.failedAttempts = 0;
+			update.lockedUntil = null;
+		}
 		await this.db
 			.update(this.table)
-			.set({ lastLoginAt } as Partial<TUsers["$inferInsert"]>)
+			.set(update as Partial<TUsers["$inferInsert"]>)
 			.where(eq(this.table.id, base.id));
 		/**
 		 * Spreading the generic row loses its identity with `$inferSelect` at the
-		 * type level even though only `lastLoginAt` (a contract column) changes,
-		 * so `as` is used only here.
+		 * type level even though only contract columns change, so `as` is used
+		 * only here.
 		 */
-		return { ...row, lastLoginAt } as SQLiteAdminUserRecord<TUsers>;
+		return {
+			...row,
+			lastLoginAt,
+			...(this.lockout !== undefined ? { failedAttempts: 0, lockedUntil: null } : {}),
+		} as SQLiteAdminUserRecord<TUsers>;
 	}
 
 	/**
@@ -383,6 +514,28 @@ export class SQLiteAdminAccounts<
 		await this.db
 			.update(this.table)
 			.set({ passwordHash, updatedAt: Date.now() } as Partial<TUsers["$inferInsert"]>)
+			.where(eq(this.table.id, userId));
+	}
+
+	/**
+	 * Clears the lockout state of the given user (`failedAttempts = 0`,
+	 * `lockedUntil = null`). A missing user is a no-op (the UPDATE simply
+	 * matches zero rows), matching `setPassword`'s convention.
+	 *
+	 * Gated purely on column presence: this works whenever the table has
+	 * `failedAttempts`/`lockedUntil`, whether or not
+	 * `SQLiteAdminAccountsOptions#lockout` was passed to the constructor, and
+	 * throws when the columns are absent.
+	 */
+	async unlockUser(userId: string): Promise<void> {
+		if (this.lockoutColumns === undefined) {
+			throw new Error(
+				"SQLiteAdminAccounts#unlockUser: the table has no failedAttempts/lockedUntil columns — spread sqliteAdminUserLockoutColumns() into it",
+			);
+		}
+		await this.db
+			.update(this.table)
+			.set({ failedAttempts: 0, lockedUntil: null } as Partial<TUsers["$inferInsert"]>)
 			.where(eq(this.table.id, userId));
 	}
 
@@ -577,10 +730,46 @@ export class SQLiteAdminAccounts<
 		return row as AdminUserBaseRow;
 	}
 
+	/**
+	 * Reads `failedAttempts`/`lockedUntil` off a row of the generic table, for
+	 * the same reason and with the same `as` justification as `baseRow`. Only
+	 * called from `authenticate` after `this.lockoutColumns` has already
+	 * confirmed the table carries these columns.
+	 */
+	private lockoutBaseRow(row: SQLiteAdminUserRecord<TUsers>): AdminUserLockoutBaseRow {
+		return row as AdminUserLockoutBaseRow;
+	}
+
 	/** Whether the given row is currently both a superuser and active. */
 	private isActiveSuperuser(row: SQLiteAdminUserRecord<TUsers>): boolean {
 		const base = this.baseRow(row);
 		return base.isSuperuser && base.isActive;
+	}
+
+	/**
+	 * Records one failed login attempt as a single atomic UPDATE:
+	 * `failedAttempts` is incremented, and `lockedUntil` is set to
+	 * `Date.now() + lockDurationSeconds * 1000` only when the incremented count
+	 * reaches `maxAttempts` (otherwise it is left as-is via the `CASE WHEN` —
+	 * SQL, not a read-then-write, so a concurrent request cannot race past the
+	 * threshold check). Called from `authenticate` for a wrong password on an
+	 * unlocked account.
+	 */
+	private async recordFailedAttempt(
+		lockoutTable: TUsers & SQLiteAdminUserLockoutRecordTable,
+		lockout: SQLiteAdminAccountsLockoutOptions,
+		userId: string,
+	): Promise<void> {
+		const lockedUntilOnThreshold = Date.now() + lockout.lockDurationSeconds * 1000;
+		/** `Record<string, unknown>` + `as`, same convention as `createUser`'s `values`. */
+		const update: Record<string, unknown> = {
+			failedAttempts: sql`${lockoutTable.failedAttempts} + 1`,
+			lockedUntil: sql`case when ${lockoutTable.failedAttempts} + 1 >= ${lockout.maxAttempts} then ${lockedUntilOnThreshold} else ${lockoutTable.lockedUntil} end`,
+		};
+		await this.db
+			.update(this.table)
+			.set(update as Partial<TUsers["$inferInsert"]>)
+			.where(eq(this.table.id, userId));
 	}
 
 	/**
@@ -680,3 +869,27 @@ export const sqliteAdminUsersTable = (tableName = "admin_users") =>
 		/** Uniqueness of the (normalized) username; `createUser`'s pre-check is advisory, this index is authoritative. */
 		uniqueIndex(`${tableName}_username_idx`).on(t.username),
 	]) satisfies SQLiteAdminUserRecordTable;
+
+/**
+ * Returns a fresh record of the column builders for the opt-in lockout
+ * columns. Spread alongside `sqliteAdminUserColumns()` into the same table to
+ * enable `SQLiteAdminAccountsOptions#lockout`:
+ *
+ * ```ts
+ * export const adminUsers = sqliteTable(
+ *   "admin_users",
+ *   { ...sqliteAdminUserColumns(), ...sqliteAdminUserLockoutColumns() },
+ *   (t) => [uniqueIndex("admin_users_username_idx").on(t.username)],
+ * );
+ * ```
+ *
+ * `failedAttempts` counts consecutive failed logins (defaults to 0);
+ * `lockedUntil` is `null` while unlocked and an epoch-ms timestamp while
+ * locked. Both are reserved columns (see `ReservedAdminUserColumnKey`) — only
+ * `SQLiteAdminAccounts#authenticate` and `#unlockUser` ever write them. See
+ * `authenticate`'s JSDoc for the algorithm.
+ */
+export const sqliteAdminUserLockoutColumns = () => ({
+	failedAttempts: integer("failed_attempts").notNull().default(0),
+	lockedUntil: integer("locked_until"),
+});

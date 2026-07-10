@@ -432,6 +432,58 @@ service always writes `permissions` explicitly, so this only matters if
 you insert rows outside the service — supply `permissions` yourself
 then.
 
+### Lock accounts after repeated failures
+
+Opt-in per-account lockout, complementary to
+[rate-limiting the built-in login](#gotchas--security-notes) below: rate
+limiting bounds attempts per IP/key, this bounds attempts against one
+account regardless of where they come from. Spread
+`sqliteAdminUserLockoutColumns()` alongside `sqliteAdminUserColumns()` into
+the users table and keep the UNIQUE index on `username` as usual:
+
+```ts
+import { sqliteTable, uniqueIndex } from "drizzle-orm/sqlite-core";
+import {
+  SQLiteAdminAccounts,
+  sqliteAdminUserColumns,
+  sqliteAdminUserLockoutColumns,
+} from "@tknf/oven/admin";
+
+export const adminUsers = sqliteTable(
+  "admin_users",
+  { ...sqliteAdminUserColumns(), ...sqliteAdminUserLockoutColumns() },
+  (t) => [uniqueIndex("admin_users_username_idx").on(t.username)],
+);
+
+export const accounts = new SQLiteAdminAccounts(db, adminUsers, {
+  lockout: { maxAttempts: 5, lockDurationSeconds: 900 },
+});
+```
+
+`maxAttempts` and `lockDurationSeconds` (in seconds) must each be at least
+1 — the constructor throws otherwise, and it also throws if `lockout` is
+set on a table that doesn't have both lockout columns. Once configured,
+`authenticate` counts consecutive failed attempts per account and locks it
+for `lockDurationSeconds` once the count reaches `maxAttempts`; while
+locked, `authenticate` returns the same `null` a wrong password gets — see
+[the enumeration-safety gotcha](#gotchas--security-notes) below. A
+successful login resets the counter, and so does the lock's own expiry: the
+account is usable again once `lockDurationSeconds` has elapsed, no action
+needed. To unlock an account before it expires (e.g. from a superuser
+tool), call `unlockUser`:
+
+```ts
+await accounts.unlockUser(user.id); // failedAttempts = 0, lockedUntil = null
+```
+
+`unlockUser` only requires the table to have the lockout columns — it
+works even when `lockout` itself wasn't passed to the constructor.
+`pgAdminUserLockoutColumns`/`mysqlAdminUserLockoutColumns` and
+`PgAdminAccounts`/`MySqlAdminAccounts` follow the same shape (see
+[Use Postgres or MySQL](#use-postgres-or-mysql) above). As with every table
+in this guide, migrations are your app's own responsibility — generate them
+with your drizzle-kit setup after adding the columns.
+
 ## Gotchas / Security notes
 
 - **Migrations are your app's responsibility.** The `*AdminUsersTable`
@@ -454,8 +506,12 @@ then.
 - **`authenticate` is enumeration-safe.** When no user matches, it
   still runs `verifyPassword` against a fixed dummy hash so PBKDF2
   always does the same work; when the user exists, the hash is verified
-  *before* the `isActive` check, so an inactive account costs the same
-  as an active one. Every failure returns the same `null`.
+  *before* the `isActive` check (and, with `lockout` configured, before
+  the lock check too), so an inactive or locked account costs the same
+  as an active, unlocked one. Every failure returns the same `null` —
+  including a locked account given the *correct* password, which is the
+  whole point: nothing distinguishes "wrong password" from "locked out"
+  from "no such user".
 - **Do not raise the `iterations` option if the app runs on Cloudflare
   Workers.** workerd's `crypto.subtle` rejects PBKDF2 above 100,000
   iterations, and `verifyPassword` maps that error to `false` — so a
@@ -516,6 +572,22 @@ then.
   returns `true` while under `limit`; once at the limit it returns
   `false` without counting, and here that maps to the same `null` as a
   failed login (a plain `401`, not the built-in gate's dedicated `429`).
+- **Account lockout (see [Lock accounts after repeated
+  failures](#lock-accounts-after-repeated-failures) above) is opt-in and a
+  deliberate availability trade-off.** Once `lockout` is configured, anyone
+  who knows a valid username can lock that account by submitting
+  `maxAttempts` wrong passwords for it — trading availability for
+  brute-force resistance. This is exactly why it stays opt-in and why
+  rate-limiting the login form (above) complements it rather than replaces
+  it: the rate limiter slows down *how fast* an attacker can submit
+  attempts (per IP/key), lockout stops accepting them for one account *at
+  all* once a threshold is crossed, and combining both means an attacker
+  needs many source IPs *and* still cannot outrun the account's own lock.
+  Enumeration safety holds throughout: a locked account returns the exact
+  same `null` (and the same login error) as a wrong password or an unknown
+  username. There are two ways out of a lock — it expires on its own after
+  `lockDurationSeconds`, or a superuser (or your own tooling) calls
+  `unlockUser` — there is no third path.
 - **With `accounts` injected, both deactivation and a password change end
   every outstanding session on its very next request** — no extra wiring
   needed. Deactivation works through the per-request re-validation

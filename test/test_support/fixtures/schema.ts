@@ -18,6 +18,7 @@ import { integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core
 /** Direct-file import (not `src/admin/index.js`): the admin index star-exports `.tsx` view modules, which drizzle-kit (which loads this schema) should not have to parse. */
 import {
 	sqliteAdminUserColumns,
+	sqliteAdminUserLockoutColumns,
 	sqliteAdminUsersTable,
 } from "../../../src/admin/sqlite_admin_accounts.js";
 import {
@@ -82,4 +83,18 @@ export const adminOperators = sqliteTable(
 		email: text("email").notNull(),
 	},
 	(t) => [uniqueIndex("admin_operators_username_idx").on(t.username)],
+);
+
+/**
+ * Lockout-capable admin-user table verifying the documented lockout extension
+ * recipe (spreading `sqliteAdminUserColumns()` and `sqliteAdminUserLockoutColumns()`
+ * into an app-defined table) through the migration generation/application path.
+ */
+export const adminLockoutUsers = sqliteTable(
+	"admin_lockout_users",
+	{
+		...sqliteAdminUserColumns(),
+		...sqliteAdminUserLockoutColumns(),
+	},
+	(t) => [uniqueIndex("admin_lockout_users_username_idx").on(t.username)],
 );

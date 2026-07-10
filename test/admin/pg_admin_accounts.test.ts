@@ -4,8 +4,11 @@
  * `test/admin/sqlite_admin_accounts.test.ts` using PGlite (an in-process WASM
  * Postgres), the `adminUsers` table in `test/test_support/fixtures/pg_schema.ts`,
  * and `pg_migrations` (the same harness as `test/audit/pg_audit_log.test.ts`).
- * The extension-recipe tests stay SQLite-only (the extended fixture table exists
- * only in the SQLite fixture schema).
+ * The column-extension-recipe tests stay SQLite-only (the extended
+ * `adminOperators` fixture table exists only in the SQLite fixture schema). The
+ * `lockout` describe block is a focused parity subset of the full SQLite lockout
+ * matrix, against the `adminLockoutUsers` table also present in this dialect's
+ * fixture schema.
  */
 import { PGlite } from "@electric-sql/pglite";
 import { eq } from "drizzle-orm";
@@ -14,6 +17,10 @@ import { migrate } from "drizzle-orm/pglite/migrator";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vite-plus/test";
 import { LastActiveSuperuserError } from "../../src/admin/admin_accounts_errors.js";
 import { PgAdminAccounts } from "../../src/admin/pg_admin_accounts.js";
+import type {
+	PgAdminAccountsCreateUserInput,
+	PgAdminAccountsUpdateUserPatch,
+} from "../../src/admin/pg_admin_accounts.js";
 import { verifyPassword } from "../../src/auth/password.js";
 import * as schema from "../test_support/fixtures/pg_schema.js";
 
@@ -453,6 +460,170 @@ describe("PgAdminAccounts", () => {
 			expect(demoted?.isSuperuser).toBe(false);
 			await users.deleteUser(bob.id);
 			expect(await users.retrieve(bob.id)).toBeUndefined();
+		});
+	});
+
+	describe("lockout", () => {
+		const lockoutOptions = { maxAttempts: 3, lockDurationSeconds: 60 };
+		const lockoutAccounts = (lockout = lockoutOptions) =>
+			new PgAdminAccounts(ctx.db, schema.adminLockoutUsers, { lockout });
+
+		test("reaching maxAttempts locks the account", async () => {
+			const users = lockoutAccounts();
+			const created = await users.createUser({ username: "alice", password: "password-1" });
+
+			await users.authenticate({ username: "alice", password: "wrong" });
+			await users.authenticate({ username: "alice", password: "wrong" });
+			await users.authenticate({ username: "alice", password: "wrong" });
+
+			const persisted = await users.retrieve(created.id);
+			expect(persisted?.failedAttempts).toBe(3);
+			expect(persisted?.lockedUntil).toBe(Date.now() + 60_000);
+		});
+
+		test("a locked account returns null even for the correct password", async () => {
+			const users = lockoutAccounts();
+			await users.createUser({ username: "alice", password: "password-1" });
+			await users.authenticate({ username: "alice", password: "wrong" });
+			await users.authenticate({ username: "alice", password: "wrong" });
+			await users.authenticate({ username: "alice", password: "wrong" });
+
+			expect(await users.authenticate({ username: "alice", password: "password-1" })).toBeNull();
+		});
+
+		test("a successful login after the lock expires resets the counter", async () => {
+			const users = lockoutAccounts();
+			const created = await users.createUser({ username: "alice", password: "password-1" });
+			await users.authenticate({ username: "alice", password: "wrong" });
+			await users.authenticate({ username: "alice", password: "wrong" });
+			await users.authenticate({ username: "alice", password: "wrong" });
+			vi.setSystemTime(new Date(Date.now() + 61_000));
+
+			const authed = await users.authenticate({ username: "alice", password: "password-1" });
+
+			expect(authed?.failedAttempts).toBe(0);
+			expect(authed?.lockedUntil).toBeNull();
+			const persisted = await users.retrieve(created.id);
+			expect(persisted?.failedAttempts).toBe(0);
+		});
+
+		test("unlockUser clears the lockout state and allows login again", async () => {
+			const users = lockoutAccounts();
+			const created = await users.createUser({ username: "alice", password: "password-1" });
+			await users.authenticate({ username: "alice", password: "wrong" });
+			await users.authenticate({ username: "alice", password: "wrong" });
+			await users.authenticate({ username: "alice", password: "wrong" });
+
+			await users.unlockUser(created.id);
+
+			const persisted = await users.retrieve(created.id);
+			expect(persisted?.failedAttempts).toBe(0);
+			expect(persisted?.lockedUntil).toBeNull();
+			expect(
+				await users.authenticate({ username: "alice", password: "password-1" }),
+			).not.toBeNull();
+		});
+
+		test("the constructor rejects lockout on a table without the lockout columns", () => {
+			expect(
+				() => new PgAdminAccounts(ctx.db, schema.adminUsers, { lockout: lockoutOptions }),
+			).toThrow("spread pgAdminUserLockoutColumns()");
+		});
+
+		test("the constructor rejects a lockDurationSeconds below 1", () => {
+			expect(
+				() =>
+					new PgAdminAccounts(ctx.db, schema.adminLockoutUsers, {
+						lockout: { maxAttempts: 3, lockDurationSeconds: 0 },
+					}),
+			).toThrow("lockout.lockDurationSeconds must be at least 1");
+		});
+
+		test("a locked account rejects a wrong password without any further writes", async () => {
+			const users = lockoutAccounts();
+			const created = await users.createUser({ username: "alice", password: "password-1" });
+			await users.authenticate({ username: "alice", password: "wrong" });
+			await users.authenticate({ username: "alice", password: "wrong" });
+			await users.authenticate({ username: "alice", password: "wrong" });
+			const lockedState = await users.retrieve(created.id);
+
+			const authed = await users.authenticate({ username: "alice", password: "still-wrong" });
+
+			expect(authed).toBeNull();
+			const persisted = await users.retrieve(created.id);
+			expect(persisted?.failedAttempts).toBe(lockedState?.failedAttempts);
+			expect(persisted?.lockedUntil).toBe(lockedState?.lockedUntil);
+		});
+
+		test("unlockUser on a missing user is a no-op", async () => {
+			const users = lockoutAccounts();
+			await expect(users.unlockUser("missing")).resolves.toBeUndefined();
+		});
+
+		test("unlockUser works off column presence alone, independent of the lockout option", async () => {
+			const users = new PgAdminAccounts(ctx.db, schema.adminLockoutUsers);
+			const created = await users.createUser({ username: "alice", password: "password-1" });
+
+			await expect(users.unlockUser(created.id)).resolves.toBeUndefined();
+			const persisted = await users.retrieve(created.id);
+			expect(persisted?.failedAttempts).toBe(0);
+			expect(persisted?.lockedUntil).toBeNull();
+		});
+
+		test("unlockUser throws when the table has no lockout columns", async () => {
+			await expect(accounts().unlockUser("whatever")).rejects.toThrow(
+				"spread pgAdminUserLockoutColumns()",
+			);
+		});
+
+		test("createUser strips failedAttempts/lockedUntil smuggled through extra input", async () => {
+			const users = lockoutAccounts();
+			const smuggled = {
+				username: "alice",
+				password: "password-1",
+				failedAttempts: 999,
+				lockedUntil: Date.now() + 999_000,
+			};
+
+			const created = await users.createUser(
+				smuggled as PgAdminAccountsCreateUserInput<typeof schema.adminLockoutUsers>,
+			);
+
+			expect(created.failedAttempts).toBe(0);
+			expect(created.lockedUntil).toBeNull();
+		});
+
+		test("updateUser strips failedAttempts/lockedUntil smuggled through extra input", async () => {
+			const users = lockoutAccounts();
+			const created = await users.createUser({ username: "alice", password: "password-1" });
+			const smuggled = { label: "Ops", failedAttempts: 999, lockedUntil: Date.now() + 999_000 };
+
+			const updated = await users.updateUser(
+				created.id,
+				smuggled as PgAdminAccountsUpdateUserPatch<typeof schema.adminLockoutUsers>,
+			);
+
+			expect(updated?.label).toBe("Ops");
+			expect(updated?.failedAttempts).toBe(0);
+			expect(updated?.lockedUntil).toBeNull();
+		});
+
+		test("without the lockout option, a successful login does not reset pre-existing lockout state", async () => {
+			const users = new PgAdminAccounts(ctx.db, schema.adminLockoutUsers);
+			const created = await users.createUser({ username: "alice", password: "password-1" });
+			await ctx.db
+				.update(schema.adminLockoutUsers)
+				.set({ failedAttempts: 2 })
+				.where(eq(schema.adminLockoutUsers.id, created.id));
+
+			const authed = await users.authenticate({ username: "alice", password: "password-1" });
+
+			expect(authed).not.toBeNull();
+			expect(authed?.failedAttempts).toBe(2);
+			expect(authed?.lockedUntil).toBeNull();
+			const persisted = await users.retrieve(created.id);
+			expect(persisted?.failedAttempts).toBe(2);
+			expect(persisted?.lockedUntil).toBeNull();
 		});
 	});
 });
