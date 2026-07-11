@@ -3,7 +3,9 @@
  * prevention on request, the token being embedded in the delivered email,
  * verification, invalid/expired tokens, that `verify` never rotates the
  * nonce, and that `login` rotates it on success so the used token — and any
- * other outstanding token — is rejected afterward (genuine single-use).
+ * other outstanding token — is rejected afterward (genuine single-use). Also
+ * verifies the single-use guarantee holds under concurrency, since
+ * `rotateNonce` is a compare-and-swap contract, not a blind write.
  */
 import { describe, expect, test, vi } from "vite-plus/test";
 import { PasswordlessLogin } from "../../src/auth/passwordless_login.js";
@@ -34,10 +36,19 @@ const buildFlow = (users: StubUser[], options?: { secrets?: string[] }) => {
 		deliver: (user, url) => {
 			delivered.push({ user, url });
 		},
-		rotateNonce: (user) => {
+		/**
+		 * A real compare-and-swap against the in-memory `loginNonce`: only
+		 * rotates (and records the win in `rotated`) when the stored nonce
+		 * still equals `expectedNonce`, matching the atomic-UPDATE contract
+		 * `PasswordlessLoginOptions.rotateNonce` documents. Returns `false`
+		 * without mutating anything when another caller already rotated it.
+		 */
+		rotateNonce: (user, expectedNonce) => {
+			if (user.loginNonce !== expectedNonce) return false;
 			nonceCounter += 1;
 			user.loginNonce = `nonce-${nonceCounter}-rotated`;
 			rotated.push(user);
+			return true;
 		},
 	});
 
@@ -122,7 +133,7 @@ describe("PasswordlessLogin", () => {
 			deliver: (_user, url) => {
 				capturedUrl = url;
 			},
-			rotateNonce: () => {},
+			rotateNonce: () => true,
 		});
 		await emailedFlow.request("user1@example.com");
 		const token = extractToken(capturedUrl);
@@ -200,5 +211,23 @@ describe("PasswordlessLogin", () => {
 		} finally {
 			vi.useRealTimers();
 		}
+	});
+
+	test("two concurrent login calls for the same token: exactly one wins the nonce CAS and only that call resolves to the user", async () => {
+		const users = buildUsers();
+		const { flow, delivered, rotated } = buildFlow(users);
+
+		await flow.request("user1@example.com");
+		const token = extractToken(delivered[0].url);
+
+		// Both requests race to consume the same single-use link, e.g. a mail
+		// client prefetching the link and a genuine click, or a double-click.
+		const [first, second] = await Promise.all([flow.login(token), flow.login(token)]);
+
+		const winners = [first, second].filter((user) => user !== null);
+		expect(winners).toHaveLength(1);
+		expect(winners[0]?.id).toBe("user-1");
+		// `rotateNonce` only actually changed the row (won the CAS) exactly once.
+		expect(rotated).toHaveLength(1);
 	});
 });

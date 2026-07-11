@@ -336,18 +336,27 @@ code)` (verifies against the pending secret, only then sets
   otherwise); re-validates the operator row against the DB on **every
   request**, so `isActive: false` or a deleted row revokes access
   immediately; and lets superusers bypass every permission check. A
-  password change ends every outstanding session too: at login the panel
-  stores a short `passwordStamp` fingerprint of `passwordHash` alongside
-  the identity, re-derives it from the current row on every later request,
-  and signs the session out on a mismatch — `setPassword`'s fresh PBKDF2
-  salt guarantees a mismatch after any change. A session with no stamp at
+  password change, or enrolling/re-enrolling/disabling TOTP, ends every
+  outstanding session too: at login the panel stores a short
+  `passwordStamp` fingerprint of `passwordHash` **and** the row's
+  `totpEnabledAt` alongside the identity, re-derives it from the current
+  row on every later request, and signs the session out on a mismatch —
+  `setPassword`'s fresh PBKDF2 salt, or a changed `totpEnabledAt`,
+  guarantees a mismatch after either kind of change (so a session
+  established before an account enrolled TOTP can't keep bypassing the
+  second login step once enrollment completes). A session with no stamp at
   all (issued before this existed) is rejected the same way, so upgrading
   asks every logged-in operator to log back in once. This applies only to
   the `accounts` option — a hand-rolled `authorize`/`auth` gets neither
-  behavior (see `docs/admin-accounts.md`'s Gotchas section). When
-  omitted, `audit.actor` defaults to the logged-in identity's label
-  (falling back to its id), falling back further to the literal `"admin"`
-  when there's no login wiring or no logged-in identity.
+  behavior (see `docs/admin-accounts.md`'s Gotchas section). A pending TOTP
+  second-step is also kept from ever coexisting with a logged-in session:
+  logging in directly (no TOTP required) and logging out both clear any
+  leftover pending state, and `/login/totp` itself refuses to render or
+  process one while the session already has a logged-in identity — so an
+  abandoned TOTP attempt for one account can never switch a later session
+  back to it. When omitted, `audit.actor` defaults to the logged-in
+  identity's label (falling back to its id), falling back further to the
+  literal `"admin"` when there's no login wiring or no logged-in identity.
 - **Injecting `accounts.users` also turns on a built-in, superuser-only
   `/accounts/users` screen** (plus `/accounts/groups` once `accounts.groups`
   is injected too) for creating, editing, and deleting operators —

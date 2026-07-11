@@ -16,7 +16,13 @@
  * `SQLiteAdminAccounts`. It runs under fake time (`vi.useFakeTimers`) so codes
  * generated with `auth/totp.ts#generateTotpCode` land on a known RFC 6238
  * step, matching `sqlite_admin_accounts.test.ts`'s `totp` describe block's
- * convention.
+ * convention. Its "TOTP enrollment invalidates existing sessions" and "stale
+ * pending TOTP state is cleared" nested blocks cover, respectively: enrolling
+ * TOTP ending an already-logged-in session (mirroring "password change
+ * invalidates existing sessions" below, but for the TOTP-enrollment marker
+ * folded into `derivePasswordStamp`), and every place a stale
+ * `ADMIN_TOTP_PENDING_SESSION_KEY` pending step must be cleared so it can
+ * never coexist with — or silently switch — a logged-in identity.
  */
 import type { StandardSchemaV1 } from "@standard-schema/spec";
 import type { MySqlQueryResultHKT, PreparedQueryHKTBase } from "drizzle-orm/mysql-core";
@@ -1047,6 +1053,110 @@ describe("AdminPanel accounts integration", () => {
 				const second = await loginAsTotp(app, "alice", "password-1");
 				const freshRes = await submitTotpCode(app, second.cookie, second.token, wrongCode);
 				expect(freshRes.status).toBe(401);
+			});
+		});
+
+		describe("TOTP enrollment invalidates existing sessions", () => {
+			test("a session logged in before TOTP was enrolled is rejected on its next request once enrollment completes", async () => {
+				const { app, users } = buildTotpApp();
+				const created = await users.createUser({ username: "alice", password: "password-1" });
+				const { cookie } = await loginAsTotp(app, "alice", "password-1");
+				expect((await app.request("/admin", { headers: { Cookie: cookie } })).status).toBe(200);
+
+				/**
+				 * Mirrors "password change invalidates existing sessions" above, but
+				 * the invalidating change here is enrolling TOTP (`totpEnabledAt`
+				 * going from `null` to non-null) rather than the password hash: the
+				 * session's `passwordStamp` folds both in (see `derivePasswordStamp`),
+				 * so a session established while the account had no TOTP must not
+				 * stay valid once the second login step is enforced for it.
+				 */
+				await enrollAndConfirm(users, created.id);
+
+				const res = await app.request("/admin", { headers: { Cookie: cookie } });
+				expect(res.status).toBe(302);
+				expect(res.headers.get("location")).toBe("/admin/login?next=%2Fadmin");
+			});
+		});
+
+		describe("stale pending TOTP state is cleared, never coexists with a logged-in identity", () => {
+			test("logging in as a non-TOTP account does not let an earlier, abandoned TOTP step for a different account switch the session's identity", async () => {
+				const { app, users } = buildTotpApp();
+				const enrolled = await users.createUser({ username: "alice", password: "password-1" });
+				const secret = await enrollAndConfirm(users, enrolled.id);
+				await users.createUser({ username: "bob", password: "password-2" });
+
+				/** Begin alice's TOTP step (her password is known), then abandon it. */
+				const { cookie, token } = await loginAsTotp(app, "alice", "password-1");
+				expect(
+					(await app.request("/admin/login/totp", { headers: { Cookie: cookie } })).status,
+				).toBe(200);
+
+				/** Log in as bob — a non-TOTP account — reusing the same session cookie. */
+				const bobLogin = await app.request("/admin/login", {
+					method: "POST",
+					headers: { Cookie: cookie, "content-type": "application/x-www-form-urlencoded" },
+					body: new URLSearchParams({
+						username: "bob",
+						password: "password-2",
+						csrf_token: token,
+					}).toString(),
+				});
+				expect(bobLogin.status).toBe(303);
+				expect(bobLogin.headers.get("location")).toBe("/admin");
+				const bobCookie = toCookieHeader(bobLogin.headers.get("Set-Cookie") ?? cookie);
+
+				/** The pending step must have been cleared: no more code screen for alice. */
+				const totpPage = await app.request("/admin/login/totp", { headers: { Cookie: bobCookie } });
+				expect(totpPage.status).toBe(303);
+				expect(totpPage.headers.get("location")).toBe("/admin");
+
+				/** Submitting alice's still-valid code must not switch the session's identity to her. */
+				const code = await generateTotpCode({ secret, timestampMs: Date.now() });
+				const totpPost = await submitTotpCode(app, bobCookie, token, code);
+				expect(totpPost.status).toBe(303);
+				expect(totpPost.headers.get("location")).toBe("/admin");
+
+				/**
+				 * Proves the session identity is still bob, not alice: deactivating
+				 * alice must NOT revoke this session's access (it would, if the
+				 * identity had silently switched to her).
+				 */
+				await users.updateUser(enrolled.id, { isActive: false });
+				expect((await app.request("/admin", { headers: { Cookie: bobCookie } })).status).toBe(200);
+
+				/** Deactivating bob, the account actually logged in, does revoke it. */
+				const bobRow = await users.findByUsername("bob");
+				if (!bobRow) throw new Error("expected bob to exist");
+				await users.updateUser(bobRow.id, { isActive: false });
+				const res = await app.request("/admin", { headers: { Cookie: bobCookie } });
+				expect(res.status).toBe(302);
+				expect(res.headers.get("location")).toBe("/admin/login?next=%2Fadmin");
+			});
+
+			test("logging out clears a pending TOTP step, so a later GET /login/totp redirects to /login rather than the code screen", async () => {
+				const { app, users } = buildTotpApp();
+				const created = await users.createUser({ username: "alice", password: "password-1" });
+				await enrollAndConfirm(users, created.id);
+
+				const { cookie, token } = await loginAsTotp(app, "alice", "password-1");
+				expect(
+					(await app.request("/admin/login/totp", { headers: { Cookie: cookie } })).status,
+				).toBe(200);
+
+				const logoutRes = await app.request("/admin/logout", {
+					method: "POST",
+					headers: { Cookie: cookie, "content-type": "application/x-www-form-urlencoded" },
+					body: new URLSearchParams({ csrf_token: token }).toString(),
+				});
+				expect(logoutRes.status).toBe(303);
+				const loggedOutCookie = toCookieHeader(logoutRes.headers.get("Set-Cookie") ?? cookie);
+
+				const totpPage = await app.request("/admin/login/totp", {
+					headers: { Cookie: loggedOutCookie },
+				});
+				expect(totpPage.status).toBe(303);
+				expect(totpPage.headers.get("location")).toBe("/admin/login");
 			});
 		});
 	});
