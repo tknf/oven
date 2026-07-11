@@ -1031,15 +1031,41 @@ export class MySqlAdminAccounts<
 		userId: string,
 	): Promise<void> {
 		const lockedUntilOnThreshold = Date.now() + lockout.lockDurationSeconds * 1000;
-		/** `Record<string, unknown>` + `as`, same convention as `createUser`'s `values`. */
-		const update: Record<string, unknown> = {
-			failedAttempts: sql`${lockoutTable.failedAttempts} + 1`,
-			lockedUntil: sql`case when ${lockoutTable.failedAttempts} + 1 >= ${lockout.maxAttempts} then ${lockedUntilOnThreshold} else ${lockoutTable.lockedUntil} end`,
-		};
-		await this.db
-			.update(this.table)
-			.set(update as Partial<TUsers["$inferInsert"]>)
-			.where(eq(this.table.id, userId));
+		/**
+		 * MySQL evaluates a single-table UPDATE's `SET` assignments left to
+		 * right *in the emitted SQL text*: once a column has already been
+		 * assigned earlier in the same statement, a later expression that
+		 * references it sees the NEW value, not the pre-update one (documented
+		 * MySQL behavior). sqlite and Postgres instead always evaluate every
+		 * `SET` expression against the row as it was before the statement ran,
+		 * regardless of assignment order — which is why their
+		 * `recordFailedAttempt` is order-independent and deliberately left
+		 * unchanged.
+		 *
+		 * This can't be fixed by simply reordering the keys of a JS object
+		 * passed to Drizzle's `.set({...})`: its `buildUpdateSet` (confirmed by
+		 * reading `node_modules/drizzle-orm/mysql-core/dialect.js`, and
+		 * identical in `sqlite-core`/`pg-core`) always emits `SET` columns in
+		 * the *table's declared column order* —
+		 * `Object.keys(table[Table.Symbol.Columns])`, filtered down to the keys
+		 * present in the `set` object — never the `set` object's own key
+		 * order. `mysqlAdminUserLockoutColumns()` declares `failedAttempts`
+		 * before `lockedUntil`, so `.set({ lockedUntil: ..., failedAttempts:
+		 * ... })` would still emit `failed_attempts = ...` first regardless of
+		 * how the JS object here is written, leaving `locked_until`'s `CASE`
+		 * reading the already-incremented count and triggering the lock one
+		 * attempt early.
+		 *
+		 * The fix is a raw `db.execute` UPDATE (the same escape hatch
+		 * `MySqlModel#increment` uses for a different `.set()` limitation),
+		 * which gives full control over the literal SQL text: `locked_until`'s
+		 * assignment is written before `failed_attempts`'s, so its `CASE` reads
+		 * the pre-increment count, and `failed_attempts` is only incremented
+		 * afterward in the same statement.
+		 */
+		await this.db.execute(
+			sql`update ${this.table} set ${sql.identifier(lockoutTable.lockedUntil.name)} = case when ${lockoutTable.failedAttempts} + 1 >= ${lockout.maxAttempts} then ${lockedUntilOnThreshold} else ${lockoutTable.lockedUntil} end, ${sql.identifier(lockoutTable.failedAttempts.name)} = ${lockoutTable.failedAttempts} + 1 where ${eq(this.table.id, userId)}`,
+		);
 	}
 
 	/**
