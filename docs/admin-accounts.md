@@ -699,38 +699,55 @@ await accounts.disableTotp(user.id);
   Without a rate limiter, `verifyTotp`'s replay guard still stops any single
   code from being reused, but nothing stops an attacker from submitting many
   DIFFERENT guesses in a row.
-- **With `accounts` injected, both deactivation and a password change end
-  every outstanding session on its very next request** — no extra wiring
-  needed. Deactivation works through the per-request re-validation
-  described in
+- **With `accounts` injected, deactivation, a password change, and
+  enrolling/re-enrolling/disabling TOTP all end every outstanding session
+  on its very next request** — no extra wiring needed. Deactivation works
+  through the per-request re-validation described in
   [Let the panel enforce permissions](#let-the-panel-enforce-permissions):
-  `isActive: false` fails the row re-read on the very next request. A
-  password change works through a `passwordStamp`: at login, `AdminPanel`
-  derives a short fingerprint of the row's `passwordHash` and stores it
-  alongside the identity in the session; every later request re-derives
-  the fingerprint from the row's *current* `passwordHash` and rejects the
-  session on a mismatch. Because `setPassword` always produces a
-  different hash (PBKDF2 with a fresh random salt), any password change —
-  through [the panel's own accounts screen](#manage-operators-from-the-panel)
-  or a script calling `setPassword` directly — signs out every session
-  logged in under the old password, including the one that made the
-  change. **A session with no stamp at all (issued by an app that hasn't
-  upgraded to this behavior yet) is treated the same as a mismatch and
-  rejected**, so upgrading asks every currently-logged-in operator to log
-  back in once; after that they stay logged in as usual until they change
-  their password again.
+  `isActive: false` fails the row re-read on the very next request. The
+  other two work through a `passwordStamp`: at login, `AdminPanel` derives
+  a short fingerprint of the row's `passwordHash` **and** its
+  `totpEnabledAt` (when the table has TOTP columns) and stores it alongside
+  the identity in the session; every later request re-derives the
+  fingerprint from the row's *current* values and rejects the session on a
+  mismatch. Because `setPassword` always produces a different hash (PBKDF2
+  with a fresh random salt), and `confirmTotpEnrollment`/`disableTotp`
+  always change `totpEnabledAt`, any password change — through
+  [the panel's own accounts screen](#manage-operators-from-the-panel) or a
+  script calling `setPassword` directly — or any TOTP enrollment/disable
+  signs out every session logged in under the old state, including the one
+  that made the change. This closes a gap that would otherwise let a
+  session established *before* an account enrolled TOTP keep bypassing the
+  second login step indefinitely, since nothing else about that session
+  changes when TOTP is turned on. **A session with no stamp at all (issued
+  by an app that hasn't upgraded to this behavior yet) is treated the same
+  as a mismatch and rejected**, so upgrading asks every currently-logged-in
+  operator to log back in once; after that they stay logged in as usual
+  until they change their password or their TOTP enrollment state again.
 - **This protection is scoped to the `accounts` option.** Wiring your own
   `authorize`/`auth` instead — the [minimal example](#minimal-example)
   above, or checking `userPermissions` by hand inside `authorize` — gets
   neither the per-request re-validation nor `passwordStamp`: a session
-  issued before a deactivation or a password change stays valid until it
-  expires or your own `authorize` rejects it. If you need the same
-  guarantee without `accounts` (e.g. your own end-user auth from
+  issued before a deactivation, a password change, or a TOTP change stays
+  valid until it expires or your own `authorize` rejects it. If you need
+  the same guarantee without `accounts` (e.g. your own end-user auth from
   [Authentication](./auth.md)), re-read the current row from inside your
   `authorize`/middleware on every request and build a similar fingerprint
   yourself (a hash of the stored password hash, compared to one saved in
   the session at login) — `accounts` has no monopoly on the technique, it
   just does it for you.
+- **A pending TOTP second-login-step never survives past a logged-in
+  session.** `AdminPanel` keeps the pending state (used between the
+  password step and `/login/totp`) and a logged-in identity mutually
+  exclusive: logging in directly (no TOTP required) and logging out both
+  clear any leftover pending state, and `GET`/`POST "/login/totp"`
+  themselves refuse to render or process a pending step while the session
+  already has a logged-in identity (redirecting to the panel's base path
+  instead). Without this, starting a TOTP step for one account, abandoning
+  it, and then logging in as a different, non-TOTP account in the same
+  session would leave the first account's code screen reachable — and a
+  still-valid code for it able to silently switch the session's identity
+  back.
 - **The duplicate-username pre-check is advisory.** `createUser`/
   `updateUser` pre-check with `findByUsername` and throw a clear
   "already taken" error, but the table's UNIQUE index is the

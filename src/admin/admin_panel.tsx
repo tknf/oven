@@ -132,17 +132,19 @@ const ADMIN_IDENTITY_SESSION_KEY = "__oven_admin_identity__";
 
 /**
  * The session-stored shape of a logged-in identity: `AdminIdentity` plus an
- * optional password fingerprint (`passwordStamp`, see `derivePasswordStamp`).
- * Never part of the public `AdminIdentity` contract `AdminPanelOptions.auth.authenticate`
- * returns — the `/login` route attaches `passwordStamp` itself, only when
- * `accounts` is injected, right before writing the session (see `wireAuth`).
- * The accounts gate in `middleware()` then re-derives the stamp from the
- * re-read row's `passwordHash` on every request and rejects the session when
- * they don't match (or when `passwordStamp` is missing entirely, which is
- * always the case for a session issued before this field existed) — the
- * cheapest way to invalidate every outstanding session on a password change
- * without a dedicated "session generation" column (see `docs/admin-accounts.md`'s
- * "Password changes end existing sessions" gotcha).
+ * optional password/TOTP fingerprint (`passwordStamp`, see
+ * `derivePasswordStamp`). Never part of the public `AdminIdentity` contract
+ * `AdminPanelOptions.auth.authenticate` returns — the `/login` route (and its
+ * TOTP second step) attaches `passwordStamp` itself, only when `accounts` is
+ * injected, right before writing the session (see `wireAuth`). The accounts
+ * gate in `middleware()` then re-derives the stamp from the re-read row's
+ * `passwordHash` and TOTP-enrollment marker on every request and rejects the
+ * session when they don't match (or when `passwordStamp` is missing
+ * entirely, which is always the case for a session issued before this field
+ * existed) — the cheapest way to invalidate every outstanding session on a
+ * password change or a TOTP enroll/re-enroll/disable without a dedicated
+ * "session generation" column (see `docs/admin-accounts.md`'s "Password
+ * changes end existing sessions" gotcha).
  */
 type AdminSessionIdentity = AdminIdentity & { passwordStamp?: string };
 
@@ -156,6 +158,17 @@ type AdminSessionIdentity = AdminIdentity & { passwordStamp?: string };
  * identity or a pending TOTP step, never both) and keeping them apart means
  * the accounts gate in `middleware()` never has to reason about a
  * partially-authenticated identity.
+ *
+ * This "never both" invariant is actively enforced, not just assumed: every
+ * path that calls `setIdentity` (`POST /login`'s direct-success branch and
+ * `POST /login/totp`'s success branch) also calls `clearTotpPending` first,
+ * `POST /logout` clears it alongside `clearIdentity`, and `GET`/`POST
+ * "/login/totp"` themselves refuse to render or process a pending step when
+ * `currentIdentity` is already set (redirecting to the base path instead).
+ * Without all of these, a session could carry a stale pending step from an
+ * abandoned TOTP flow (account A) past a later, unrelated successful login
+ * (account B) — reachable at `/login/totp` and able to silently switch the
+ * session's identity back to A by submitting A's still-valid code.
  */
 const ADMIN_TOTP_PENDING_SESSION_KEY = "__oven_admin_totp_pending__";
 
@@ -191,18 +204,33 @@ const isAdminTotpPending = (value: unknown): value is AdminTotpPending =>
 const PASSWORD_STAMP_LENGTH = 16;
 
 /**
- * Derives a short fingerprint of an accounts user row's `passwordHash`:
- * SHA-256 of the hash, base64url-encoded, truncated to `PASSWORD_STAMP_LENGTH`
- * characters. Truncating keeps the session payload small; a truncated SHA-256
- * output is still far more collision-resistant than this needs to be, since
- * the fingerprint only has to change whenever `passwordHash` does (detecting
- * that change, not standing on its own as a security boundary — the hash
- * comparison inside `setPassword`/`authenticate` already is one). `setPassword`
- * always produces a different `passwordHash` (PBKDF2 with a fresh random
- * salt), so a changed stamp reliably means the password was changed.
+ * Derives a short fingerprint of an accounts user row's `passwordHash` and
+ * `totpMarker` combined: SHA-256 of the two joined with a `:` (never present
+ * in either — `passwordHash` is `hashPassword`'s `pbkdf2$...` base64 format,
+ * `totpMarker` is a decimal epoch-millisecond string or `""`), base64url-encoded,
+ * truncated to `PASSWORD_STAMP_LENGTH` characters. Truncating keeps the session
+ * payload small; a truncated SHA-256 output is still far more
+ * collision-resistant than this needs to be, since the fingerprint only has to
+ * change whenever either input does (detecting that change, not standing on
+ * its own as a security boundary — the hash comparison inside
+ * `setPassword`/`authenticate` already is one).
+ *
+ * `totpMarker` is the row's `totpEnabledAt`, stringified (see callers below).
+ * Folding it in means the stamp also changes whenever TOTP is enrolled,
+ * re-enrolled, or disabled for the account — not just on a password change —
+ * so a session established before TOTP was enrolled cannot keep bypassing the
+ * second login step it now requires: the accounts gate in `middleware()`
+ * re-derives and compares the stamp on every request and invalidates a
+ * session whose stamp no longer matches (same mechanism, same one-time
+ * re-login cost for a pre-upgrade session, as the original password-only
+ * stamp introduction — see `docs/admin-accounts.md`'s "Password changes end
+ * existing sessions" gotcha).
  */
-const derivePasswordStamp = async (passwordHash: string): Promise<string> => {
-	const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(passwordHash));
+const derivePasswordStamp = async (passwordHash: string, totpMarker: string): Promise<string> => {
+	const digest = await crypto.subtle.digest(
+		"SHA-256",
+		new TextEncoder().encode(`${passwordHash}:${totpMarker}`),
+	);
 	return encodeBase64Url(new Uint8Array(digest)).slice(0, PASSWORD_STAMP_LENGTH);
 };
 
@@ -1255,16 +1283,20 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 					/**
 					 * The session's `passwordStamp` (attached at login, see `wireAuth`)
 					 * must still match a stamp derived from the row's CURRENT
-					 * `passwordHash`: a `setPassword` call always produces a different
-					 * hash (fresh PBKDF2 salt), so a mismatch here means the password
-					 * changed after this session was issued. A session with no stamp at
-					 * all (issued before this field existed) is treated the same as a
-					 * mismatch — fail closed rather than trust an old session
-					 * indefinitely. Either way the stale session is cleared and the
-					 * request is sent back to `/login`, exactly like the
-					 * `isActive`/missing-row case above.
+					 * `passwordHash` AND `totpEnabledAt`: a `setPassword` call always
+					 * produces a different hash (fresh PBKDF2 salt), and enrolling,
+					 * re-enrolling, or disabling TOTP always produces a different
+					 * `totpEnabledAt`, so a mismatch here means either changed after this
+					 * session was issued — most importantly, a session established before
+					 * the account enrolled TOTP is invalidated the moment enrollment
+					 * completes, rather than staying valid with the second login step
+					 * never enforced. A session with no stamp at all (issued before this
+					 * field existed) is treated the same as a mismatch — fail closed
+					 * rather than trust an old session indefinitely. Either way the stale
+					 * session is cleared and the request is sent back to `/login`, exactly
+					 * like the `isActive`/missing-row case above.
 					 */
-					const expectedStamp = await derivePasswordStamp(row.passwordHash);
+					const expectedStamp = await derivePasswordStamp(row.passwordHash, this.totpMarkerOf(row));
 					if (
 						identity.passwordStamp === undefined ||
 						!passwordStampsMatch(identity.passwordStamp, expectedStamp)
@@ -1521,6 +1553,20 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 		if (typeof users.verifyTotp !== "function") return false;
 		const totpRow = row as AdminAccountsUserRow & { totpEnabledAt?: number | null };
 		return totpRow.totpEnabledAt !== undefined && totpRow.totpEnabledAt !== null;
+	}
+
+	/**
+	 * Reads `totpEnabledAt` off `row` for `derivePasswordStamp`'s `totpMarker`
+	 * argument, via the same defensive intersection `totpSecondStepRequired`
+	 * uses (`AdminAccountsUserRow` does not declare this column; a service
+	 * backed by a table extended with `sqliteAdminUserTotpColumns()` etc.
+	 * returns a superset row that may carry it). Stringified so enrolling,
+	 * re-enrolling, or disabling TOTP each produce a distinct marker; `""`
+	 * when the row has no TOTP columns at all or TOTP was never enrolled.
+	 */
+	private totpMarkerOf(row: AdminAccountsUserRow): string {
+		const totpRow = row as AdminAccountsUserRow & { totpEnabledAt?: number | null };
+		return String(totpRow.totpEnabledAt ?? "");
 	}
 
 	/**
@@ -2129,13 +2175,25 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 			 * injected (the guard above already rejected any other case), so this is
 			 * where `passwordStamp` is attached: the accounts gate in `middleware()`
 			 * re-derives and compares it on every later request, invalidating this
-			 * session the moment `row.passwordHash` changes (see `derivePasswordStamp`).
-			 * Left unset when `accounts` is not injected — there is no row to stamp,
-			 * and the gate that checks it never runs without `accounts` either.
+			 * session the moment `row.passwordHash` or its TOTP-enrollment marker
+			 * changes (see `derivePasswordStamp`). Left unset when `accounts` is not
+			 * injected — there is no row to stamp, and the gate that checks it never
+			 * runs without `accounts` either.
 			 */
 			const sessionIdentity: AdminSessionIdentity = row
-				? { ...identity, passwordStamp: await derivePasswordStamp(row.passwordHash) }
+				? {
+						...identity,
+						passwordStamp: await derivePasswordStamp(row.passwordHash, this.totpMarkerOf(row)),
+					}
 				: identity;
+			/**
+			 * A pending TOTP step from an earlier, abandoned login attempt (e.g. a
+			 * different account in the same session) must not survive into this
+			 * successful direct login — the "never both" invariant on
+			 * `ADMIN_TOTP_PENDING_SESSION_KEY` (see its JSDoc) only holds if every
+			 * path that establishes a logged-in identity also clears it.
+			 */
+			this.clearTotpPending(c);
 			this.setIdentity(c, sessionIdentity);
 			return c.redirect(next, 303);
 		});
@@ -2145,6 +2203,20 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 			if (!options || !this.effectiveAuth()) return c.notFound();
 
 			const basePath = this.resolveBasePath();
+
+			/**
+			 * A fully logged-in session must never also render the pending TOTP
+			 * step — the "never both" invariant on `ADMIN_TOTP_PENDING_SESSION_KEY`
+			 * (see its JSDoc) only holds if this route enforces it too. Without
+			 * this guard, an operator could start a TOTP step for one account,
+			 * abandon it, log in as a different account in the same session, and
+			 * still land back on the first account's code-entry screen.
+			 */
+			if (this.currentIdentity(c)) {
+				this.clearTotpPending(c);
+				return c.redirect(basePath, 303);
+			}
+
 			const pending = this.currentTotpPending(c);
 			if (!pending || pending.expiresAt <= Date.now()) {
 				this.clearTotpPending(c);
@@ -2169,6 +2241,20 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 			if (!options || !this.effectiveAuth()) return c.notFound();
 
 			const basePath = this.resolveBasePath();
+
+			/**
+			 * Same guard as `GET /login/totp`: a fully logged-in session must
+			 * never also complete a pending TOTP step, otherwise submitting a
+			 * still-valid code for an earlier, abandoned login attempt (a
+			 * different account) would silently switch the session's identity
+			 * out from under the account that is actually logged in — see
+			 * `ADMIN_TOTP_PENDING_SESSION_KEY`'s "never both" invariant.
+			 */
+			if (this.currentIdentity(c)) {
+				this.clearTotpPending(c);
+				return c.redirect(basePath, 303);
+			}
+
 			const pending = this.currentTotpPending(c);
 			if (!pending || pending.expiresAt <= Date.now()) {
 				this.clearTotpPending(c);
@@ -2252,7 +2338,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 			const sessionIdentity: AdminSessionIdentity = {
 				id: row.id,
 				label: row.label ?? row.username,
-				passwordStamp: await derivePasswordStamp(row.passwordHash),
+				passwordStamp: await derivePasswordStamp(row.passwordHash, this.totpMarkerOf(row)),
 			};
 			this.setIdentity(c, sessionIdentity);
 			/** Re-sanitized as defense in depth (see `AdminTotpPending`'s JSDoc). */
@@ -2263,6 +2349,13 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 			if (!this.effectiveAuth()) return c.notFound();
 
 			this.clearIdentity(c);
+			/**
+			 * Also clears any pending TOTP step — logging out must leave the
+			 * session with neither a logged-in identity nor a pending step, the
+			 * same "never both" invariant `POST /login`'s direct-success branch
+			 * enforces (see `ADMIN_TOTP_PENDING_SESSION_KEY`'s JSDoc).
+			 */
+			this.clearTotpPending(c);
 			return c.redirect(`${this.resolveBasePath()}/login`, 303);
 		});
 	}

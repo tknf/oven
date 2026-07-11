@@ -168,9 +168,13 @@ log — must not be able to replay it), which the other two flows either don't
 need or get "for free" from data that already changes; see the class's own
 JSDoc in `src/auth/passwordless_login.ts` for the full comparison. To get
 single-use here, wire `fingerprintOf` to a per-user random nonce and
-`rotateNonce` to replace it on every successful login:
+`rotateNonce` to a compare-and-swap that only replaces it when the stored
+value still matches the nonce `login` just verified against — a blind
+unconditional write would let two concurrent `login` calls for the same
+token both succeed (see `rotateNonce`'s JSDoc for why):
 
 ```ts
+import { and, eq } from "drizzle-orm";
 import { PasswordlessLogin } from "@tknf/oven/auth";
 import { encodeBase64Url } from "@tknf/oven/support";
 
@@ -184,9 +188,14 @@ const passwordlessLogin = new PasswordlessLogin<Account>({
   fingerprintOf: (account) => account.loginNonce,
   loginUrl: (token) => `https://example.com/login/${token}`,
   deliver: (account, url) => mailer.deliver(new MagicLinkMail(account.email, url)),
-  rotateNonce: async (account) => {
-    account.loginNonce = encodeBase64Url(crypto.getRandomValues(new Uint8Array(32)));
-    await accounts.save(account);
+  rotateNonce: async (account, expectedNonce) => {
+    const fresh = encodeBase64Url(crypto.getRandomValues(new Uint8Array(32)));
+    const updated = await db
+      .update(accountsTable)
+      .set({ loginNonce: fresh })
+      .where(and(eq(accountsTable.id, account.id), eq(accountsTable.loginNonce, expectedNonce)))
+      .returning();
+    return updated.length > 0; // false means another concurrent login already consumed this token
   },
 });
 
@@ -332,7 +341,10 @@ login second step) instead of wiring the primitives above by hand.
   the same value `fingerprintOf` reads, and only `login` (not `verify`)
   triggers it.** Skip either half of that wiring — or complete the flow by
   calling `verify` instead of `login` — and the link silently degrades to
-  plain replay-until-expiry, the same as `EmailVerification`. Keep
+  plain replay-until-expiry, the same as `EmailVerification`. `rotateNonce`
+  must also be a compare-and-swap, not a blind write — see its JSDoc — or two
+  concurrent `login` calls for the same token can both succeed and grant two
+  sessions from one single-use link. Keep
   `expiresInSeconds` short regardless, since it's the only backstop left if
   rotation is ever misconfigured.
 - **`hashPassword`'s PBKDF2 iteration count defaults to the lowest common
