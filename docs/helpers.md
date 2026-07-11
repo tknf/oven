@@ -113,7 +113,10 @@ domId("book"); // "new_book" (new-record case)
   these helpers fit into.
 - [Models](./models.md) — `IdGenerator`, the model layer's own id scheme
   (unrelated to `domId`, which only builds DOM target ids).
-- [View](./view.md) — CSV export responses and pagination views are
-  typically composed together.
+- [View](./view.md) — build a CSV export response by overriding `View#csv`
+  and returning `c.body(csvDocument(rows, ...), 200, { "Content-Type": "text/csv; charset=utf-8", ... })`
+  from it; see [Admin panel § Exporting the list screen to
+  CSV](./admin.md#exporting-the-list-screen-to-csv) for a concrete,
+  shipped example (`AdminPanel`'s resource list CSV export).
 - [Pagination](./pagination.md) — for paginating the rows passed into
   `csvDocument`.

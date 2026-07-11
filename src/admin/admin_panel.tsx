@@ -88,6 +88,7 @@ import type { AdminBreadcrumb, AdminNavItem } from "./admin_layout.js";
 import { AdminLayout } from "./admin_layout.js";
 import { AdminLoginView } from "./admin_login_view.js";
 import { AdminResourceBulkDeleteView } from "./admin_resource_bulk_delete_view.js";
+import { AdminResourceCsvView } from "./admin_resource_csv_view.js";
 import { AdminResourceDeleteView } from "./admin_resource_delete_view.js";
 import type { AdminInlineGroup, AdminInlineGroupRow } from "./admin_resource_form_view.js";
 import { AdminResourceFormView } from "./admin_resource_form_view.js";
@@ -291,6 +292,19 @@ const isAdminIdentity = (value: unknown): value is AdminSessionIdentity => {
 const PAGE_SIZE = 20;
 
 /**
+ * Upper bound on how many rows `GET /resources/<key>/export.csv`
+ * (`wireResources`) fetches in a single response. The export has no page
+ * boundary of its own — unlike the list screen's `AdminModel#listPage`
+ * pagination, it is never paginated — so without a bound, exporting a
+ * resource with an unusually large row count would build an unbounded
+ * response body in memory. Rows beyond this bound are silently omitted, not
+ * paginated or reported as truncated: a deliberate, documented worst-case
+ * size cap (see `docs/admin.md`'s CSV export section), not an attempt at
+ * unlimited export.
+ */
+const EXPORT_MAX_ROWS = 10_000;
+
+/**
  * Parses the list screen's `?o=` sort query into a display column index +
  * direction, matching a familiar admin-console convention (`?o=<i>` ascending,
  * `?o=-<i>` descending; `i` indexes `AdminResource#columns()`, the same order
@@ -324,6 +338,27 @@ const combineWhere = (...conditions: (SQL | undefined)[]): SQL | undefined => {
 	const defined = conditions.filter((value): value is SQL => value !== undefined);
 	if (defined.length === 0) return undefined;
 	return defined.length === 1 ? defined[0] : and(...defined);
+};
+
+/**
+ * Builds the list screen's "Export CSV" link (`AdminResourceListViewProps.exportHref`)
+ * from `currentQuery` (`c.req.query()`), dropping only `?p=` (pagination). Every
+ * other current query param — search (`q`), each active filter, sort (`o`), and
+ * date-hierarchy drilldown (`dhy`/`dhm`/`dhd`) — is carried over as-is, so the link
+ * reproduces exactly the same `q`/filter/date-hierarchy/`o` state the export route
+ * (`GET /resources/<key>/export.csv`) re-derives from those same param names; the
+ * export itself is never paginated (see `EXPORT_MAX_ROWS`), hence dropping `p`.
+ */
+const buildExportHref = (
+	basePath: string,
+	resourceKey: string,
+	currentQuery: Record<string, string>,
+): string => {
+	const params = new URLSearchParams(currentQuery);
+	params.delete("p");
+	const qs = params.toString();
+	const base = `${basePath}/resources/${resourceKey}/export.csv`;
+	return qs ? `${base}?${qs}` : base;
 };
 
 /**
@@ -3311,6 +3346,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 							pageCount={pageCount}
 							total={total}
 							dateHierarchy={dateHierarchy}
+							exportHref={buildExportHref(this.resolveBasePath(), key, c.req.query())}
 							csrfToken={this.csrfToken(c)}
 							t={t}
 						/>
@@ -3361,6 +3397,73 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 					);
 				});
 			}
+
+			/**
+			 * CSV export of the current list (dogfoods `View` + the CSV assembly
+			 * helpers from `@tknf/oven/helpers`; see `AdminResourceCsvView` and GitHub
+			 * issue #29). Re-derives `where`/`orderBy` from the exact same
+			 * `q`/filter/date-hierarchy/`o` query params as the list route above, so
+			 * the exported rows always match what's currently on screen — but fetches
+			 * up to `EXPORT_MAX_ROWS` rows in one shot rather than paginating.
+			 * Registered ahead of the `:id` show route below for the same reason `new`
+			 * is above: `export.csv` must never be matched as an `:id` value.
+			 * Available for every resource, writable or read-only (unlike `new`),
+			 * since exporting is a read, not a write, operation; `requiredPermission`
+			 * resolves `GET /resources/<key>/export.csv` to the same
+			 * `resource.<key>.view` permission as the list itself (any 3-segment GET
+			 * whose last segment isn't `"new"`), so no separate permission wiring is
+			 * needed.
+			 */
+			this.get(`/resources/${key}/export.csv`, async (c) => {
+				const target = resolve();
+				if (!target) return c.notFound();
+
+				const query = c.req.query("q") ?? "";
+				const filterDefs = target.filters?.() ?? [];
+				const selected: Record<string, string | undefined> = {};
+				for (const def of filterDefs) {
+					selected[def.column] = c.req.query(def.column) || undefined;
+				}
+
+				const search = query ? target.searchWhere(query) : undefined;
+				const filter = target.filterWhere(selected);
+				const baseWhere = combineWhere(search, filter);
+
+				const dhColumnName = target.dateHierarchy?.();
+				const dhColumn = dhColumnName ? getTableColumns(target.table)[dhColumnName] : undefined;
+				if (dhColumnName && !dhColumn) {
+					throw new Error(
+						`AdminResource "${target.key}": dateHierarchy() specified a nonexistent column name "${dhColumnName}"`,
+					);
+				}
+				const dhQuery = parseDateHierarchyQuery(
+					c.req.query("dhy"),
+					c.req.query("dhm"),
+					c.req.query("dhd"),
+				);
+				const where = dhColumn
+					? combineWhere(baseWhere, dateHierarchyPeriodWhere(dhColumn, dhQuery))
+					: baseWhere;
+
+				const displayColumns = target.columns();
+				const sort = parseSort(c.req.query("o") ?? undefined, displayColumns.length);
+				const orderBy: { column: Column; direction: "asc" | "desc" }[] = sort
+					? [{ column: displayColumns[sort.index].column, direction: sort.direction }]
+					: this.defaultOrderBy(target);
+
+				const rows = await target.model.listPage({
+					where,
+					orderBy,
+					limit: EXPORT_MAX_ROWS,
+					offset: 0,
+				});
+
+				return new AdminResourceCsvView<E>(
+					key,
+					displayColumns.map((column) => column.name),
+					rows,
+				).csv(c);
+			});
 
 			this.get(`/resources/${key}/:id`, async (c) => {
 				const options = this.panelOptions;

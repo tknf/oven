@@ -411,6 +411,29 @@ describe("AdminPanel accounts integration", () => {
 			expect(newRes.status).toBe(403);
 		});
 
+		test("CSV export shares the resource view permission: granted for a viewer, denied for an operator with no permission", async () => {
+			const { app, users } = buildAccountsApp();
+			await users.createUser({
+				username: "viewer",
+				password: "password-1",
+				permissions: [resourcePermission("publishers", "view")],
+			});
+			await users.createUser({ username: "nobody", password: "password-1" });
+
+			const { cookie: viewerCookie } = await loginAs(app, "viewer", "password-1");
+			const viewerRes = await app.request("/admin/resources/publishers/export.csv", {
+				headers: { Cookie: viewerCookie },
+			});
+			expect(viewerRes.status).toBe(200);
+			expect(viewerRes.headers.get("content-type")).toContain("text/csv");
+
+			const { cookie: nobodyCookie } = await loginAs(app, "nobody", "password-1");
+			const deniedRes = await app.request("/admin/resources/publishers/export.csv", {
+				headers: { Cookie: nobodyCookie },
+			});
+			expect(deniedRes.status).toBe(403);
+		});
+
 		test("a non-superuser with only jobs.view can read the jobs screen but not retry a job", async () => {
 			const { app, users, jobsConsole } = buildAccountsApp();
 			await users.createUser({

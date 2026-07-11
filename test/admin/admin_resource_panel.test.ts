@@ -11,7 +11,7 @@ import type { Env } from "hono";
 import { Hono } from "hono";
 import { afterEach, beforeEach, describe, expect, test } from "vite-plus/test";
 import { AdminPanel } from "../../src/admin/admin_panel.js";
-import type { AdminInline } from "../../src/admin/admin_resource.js";
+import type { AdminInline, AdminModel } from "../../src/admin/admin_resource.js";
 import { AdminResource, fieldsFromTable } from "../../src/admin/admin_resource.js";
 import { SQLiteAuditLog } from "../../src/audit/sqlite_audit_log.js";
 import type { FieldDef } from "../../src/form/form.js";
@@ -1275,6 +1275,248 @@ describe("AdminPanel resource CRUD list: sorting and numbered pagination", () =>
 
 		expect(body).toContain(`<input type="hidden" name="o" value="-${NAME_COLUMN_INDEX}"`);
 		expect(body).toContain('<input type="hidden" name="status" value="active"');
+	});
+});
+
+describe("AdminPanel resource CRUD list: CSV export", () => {
+	let ctx: Awaited<ReturnType<typeof createTestDb<typeof schema>>>;
+
+	beforeEach(async () => {
+		ctx = await createTestDb({ schema, migrationsFolder });
+	});
+
+	afterEach(() => {
+		ctx.client.close();
+	});
+
+	/** Same column order as the sorting describe block above: `name` is display column index `1`. */
+	const NAME_COLUMN_INDEX = 1;
+
+	test("GET /resources/<key>/export.csv returns a text/csv attachment named after the resource key", async () => {
+		await insertPublisher(ctx.db, { id: "pub-1", name: "TKNF Books" });
+		const resource = new PublisherResource(new PublisherModel(ctx.db));
+		const app = new Hono();
+		app.route("/admin", new AdminPanel({ authorize: () => true, resources: [resource] }));
+
+		const res = await app.request("/admin/resources/publishers/export.csv");
+
+		expect(res.status).toBe(200);
+		expect(res.headers.get("content-type")).toContain("text/csv");
+		expect(res.headers.get("content-disposition")).toBe('attachment; filename="publishers.csv"');
+	});
+
+	test("the header row is the display column names, and a row containing a comma/quote is escaped exactly like csvEscapeField", async () => {
+		await insertPublisher(ctx.db, { id: "pub-1", name: 'A, "Quoted" Press' });
+		const resource = new PublisherResource(new PublisherModel(ctx.db));
+		const app = new Hono();
+		app.route("/admin", new AdminPanel({ authorize: () => true, resources: [resource] }));
+
+		const res = await app.request("/admin/resources/publishers/export.csv");
+		const [header, ...lines] = (await res.text()).split("\r\n");
+
+		expect(header).toBe("id,name,contactEmail,status,createdAt,updatedAt");
+		expect(lines.some((line) => line.includes('"A, ""Quoted"" Press"'))).toBe(true);
+	});
+
+	test("formulaGuard: a cell starting with a formula-trigger character is prefixed with '", async () => {
+		await insertPublisher(ctx.db, { id: "pub-1", name: "=SUM(A1)" });
+		const resource = new PublisherResource(new PublisherModel(ctx.db));
+		const app = new Hono();
+		app.route("/admin", new AdminPanel({ authorize: () => true, resources: [resource] }));
+
+		const res = await app.request("/admin/resources/publishers/export.csv");
+		const body = await res.text();
+
+		expect(body).toContain("pub-1,'=SUM(A1)");
+	});
+
+	test("search: q on export.csv includes only the rows the list route's own q would include", async () => {
+		await insertPublisher(ctx.db, { id: "pub-1", name: "TKNF Books" });
+		await insertPublisher(ctx.db, { id: "pub-2", name: "Another Press" });
+		const resource = new PublisherResource(new PublisherModel(ctx.db));
+		const app = new Hono();
+		app.route("/admin", new AdminPanel({ authorize: () => true, resources: [resource] }));
+
+		const res = await app.request("/admin/resources/publishers/export.csv?q=TKNF");
+		const body = await res.text();
+
+		expect(body).toContain("TKNF Books");
+		expect(body).not.toContain("Another Press");
+	});
+
+	test("filter: status on export.csv includes only the rows the list route's own filter would include", async () => {
+		await insertPublisher(ctx.db, { id: "pub-1", name: "TKNF Books", status: "active" });
+		await insertPublisher(ctx.db, { id: "pub-2", name: "Another Press", status: "inactive" });
+		const resource = new PublisherResource(new PublisherModel(ctx.db));
+		const app = new Hono();
+		app.route("/admin", new AdminPanel({ authorize: () => true, resources: [resource] }));
+
+		const res = await app.request("/admin/resources/publishers/export.csv?status=inactive");
+		const body = await res.text();
+
+		expect(body).not.toContain("TKNF Books");
+		expect(body).toContain("Another Press");
+	});
+
+	test("sort: o on export.csv orders rows the same way the list route's own o would", async () => {
+		await insertPublisher(ctx.db, { id: "pub-1", name: "Beta Press" });
+		await insertPublisher(ctx.db, { id: "pub-2", name: "Alpha Books" });
+		const resource = new PublisherResource(new PublisherModel(ctx.db));
+		const app = new Hono();
+		app.route("/admin", new AdminPanel({ authorize: () => true, resources: [resource] }));
+
+		const res = await app.request(`/admin/resources/publishers/export.csv?o=${NAME_COLUMN_INDEX}`);
+		const body = await res.text();
+
+		expect(body.indexOf("Alpha Books")).toBeLessThan(body.indexOf("Beta Press"));
+	});
+
+	test("row cap: the export passes AdminPanel's bounded row limit (not the paginated page size) to listPage", async () => {
+		const calls: { limit: number; offset: number | undefined }[] = [];
+		const fakeModel: AdminModel = {
+			paginate: async () => {
+				throw new Error("unexpected paginate call");
+			},
+			listPage: async (options) => {
+				calls.push({ limit: options.limit, offset: options.offset });
+				return [];
+			},
+			retrieve: async () => undefined,
+			create: async () => {
+				throw new Error("unexpected create call");
+			},
+			update: async () => {
+				throw new Error("unexpected update call");
+			},
+			delete: async () => {
+				throw new Error("unexpected delete call");
+			},
+			count: async () => {
+				throw new Error("unexpected count call");
+			},
+		};
+
+		class BoundedModelResource extends AdminResource {
+			get key() {
+				return "publishers";
+			}
+			get label() {
+				return "Publisher";
+			}
+			get model() {
+				return fakeModel;
+			}
+			get table() {
+				return schema.publishers;
+			}
+			get primaryKey() {
+				return "id";
+			}
+		}
+
+		const app = new Hono();
+		app.route(
+			"/admin",
+			new AdminPanel({ authorize: () => true, resources: [new BoundedModelResource()] }),
+		);
+
+		const res = await app.request("/admin/resources/publishers/export.csv");
+
+		expect(res.status).toBe(200);
+		/**
+		 * Asserted against the current value of the module-private `EXPORT_MAX_ROWS`
+		 * constant (`admin_panel.tsx`) rather than importing it (not exported): this
+		 * intentionally forces this test to be updated in lockstep if that bound
+		 * ever changes. `10_000` rows are never actually seeded here — the bound is
+		 * proven by inspecting the `limit` `wireResources` passes to `listPage`,
+		 * not by exhausting it.
+		 */
+		expect(calls).toEqual([{ limit: 10_000, offset: 0 }]);
+	});
+
+	test('a boolean column exports as "true"/"false", matching the list screen\'s own stringify semantics', async () => {
+		const fakeModel: AdminModel = {
+			paginate: async () => {
+				throw new Error("unexpected paginate call");
+			},
+			listPage: async () => [
+				{ id: "pub-1", name: "TKNF Books", active: true },
+				{ id: "pub-2", name: "Another Press", active: false },
+			],
+			retrieve: async () => undefined,
+			create: async () => {
+				throw new Error("unexpected create call");
+			},
+			update: async () => {
+				throw new Error("unexpected update call");
+			},
+			delete: async () => {
+				throw new Error("unexpected delete call");
+			},
+			count: async () => {
+				throw new Error("unexpected count call");
+			},
+		};
+
+		/**
+		 * `columns()` is overridden to declare a synthetic `active` boolean column
+		 * that isn't backed by a real `publishers` table column (the fixture schema
+		 * has no boolean column and this suite must not add one; see the module
+		 * JSDoc). `schema.publishers.status` is reused only to satisfy
+		 * `AdminResourceColumn.column`'s `Column` type — its identity is never
+		 * inspected by the CSV export path, which only reads `.name`.
+		 */
+		class BooleanColumnResource extends AdminResource {
+			get key() {
+				return "publishers";
+			}
+			get label() {
+				return "Publisher";
+			}
+			get model() {
+				return fakeModel;
+			}
+			get table() {
+				return schema.publishers;
+			}
+			get primaryKey() {
+				return "id";
+			}
+			columns() {
+				return [
+					{ name: "name", column: schema.publishers.name },
+					{ name: "active", column: schema.publishers.status },
+				];
+			}
+		}
+
+		const app = new Hono();
+		app.route(
+			"/admin",
+			new AdminPanel({ authorize: () => true, resources: [new BooleanColumnResource()] }),
+		);
+
+		const res = await app.request("/admin/resources/publishers/export.csv");
+		const body = await res.text();
+
+		expect(body).toBe("name,active\r\nTKNF Books,true\r\nAnother Press,false");
+	});
+
+	test("list: renders an Export CSV link that preserves the current search/filter/sort state", async () => {
+		await insertPublisher(ctx.db, { id: "pub-1", name: "TKNF Books", status: "active" });
+		const resource = new PublisherResource(new PublisherModel(ctx.db));
+		const app = new Hono();
+		app.route("/admin", new AdminPanel({ authorize: () => true, resources: [resource] }));
+
+		const res = await app.request(
+			`/admin/resources/publishers?status=active&o=${NAME_COLUMN_INDEX}`,
+		);
+		const body = await res.text();
+
+		expect(body).toContain('class="exportlink"');
+		expect(body).toContain(
+			`href="/admin/resources/publishers/export.csv?status=active&amp;o=${NAME_COLUMN_INDEX}"`,
+		);
 	});
 });
 
