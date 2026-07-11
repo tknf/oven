@@ -101,6 +101,14 @@ const rows = await auditLog.list({ actor: "user-1", action: "user.update", limit
   structured data. Don't rely on filtering `list()` by contents of
   `changes` — only `actor`/`action`/`target` are indexed query
   parameters.
+- **Never put secrets or PII in `changes`.** The log is append-only (see
+  above — there's no update/delete API), so a value written into `changes`
+  cannot be redacted after the fact; filter what you pass to `record()`
+  before the call, the same way `LoggerOptions.redact` in
+  [Logging](./logging.md#common-tasks) masks sensitive fields before they're
+  written rather than after. `AdminPanel`'s own `accounts.user.setPassword`
+  entry follows this discipline: it records the action with no `changes`
+  payload at all, rather than including the new password or its hash.
 
 ## See also
 
