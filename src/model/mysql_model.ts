@@ -728,6 +728,33 @@ export abstract class MySqlModel<
 	}
 
 	/**
+	 * Bulk-deletes every row matching `where` and returns the number of rows actually
+	 * deleted (the DELETE counterpart of `updateWhere`, sharing the same `where`
+	 * contract; same contract as `SQLiteModel#deleteWhere`/`PgModel#deleteWhere`).
+	 * `where` is typed `SQL | undefined` (required, not optional) for the same reason
+	 * as `retrieveBy`.
+	 *
+	 * **This is a hard delete** — it issues a real `DELETE` statement, unlike
+	 * `softDelete`, which only sets `deletedAt`. `deleteWhere` does not auto-scope to
+	 * non-deleted rows; the caller's `where` is authoritative, so callers that want to
+	 * skip already soft-deleted rows must add that condition themselves (e.g.
+	 * `isNull(table.deletedAt)`).
+	 *
+	 * Since MySQL doesn't support DELETE ... RETURNING (confirmed that mysql-core's
+	 * `delete()` exposes no `.returning()` method in
+	 * `node_modules/drizzle-orm/mysql-core/query-builders/delete.d.ts`), the count is
+	 * obtained through the `rowsAffectedFrom` hook instead, the same way `updateWhere`
+	 * does (see module JSDoc "Getting the affected-row count for updateWhere"). Unlike
+	 * UPDATE's "rows whose value actually changed" nuance, DELETE's `affectedRows`
+	 * straightforwardly counts rows matched by `where` and removed, so this is
+	 * unaffected by the `CLIENT_FOUND_ROWS` caveat that applies to `updateWhere`.
+	 */
+	async deleteWhere(where: SQL | undefined): Promise<number> {
+		const result = await this.db.delete(this.table).where(where);
+		return this.rowsAffectedFrom(result);
+	}
+
+	/**
 	 * Returns a model instance of the same type bound to a transaction. Used in
 	 * cross-model orchestration (the handlers layer) like
 	 * `db.transaction(async (tx) => { const txBooks = books.with(tx); ... })` (same

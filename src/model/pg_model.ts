@@ -590,6 +590,32 @@ export abstract class PgModel<
 	}
 
 	/**
+	 * Bulk-deletes every row matching `where` and returns the number of rows actually
+	 * deleted (the DELETE counterpart of `updateWhere`, sharing the same `where`
+	 * contract; same contract as `SQLiteModel#deleteWhere`). `where` is typed
+	 * `SQL | undefined` (required, not optional) for the same reason as `retrieveBy`.
+	 *
+	 * **This is a hard delete** — it issues a real `DELETE` statement, unlike
+	 * `softDelete`, which only sets `deletedAt`. `deleteWhere` does not auto-scope to
+	 * non-deleted rows; the caller's `where` is authoritative, so callers that want to
+	 * skip already soft-deleted rows must add that condition themselves (e.g.
+	 * `isNull(table.deletedAt)`).
+	 *
+	 * The count is derived the same way as `updateWhere`: the length of the row array
+	 * returned by `.returning({ pk: this.primaryKey })` (Postgres' DELETE also supports
+	 * RETURNING, typed via `PgDeleteBase#returning`, confirmed in
+	 * `node_modules/drizzle-orm/pg-core/query-builders/delete.d.ts`), for the same
+	 * driver-independence reason given in `updateWhere`'s JSDoc.
+	 */
+	async deleteWhere(where: SQL | undefined): Promise<number> {
+		const deleted = await this.db
+			.delete(this.pgTable)
+			.where(where)
+			.returning({ pk: this.primaryKey });
+		return deleted.length;
+	}
+
+	/**
 	 * Returns a model instance of the same type bound to a transaction. Used in
 	 * cross-model orchestration (the handlers layer) like
 	 * `db.transaction(async (tx) => { const txBooks = books.with(tx); ... })` (same

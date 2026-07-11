@@ -163,6 +163,19 @@ soft-deleted rows — there is no implicit global scope. Add
 `isNull(items.deletedAt)` to your own `where` conditions when you want to
 exclude them.
 
+### Bulk delete with `deleteWhere`
+
+```ts
+const deletedCount = await model.deleteWhere(eq(items.status, "archived"));
+```
+
+`deleteWhere` is a **hard delete** — it issues a real `DELETE`, unlike
+`softDelete` above, which only sets `deletedAt`. It shares `updateWhere`'s
+`where` contract (required, not optional; caller-composed) and returns the
+number of rows actually deleted. There is no implicit scope to non-deleted
+rows either: add `isNull(items.deletedAt)` yourself if you want to skip rows
+that were already soft-deleted.
+
 ### Running inside a transaction
 
 ```ts
@@ -235,8 +248,8 @@ export class TenantItemModel extends SQLiteModel<typeof items, typeof items.id, 
 ```
 
 The same substitution — `super.method(this.scope(where))` — covers `count`,
-`exists`, `pluck`, `updateWhere`, and the `where` option of `paginate`/
-`listPage`.
+`exists`, `pluck`, `updateWhere`, `deleteWhere`, and the `where` option of
+`paginate`/`listPage`.
 
 **PK-only methods bypass `where` entirely** (`retrieve`, `update`,
 `updateLocked`, `touch`, `increment`/`decrement`, `delete`), so scoping them
@@ -354,6 +367,7 @@ test("SQLiteModel's public surface hasn't grown past what TenantItemModel scopes
       "increment",
       "decrement",
       "delete",
+      "deleteWhere",
       "with",
       "withAutoFields",
       "withTouchedUpdatedAt",
@@ -401,8 +415,8 @@ test("SQLiteModel's public surface hasn't grown past what TenantItemModel scopes
   within that transaction's isolation level but doesn't fully close the gap.
   SQLite and Postgres don't have this caveat (both support `RETURNING`).
 - **`rowsAffectedFrom` only understands the mysql2 driver by default.**
-  `updateWhere`/`updateLocked`/`delete` read the affected-row count from
-  `update()`/`delete()`'s execution result through the protected
+  `updateWhere`/`updateLocked`/`delete`/`deleteWhere` read the affected-row
+  count from `update()`/`delete()`'s execution result through the protected
   `rowsAffectedFrom` hook. The default implementation reads mysql2's
   `[ResultSetHeader, FieldPacket[]]` shape (`affectedRows`); on any other
   driver it throws with a message telling you to override it, instead of
