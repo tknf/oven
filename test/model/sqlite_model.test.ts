@@ -381,6 +381,22 @@ describe("SQLiteModel", () => {
 		await expect(model.retrieve(created.id)).resolves.toMatchObject({ status: "published" });
 	});
 
+	test("deleteWhere deletes exactly the matching rows, returns their count, and leaves the rest untouched", async () => {
+		const draftA = await model.create({ name: "Draft A", status: "draft" });
+		const published = await model.create({ name: "Published B", status: "published" });
+		const draftC = await model.create({ name: "Draft C", status: "draft" });
+
+		const deletedCount = await model.deleteWhere(eq(items.status, "draft"));
+		expect(deletedCount).toBe(2);
+
+		await expect(model.retrieve(draftA.id)).resolves.toBeUndefined();
+		await expect(model.retrieve(draftC.id)).resolves.toBeUndefined();
+		await expect(model.retrieve(published.id)).resolves.toMatchObject({ name: "Published B" });
+
+		const noMatch = await model.deleteWhere(eq(items.status, "draft"));
+		expect(noMatch).toBe(0);
+	});
+
 	test("increment/decrement add to or subtract from the given column", async () => {
 		const created = await model.create({ name: "Counter", count: 0 });
 
