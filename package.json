@@ -1,6 +1,6 @@
 {
 	"name": "@tknf/oven",
-	"version": "1.1.0",
+	"version": "1.2.0",
 	"description": "Convention layer for SSR full-stack apps on Hono (Hono/JSX SSR + Turbo/Stimulus)",
 	"keywords": [
 		"cloudflare-workers",
