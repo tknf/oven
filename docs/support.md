@@ -12,17 +12,16 @@ wire in where needed.
 ## Minimal example
 
 ```ts
-import { SnowflakeIdGenerator, SignedCookieAccessor } from "@tknf/oven/support";
+import { SnowflakeIdGenerator, CookieAccessor } from "@tknf/oven/support";
 
 const idGenerator = new SnowflakeIdGenerator();
-const session = new SignedCookieAccessor({
-  name: "session",
-  secret: process.env.SESSION_SECRET as string,
+const visitorId = new CookieAccessor({
+  name: "visitor_id",
   options: { path: "/", secure: true },
 });
 
-app.get("/set", async (c) => {
-  await session.set(c, idGenerator.generate());
+app.get("/set", (c) => {
+  visitorId.set(c, idGenerator.generate());
   return c.text("ok");
 });
 ```
@@ -45,28 +44,31 @@ All four implement the abstract `IdGenerator` class (`generate(): string`),
 so app code that only needs an id should depend on `IdGenerator`, not a
 concrete scheme.
 
-**Reading/writing a signed cookie:**
+**Reading/writing a cookie that needs integrity protection** (e.g. a
+`remember_token` that must not be forgeable by the client): call Hono's own
+signed cookie API directly — `CookieAccessor` intentionally stays unsigned
+(see the module JSDoc for why signed/unsigned are two separate shapes), so
+this is the supported way to get a signed cookie in oven:
 
 ```ts
-import { SignedCookieAccessor } from "@tknf/oven/support";
+import { getSignedCookie, setSignedCookie } from "hono/cookie";
 
-const rememberToken = new SignedCookieAccessor({
-  name: "remember_token",
-  secret: process.env.REMEMBER_SECRET as string,
-});
+const secret = process.env.REMEMBER_SECRET as string;
 
-await rememberToken.set(c, token);
-const value = await rememberToken.get(c); // string | undefined | false (false = tampered)
+await setSignedCookie(c, "remember_token", token, secret);
+const value = await getSignedCookie(c, secret, "remember_token"); // string | undefined | false (false = tampered)
 ```
 
 Use the plain `CookieAccessor` instead when the value doesn't need
-integrity protection (e.g. a UI preference).
+integrity protection (e.g. a UI preference, as in the minimal example above).
 
-> **`SignedCookieAccessor`/`SignedCookieDefinition` are deprecated** and
-> scheduled for removal in the next major. Prefer `CookieAccessor` combined
-> with explicit signing (the pattern used internally by `UrlSigner` and
-> `CookieSessionStorage`), or call Hono's `getSignedCookie`/`setSignedCookie`
-> (`hono/cookie`) directly.
+> **Legacy: `SignedCookieAccessor`/`SignedCookieDefinition`.** These used to
+> wrap the call above in a typed accessor matching `CookieAccessor`'s shape.
+> They are now `@deprecated` and scheduled for removal in the next major —
+> use `getSignedCookie`/`setSignedCookie` directly as shown above, or
+> `CookieAccessor` combined with your own explicit signing (the pattern
+> `UrlSigner`/`CookieSessionStorage` use internally) if you need to reuse the
+> signing logic across several cookies.
 
 **Validating `c.env` once at startup, then distributing a typed config**
 (via `ScopedValueAccessor` from `@tknf/oven/routing`, with `scope: "app"`
@@ -108,16 +110,18 @@ const isValid = constantTimeEqual(submittedBytes, expectedBytes);
 
 ## Gotchas / Security notes
 
-- **`SignedCookieAccessor`'s `secret` must be a high-entropy random value
-  equivalent to ~32 bytes.** `warnWeakSecrets` (used internally by classes
-  such as `Encrypter`/`UrlSigner`/`CookieSessionStorage`) only issues a
-  `console.warn` once per context at construction time — it never throws,
-  so it must not be relied on to catch misconfiguration in CI.
-- **No cookie class in oven defaults `secure` to `true`**, `CookieAccessor`/
-  `SignedCookieAccessor` included — set it explicitly via `options.secure`
-  in production. `warnInsecureCookieInProduction` only warns (once per
-  context, via `console.warn`, when `NODE_ENV === "production"`
-  can be determined) and never injects a default or rejects the request.
+- **A signed cookie's `secret` must be a high-entropy random value equivalent
+  to ~32 bytes** — whether signed via `getSignedCookie`/`setSignedCookie`
+  directly or the legacy `SignedCookieAccessor`. `warnWeakSecrets` (used
+  internally by classes such as `Encrypter`/`UrlSigner`/`CookieSessionStorage`,
+  not by Hono's own signed cookie functions) only issues a `console.warn`
+  once per context at construction time — it never throws, so it must not be
+  relied on to catch misconfiguration in CI.
+- **No cookie class in oven defaults `secure` to `true`**, `CookieAccessor`
+  included — set it explicitly via `options.secure` in production.
+  `warnInsecureCookieInProduction` only warns (once per context, via
+  `console.warn`, when `NODE_ENV === "production"` can be determined) and
+  never injects a default or rejects the request.
 - **`constantTimeEqual` must be used for every secret-vs-secret
   comparison** (signatures, tokens, masked CSRF values) — a plain `===`
   can leak the position of the first mismatching byte through timing.
