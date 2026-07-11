@@ -16,6 +16,23 @@ jobs:
       # Required for npm provenance (OIDC).
       id-token: write
       contents: read
+    # Mirror CI's MySQL service so the release's own test run exercises the
+    # MySQL adapter tests (and satisfies the CI guard that OVEN_MYSQL_TEST_URL
+    # is set whenever CI is truthy) — the publish gate must be at least as
+    # strong as CI.
+    services:
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: oven_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -proot"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=15
     steps:
       - uses: actions/checkout@v7
 
@@ -39,6 +56,8 @@ jobs:
         run: vp run typecheck
 
       - name: Test
+        env:
+          OVEN_MYSQL_TEST_URL: "mysql://root:root@127.0.0.1:3306/oven_test"
         run: vp test run
 
       - name: Build
