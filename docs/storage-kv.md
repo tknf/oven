@@ -153,10 +153,11 @@ upload shape in mind:
   `CompleteMultipartUpload`, aborting via `AbortMultipartUpload` on failure).
 - **`GoogleCloudStorage`** switches a `Blob`/`ArrayBuffer` above 100 MiB to
   GCS's resumable upload protocol (initiate, then PUT fixed-size chunks to
-  the returned session URI). A `ReadableStream` always stays on the simple
-  `uploadType=media` upload, passed through to `fetch` unbuffered, regardless
-  of size — this is the one adapter where a stream never triggers the
-  large-object path.
+  the returned session URI, canceling the session on failure — mirroring
+  `S3Storage`'s `AbortMultipartUpload` on failure). A `ReadableStream` always
+  stays on the simple `uploadType=media` upload, passed through to `fetch`
+  unbuffered, regardless of size — this is the one adapter where a stream
+  never triggers the large-object path.
 - **`R2Storage`** (under `@tknf/oven/cloudflare`) switches to R2's Multipart
   Upload API above 100 MiB for all three body types, including a
   `ReadableStream` (chunked on the fly via a lookahead reader, so it need not

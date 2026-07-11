@@ -13,11 +13,12 @@
  * convention), goes through GCS's simple `uploadType=media` upload as
  * before, streamed through to `fetch` unbuffered. A `Blob`/`ArrayBuffer`
  * above that threshold switches to GCS's resumable upload protocol
- * (initiate, then PUT fixed-size chunks to the returned session URI) instead
- * — unlike `S3Storage`'s multipart upload, this only applies to bodies with
- * a size known up front; a `ReadableStream` always takes the simple-upload
- * path regardless of size (this is a deliberate per-backend difference, see
- * docs/storage-kv.md).
+ * (initiate, then PUT fixed-size chunks to the returned session URI,
+ * canceling the session on failure — mirroring `S3Storage`'s
+ * `AbortMultipartUpload` on failure) instead — unlike `S3Storage`'s
+ * multipart upload, this only applies to bodies with a size known up front;
+ * a `ReadableStream` always takes the simple-upload path regardless of size
+ * (this is a deliberate per-backend difference, see docs/storage-kv.md).
  */
 import { Storage, type StorageObject } from "./storage.js";
 
@@ -115,6 +116,11 @@ export class GoogleCloudStorage extends Storage {
 	 * session URI. Per Google's documented protocol, chunk PUT requests carry
 	 * no `Authorization` header — the session URI itself is bound to the
 	 * token that created it.
+	 *
+	 * Mirrors `S3Storage#putMultipart`: on any failure after the session is
+	 * created, the session is canceled (best-effort — its own failure never
+	 * masks the original error) before the original error is rethrown, so a
+	 * failed upload doesn't linger until GCS's ~1-week session auto-expiry.
 	 */
 	private async putResumable(
 		key: string,
@@ -124,30 +130,46 @@ export class GoogleCloudStorage extends Storage {
 	): Promise<void> {
 		const sessionUri = await this.initiateResumableUpload(key, size, contentType);
 
-		for (let offset = 0; offset < size; offset += RESUMABLE_THRESHOLD_BYTES) {
-			const end = Math.min(offset + RESUMABLE_THRESHOLD_BYTES, size);
-			const chunk = data instanceof Blob ? data.slice(offset, end) : data.slice(offset, end);
-			const isFinalChunk = end === size;
+		try {
+			for (let offset = 0; offset < size; offset += RESUMABLE_THRESHOLD_BYTES) {
+				const end = Math.min(offset + RESUMABLE_THRESHOLD_BYTES, size);
+				const chunk = data instanceof Blob ? data.slice(offset, end) : data.slice(offset, end);
+				const isFinalChunk = end === size;
 
-			const response = await this.fetch(sessionUri, {
-				method: "PUT",
-				headers: {
-					"Content-Length": String(end - offset),
-					"Content-Range": `bytes ${offset}-${end - 1}/${size}`,
-				},
-				body: chunk,
-			});
+				const response = await this.fetch(sessionUri, {
+					method: "PUT",
+					headers: {
+						"Content-Length": String(end - offset),
+						"Content-Range": `bytes ${offset}-${end - 1}/${size}`,
+					},
+					body: chunk,
+				});
 
-			if (isFinalChunk) {
-				if (!response.ok) {
+				if (isFinalChunk) {
+					if (!response.ok) {
+						const text = await response.text();
+						throw new Error(
+							`GCS resumable upload failed to complete (${response.status}): ${text}`,
+						);
+					}
+				} else if (response.status !== 308) {
 					const text = await response.text();
-					throw new Error(`GCS resumable upload failed to complete (${response.status}): ${text}`);
+					throw new Error(`GCS resumable upload chunk failed (${response.status}): ${text}`);
 				}
-			} else if (response.status !== 308) {
-				const text = await response.text();
-				throw new Error(`GCS resumable upload chunk failed (${response.status}): ${text}`);
 			}
+		} catch (error) {
+			try {
+				await this.cancelResumableUpload(sessionUri);
+			} catch {
+				// Best-effort cleanup; the original error below always wins.
+			}
+			throw error;
 		}
+	}
+
+	/** `DELETE <sessionUri>` — cancels a resumable upload session (GCS documents success as HTTP 499). */
+	private async cancelResumableUpload(sessionUri: string): Promise<void> {
+		await this.fetch(sessionUri, { method: "DELETE" });
 	}
 
 	/** `POST .../o?uploadType=resumable&name=<key>` — starts a resumable session and returns its session URI (the response's `Location` header). */

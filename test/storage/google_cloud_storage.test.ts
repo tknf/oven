@@ -198,6 +198,55 @@ describe("GoogleCloudStorage", () => {
 		).rejects.toThrow(/GCS resumable upload chunk failed/);
 	});
 
+	test("a failed chunk upload cancels the resumable session and rethrows the original error", async () => {
+		const sessionUri = "https://storage.googleapis.com/session-cancel";
+		const calls: string[] = [];
+
+		const fetch = vi.fn<typeof globalThis.fetch>(async (input, init) => {
+			const url = toUrlString(input);
+			if (url.includes("uploadType=resumable")) {
+				calls.push("initiate");
+				return new Response(null, { status: 200, headers: { Location: sessionUri } });
+			}
+			if (url === sessionUri) {
+				if (init?.method === "DELETE") {
+					calls.push("cancel");
+					return new Response(null, { status: 499 });
+				}
+				calls.push("chunk");
+				return new Response("boom", { status: 500 });
+			}
+			throw new Error(`unexpected request: ${url}`);
+		});
+		const storage = buildStorage(fetch);
+
+		await expect(
+			storage.put("media/big.bin", LARGE_BODY, "application/octet-stream"),
+		).rejects.toThrow(/GCS resumable upload chunk failed/);
+		expect(calls).toEqual(["initiate", "chunk", "cancel"]);
+	});
+
+	test("a cancel request itself failing never masks the original chunk error", async () => {
+		const sessionUri = "https://storage.googleapis.com/session-cancel-fails";
+
+		const fetch = vi.fn<typeof globalThis.fetch>(async (input, init) => {
+			const url = toUrlString(input);
+			if (url.includes("uploadType=resumable")) {
+				return new Response(null, { status: 200, headers: { Location: sessionUri } });
+			}
+			if (url === sessionUri) {
+				if (init?.method === "DELETE") throw new Error("network error while canceling");
+				return new Response("boom", { status: 500 });
+			}
+			throw new Error(`unexpected request: ${url}`);
+		});
+		const storage = buildStorage(fetch);
+
+		await expect(
+			storage.put("media/big.bin", LARGE_BODY, "application/octet-stream"),
+		).rejects.toThrow(/GCS resumable upload chunk failed/);
+	});
+
 	test("a non-ok final chunk response throws", async () => {
 		const sessionUri = "https://storage.googleapis.com/session-final";
 		let chunkCount = 0;

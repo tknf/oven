@@ -161,6 +161,13 @@ describe("GcsUrlSigner", () => {
 		await expect(signer.presignGet("key", 604801)).rejects.toThrow();
 	});
 
+	test("rejects a non-finite expiresInSeconds instead of letting it slip past the bounds check", async () => {
+		const signer = new GcsUrlSigner(buildSignerConfig());
+
+		await expect(signer.presignGet("key", Number.NaN)).rejects.toThrow();
+		await expect(signer.presignGet("key", Number.POSITIVE_INFINITY)).rejects.toThrow();
+	});
+
 	test("accepts the documented boundary values (1 second and 7 days)", async () => {
 		const signer = new GcsUrlSigner(buildSignerConfig());
 
@@ -189,6 +196,44 @@ describe("GcsUrlSigner", () => {
 
 		expect(path).toBe("/example-media/media/a%20b/1%3F.mp3");
 		expect(canonicalQueryString).not.toContain("1?.mp3");
+	});
+
+	test("residual RFC 3986 characters ( ) ' ! * left unescaped by encodeURIComponent are percent-encoded in the path, and the signature still verifies", async () => {
+		const signer = new GcsUrlSigner(buildSignerConfig());
+
+		const signedUrl = await signer.presignGet("media/photo (1)'s !*.jpg", 600);
+		const { host, path, canonicalQueryString, signatureHex } = parseSignedUrl(signedUrl);
+		const params = new URLSearchParams(canonicalQueryString);
+		const requestTimestamp = params.get("X-Goog-Date");
+		const credentialScope = "20260711/auto/storage/goog4_request";
+		if (requestTimestamp === null) throw new Error("X-Goog-Date missing from signed URL");
+
+		expect(path).toBe("/example-media/media/photo%20%281%29%27s%20%21%2A.jpg");
+		expect(path).not.toMatch(/[!'()*]/);
+
+		const canonicalRequest = [
+			"GET",
+			path,
+			canonicalQueryString,
+			`host:${host}`,
+			"",
+			"host",
+			"UNSIGNED-PAYLOAD",
+		].join("\n");
+		const stringToSign = [
+			"GOOG4-RSA-SHA256",
+			requestTimestamp,
+			credentialScope,
+			await sha256Hex(canonicalRequest),
+		].join("\n");
+
+		const isValid = await crypto.subtle.verify(
+			"RSASSA-PKCS1-v1_5",
+			publicKey,
+			hexToArrayBuffer(signatureHex),
+			new TextEncoder().encode(stringToSign),
+		);
+		expect(isValid).toBe(true);
 	});
 
 	test("a malformed PEM rejects presignGet with a clear error", async () => {
