@@ -68,6 +68,8 @@ subpath export (`@tknf/oven/<name>`).
   env validation, constant-time compare (`@tknf/oven/support`).
 - [Vite assets](./vite.md) — `ViteAssets`, manifest resolution
   (`@tknf/oven/vite`).
+- [CLI](./cli.md) — the `oven generate`/`oven g` scaffolding bin (not a
+  subpath export — it ships as `@tknf/oven`'s `bin`).
 
 ## Deploying & testing
 

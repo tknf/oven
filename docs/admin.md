@@ -116,7 +116,8 @@ class takes its `Model` instance and Drizzle table via the constructor —
 fill in the `key`/`label`/`primaryKey` TODOs and register it with
 `resources: [new BookResource(bookModel, book)]`. `--dialect` does not
 apply to this template (the `AdminModel` contract is dialect-agnostic)
-and is rejected if passed.
+and is rejected if passed. See the [CLI guide](./cli.md) for the full
+generator reference (all 8 types, flags, and gotchas).
 
 Leaving `form()` unimplemented makes a resource view-only: no create/
 edit/delete routes are registered for it (`AdminResource#canWrite()`
