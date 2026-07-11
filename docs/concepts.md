@@ -186,7 +186,7 @@ deliberately excluded from it and must be imported from their own subpath.
 | `@tknf/oven` | Aggregate re-export of the modules below (excludes `cloudflare`, `node`, `test`, `vite`) |
 | `@tknf/oven/admin` | `AdminPanel`/`AdminResource` — an admin CRUD surface built on the same routing conventions — plus the operator-accounts service (`SQLiteAdminAccounts` and the other dialects), the operator-groups service (`SQLiteAdminGroups` and the other dialects), and permission-string helpers |
 | `@tknf/oven/audit` | Audit log recording (e.g. `PgAuditLog` and other backend adapters) |
-| `@tknf/oven/auth` | `Guard`, `Policy`, `ApiToken`, `OAuthClient`, `PasswordReset`, `EmailVerification`, `RememberToken` |
+| `@tknf/oven/auth` | `Guard`, `Policy`, `ApiToken`, `OAuthClient`, `PasswordReset`, `EmailVerification`, `PasswordlessLogin`, `RememberToken` |
 | `@tknf/oven/cache` | `Cache` and `CacheControl` response-caching helpers |
 | `@tknf/oven/database` | `DatabaseAccessor` — the dedicated `ContextAccessor` for wiring a Drizzle database |
 | `@tknf/oven/datasource` | `Datasource`/`RestDatasource` — a thin base over `fetch` for external HTTP/REST sources, with Standard Schema response validation |

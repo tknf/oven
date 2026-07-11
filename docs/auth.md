@@ -22,9 +22,9 @@ rather than folded into a single "auth module":
 - **Credentials and tokens** — `password.ts`'s `hashPassword`/
   `verifyPassword` (PBKDF2-HMAC-SHA256 via Web Crypto), `ApiToken`
   (long-lived, non-rotating tokens for API clients), `RememberToken`
-  (rotating "remember me" cookies), `EmailVerification`/`PasswordReset`
-  (signed, expiring one-time links), and `OAuthClient` (a thin OAuth2 code
-  exchange helper).
+  (rotating "remember me" cookies), `EmailVerification`/`PasswordReset`/
+  `PasswordlessLogin` (signed, expiring one-time links), and `OAuthClient` (a
+  thin OAuth2 code exchange helper).
 - **TOTP two-factor codes** — `totp.ts`'s `generateTotpSecret`/
   `buildOtpauthUrl`/`generateTotpCode`/`verifyTotpCode` implement RFC 6238
   (Time-Based One-Time Password) on Web Crypto alone, no dependency. Admin
@@ -160,6 +160,50 @@ app.post("/logout", async (c) => {
 });
 ```
 
+**Passwordless (magic-link) login.** `PasswordlessLogin` follows the same
+`request`/`verify` shape as `EmailVerification`/`PasswordReset`, plus `login`
+to complete the flow. A login-granting link must be genuinely single-use
+(anyone who observes the URL — mail forwarding, a shared machine, a proxy
+log — must not be able to replay it), which the other two flows either don't
+need or get "for free" from data that already changes; see the class's own
+JSDoc in `src/auth/passwordless_login.ts` for the full comparison. To get
+single-use here, wire `fingerprintOf` to a per-user random nonce and
+`rotateNonce` to replace it on every successful login:
+
+```ts
+import { PasswordlessLogin } from "@tknf/oven/auth";
+import { encodeBase64Url } from "@tknf/oven/support";
+
+// `loginNonce` needs an initial random value set at account creation time,
+// the same way `fingerprintOf`/`rotateNonce` require thereafter.
+const passwordlessLogin = new PasswordlessLogin<Account>({
+  secrets: [env.LOGIN_TOKEN_SECRET],
+  findByEmail: (email) => accounts.findByEmail(email),
+  provider: (identity) => accounts.get(identity),
+  identityOf: (account) => account.id,
+  fingerprintOf: (account) => account.loginNonce,
+  loginUrl: (token) => `https://example.com/login/${token}`,
+  deliver: (account, url) => mailer.deliver(new MagicLinkMail(account.email, url)),
+  rotateNonce: async (account) => {
+    account.loginNonce = encodeBase64Url(crypto.getRandomValues(new Uint8Array(32)));
+    await accounts.save(account);
+  },
+});
+
+app.post("/login/request", async (c) => {
+  const { email } = await c.req.parseBody();
+  await passwordlessLogin.request(String(email)); // enumeration-safe: same response either way
+  return c.redirect("/login/check-your-email");
+});
+
+app.get("/login/:token", async (c) => {
+  const account = await passwordlessLogin.login(c.req.param("token"));
+  if (!account) return c.redirect("/login?error=invalid_or_expired");
+  sessionAccessor.use(c).set("accountId", account.id); // session establishment stays app-side
+  return c.redirect("/dashboard");
+});
+```
+
 **API token authentication for non-browser clients.** `ApiToken` only
 issues/verifies the token string — pulling it out of the
 `Authorization: Bearer <token>` header and rejecting the request when it's
@@ -280,10 +324,17 @@ login second step) instead of wiring the primitives above by hand.
   consumed (and disappears) on the very first read — this manifests as
   users being logged out immediately after logging in.
 - **Tokens (`RememberToken`, `ApiToken`, `EmailVerification`,
-  `PasswordReset`) are all generated with `crypto.getRandomValues`
-  high-entropy random bytes** — there is no low-entropy path to opt into,
-  but if you build your own token scheme on top, don't substitute a
-  weaker source.
+  `PasswordReset`, `PasswordlessLogin`) are all generated with
+  `crypto.getRandomValues` high-entropy random bytes** — there is no
+  low-entropy path to opt into, but if you build your own token scheme on
+  top, don't substitute a weaker source.
+- **`PasswordlessLogin` is only single-use if `rotateNonce` actually rotates
+  the same value `fingerprintOf` reads, and only `login` (not `verify`)
+  triggers it.** Skip either half of that wiring — or complete the flow by
+  calling `verify` instead of `login` — and the link silently degrades to
+  plain replay-until-expiry, the same as `EmailVerification`. Keep
+  `expiresInSeconds` short regardless, since it's the only backstop left if
+  rotation is ever misconfigured.
 - **`hashPassword`'s PBKDF2 iteration count defaults to the lowest common
   denominator across supported runtimes.** The concrete constraint is
   workerd, which throws `NotSupportedError` above 100,000 iterations, so
