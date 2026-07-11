@@ -5,6 +5,35 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- Added `TestBroadcaster` to `@tknf/oven/test`, joining `TestJobQueue`/`TestMailer`: records every publish (`published`, `publishedTo(channel)`, `clear()`) and genuinely delivers to `subscribe`d listeners.
+- Added `{SQLite,Pg,MySql}PruneExpiredRecordsJob` for the DB-backed `KeyValueStore`/`SessionStorage` tables: batched garbage collection via `{ db, targets, batchSize?, maxBatches? }` (each target names its own table/pk/expiry columns).
+- Added a `widget: "file"` `FieldDef` variant for file inputs, plus `validateUploadedFiles()` / `toUploadedFileFormErrors()` for batch validation of `multiple: true` upload fields.
+- Added the `oven generate admin-resource <Name>` CLI generator, scaffolding an `AdminResource` subclass with its `Model`/table injected via the constructor; `--dialect` is now rejected with an explicit error for every generator type that doesn't accept it (previously silently ignored).
+- Added a `rateLimiter` option to `AdminPanel`: throttles the built-in `POST /login` route (keyed `admin-login:${username}`, `429` on exceed, counter reset on success); a one-time `SEC-302` warning is logged when login is wired without it.
+- Added a `bodyLimitBytes` option to `AdminPanel`: rejects an oversized multipart request via `hono/body-limit` before CSRF verification or body parsing runs.
+- Added a strict default Content-Security-Policy header to every `AdminPanel` response; override it with a custom policy string or disable it via the `contentSecurityPolicy` option.
+- Added session invalidation on admin password change: with `accounts` injected, a `passwordStamp` on the session identity is re-verified on every request, so changing a password invalidates every other outstanding session.
+- Added automatic reconnection to `DurableObjectBroadcaster` with exponential backoff (`reconnectInitialDelayMs`/`reconnectMaxDelayMs`) and `onDisconnect`/`onReconnect` hooks; set `reconnect: false` to restore the previous no-reconnect behavior.
+- Added `OffsetPaginationView` / `OffsetPaginationViewProps` to `@tknf/oven/pagination` (and the package root): numbered-page pagination for bounded back-office screens, alongside the existing cursor-based `PaginationView`.
+- Added opt-in per-account lockout to the admin accounts services: `sqliteAdminUserLockoutColumns()` / `pgAdminUserLockoutColumns()` / `mysqlAdminUserLockoutColumns()`, a `lockout: { maxAttempts, lockDurationSeconds }` service option, and `unlockUser(userId)`.
+- Added `GcsUrlSigner` to `@tknf/oven/storage`: GCS V4 signed GET URLs (`GOOG4-RSA-SHA256`) from a service account's `client_email`/`private_key`.
+- Added RFC 6238 TOTP two-factor authentication for admin operators: a Base32 codec (`@tknf/oven/support`), TOTP primitives (`@tknf/oven/auth`), and opt-in column factories plus `beginTotpEnrollment`/`confirmTotpEnrollment`/`verifyTotp`/`disableTotp` on the admin accounts services, wired into the built-in login flow as an automatic second step.
+
+### Changed
+
+- `AdminLoginView`'s `error` prop type changed from `boolean` to `false | "invalid" | "tooManyAttempts"` — direct consumers of this view passing `error={true}` must switch to `error="invalid"`.
+- `AdminAccountsUsersRow`'s structural contract now declares the `passwordHash: string` field all three dialect services already returned.
+- `S3Storage#put` and `GoogleCloudStorage#put` now switch to multipart/resumable upload protocols automatically for known-size bodies above 100 MiB; behavior for smaller bodies and streams is unchanged.
+- `failedAttempts`/`lockedUntil` (admin account lockout) and `totpSecret`/`totpEnabledAt`/`totpLastUsedStep` (admin TOTP) are now reserved column names on the admin users table.
+
+### Deprecated
+
+- `SignedCookieAccessor` / `SignedCookieDefinition` are now `@deprecated`, with removal planned for the next major. Use `CookieAccessor` combined with explicit signing, or call Hono's `getSignedCookie`/`setSignedCookie` directly.
+
 ## [1.1.0] - 2026-07-10
 
 ### Added

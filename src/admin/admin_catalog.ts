@@ -12,9 +12,9 @@
  * and column names from `AdminResource#columns()` — are never translated here; they
  * are rendered as-is by the views regardless of the resolved language.
  *
- * Only `en` (default/fallback) and `ja` are implemented for now. Adding more
- * languages later is just adding more entries to `adminCatalogBundle` with the same
- * key set as `AdminCatalog`.
+ * Ten languages are implemented: `en` (default/fallback), `ja`, `zh`, `es`, `fr`,
+ * `de`, `pt`, `ru`, `ko`, and `ar`. Adding another language is just adding another
+ * entry to `adminCatalogBundle` with the same key set as `AdminCatalog`.
  */
 import type { Context } from "hono";
 import type { Catalog, CatalogBundle, TranslateParams } from "../i18n/i18n.js";

@@ -2,11 +2,11 @@
 
 ## Supported versions
 
-`@tknf/oven` is currently `0.x` (pre-release). Security fixes are provided only for the latest minor/patch release.
+`@tknf/oven` is currently on the `1.x` line. Security fixes are provided only for the latest minor/patch release.
 
 | Version | Supported      |
 | ------- | -------------- |
-| 0.x     | ✅ latest only |
+| 1.x     | ✅ latest only |
 
 ## Reporting a vulnerability
 
@@ -36,3 +36,5 @@ This library makes a few intentional design choices that favor developer conveni
 - When mounting `AdminPanel`, wire CSRF verification into the write routes (use the panel's CSRF option, or verify upstream).
 - When using `BroadcastWebSocket`, always perform Origin checking and connection authorization in the `authorize` hook or inside the `channels` callback (to prevent Cross-Site WebSocket Hijacking).
 - When using user input as a Storage `key`, sanitize it on the application side so it contains no `..` or path separators.
+- `AdminPanel`'s built-in `/login` route is not rate-limited unless you inject the `rateLimiter` option; without it, brute-force login attempts are not throttled. Omitting it only logs a one-time `SEC-302` `console.warn` when login is wired — it does not fail closed.
+- `AdminPanel` does not bound request body size unless you set the `bodyLimitBytes` option; without it, a multipart body is fully buffered before any field or upload validation runs. Omitting it is silent (no warning).
