@@ -19,7 +19,7 @@
  * reasonable) and the small set of view-side classes/ids assigned in
  * `admin_layout.tsx` and the `admin_*_view.tsx` files (`#header`,
  * `#branding`, `#user-tools`, `#main`, `#nav-sidebar`, `#breadcrumbs`, `.messagelist`, `#content`,
- * `#toolbar`, `.module`, `.object-tools`, `.addlink`, `.submit-row`,
+ * `#toolbar`, `.module`, `.object-tools`, `.addlink`, `.exportlink`, `.submit-row`,
  * `.default`, `.deletelink`, `.cancel-link`, `.button`, `.change-list`,
  * `#changelist-filter`, `.actions`, `.action-checkbox-column`,
  * `.result-count`, `.inline-group`, `.tabular-inline`, `.date-hierarchy`,
@@ -504,13 +504,18 @@ button:hover,
 	color: var(--link-fg);
 }
 
-.object-tools .addlink {
+.object-tools .addlink,
+.object-tools .exportlink {
 	background: var(--object-tools-bg);
 	color: var(--object-tools-fg);
 	padding: 6px 12px;
 	border-radius: 4px;
 	font-size: 12px;
 	text-transform: uppercase;
+}
+
+.object-tools .exportlink {
+	margin-left: 8px;
 }
 
 #toolbar {

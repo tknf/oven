@@ -33,6 +33,7 @@
  */
 import type { AdminFilter } from "./admin_resource.js";
 import type { AdminT } from "./admin_catalog.js";
+import { stringifyCell } from "./stringify_cell.js";
 import { OffsetPaginationView } from "../pagination/index.js";
 import { CSRF_FORM_FIELD_NAME } from "../security/csrf.js";
 
@@ -104,22 +105,6 @@ const buildListUrl = (
 	return qs ? `${base}?${qs}` : base;
 };
 
-/**
- * Converts one `Record<string, unknown>` cell value into a display string. Since
- * `String(unknown)` can produce `"[object Object]"` when passed an object, only
- * string/number/bigint/boolean are converted; anything else (object, null,
- * undefined, etc.) becomes an empty string (same behavior as `stringify` in
- * `admin_panel.tsx`; a small duplication to keep this view a self-contained,
- * Hono-independent component).
- */
-const stringify = (value: unknown): string => {
-	if (typeof value === "string") return value;
-	if (typeof value === "number" || typeof value === "bigint" || typeof value === "boolean") {
-		return String(value);
-	}
-	return "";
-};
-
 export type AdminResourceListViewProps = {
 	/** `AdminPanel`'s mount base path (`AdminPanelOptions.basePath`). Used to build links/forms. */
 	basePath: string;
@@ -156,6 +141,14 @@ export type AdminResourceListViewProps = {
 	 * is implemented and at least one row exists to anchor the min/max period on.
 	 */
 	dateHierarchy?: AdminDateHierarchyNav;
+	/**
+	 * URL of the CSV export of the current list (`GET /resources/<key>/export.csv`;
+	 * `AdminPanel#wireResources`), already carrying the current search/filter/sort
+	 * query state so the export matches what's on screen. Always rendered — the
+	 * export shares the list's own `resource.<key>.view` permission, so any
+	 * operator who can see this screen can also export it.
+	 */
+	exportHref: string;
 	/** CSRF token embedded into the bulk-action form. When `null`, no hidden input is emitted. */
 	csrfToken: string | null;
 	t: AdminT;
@@ -251,7 +244,7 @@ const SearchForm = ({
  */
 const rowDisplayName = (row: Record<string, unknown>, columns: string[], id: string): string => {
 	const first = columns[0];
-	const value = first !== undefined ? stringify(row[first]) : "";
+	const value = first !== undefined ? stringifyCell(row[first]) : "";
 	return value !== "" ? value : id;
 };
 
@@ -345,7 +338,7 @@ const ResourceTable = ({
 				</thead>
 				<tbody>
 					{rows.map((row) => {
-						const id = stringify(row[primaryKey]);
+						const id = stringifyCell(row[primaryKey]);
 						const detailHref = `${basePath}/resources/${resourceKey}/${encodeURIComponent(id)}`;
 						const name = rowDisplayName(row, columns, id);
 						return (
@@ -363,9 +356,9 @@ const ResourceTable = ({
 								)}
 								{columns.map((columnName, index) =>
 									index === 0 ? (
-										<th scope="row">{stringify(row[columnName])}</th>
+										<th scope="row">{stringifyCell(row[columnName])}</th>
 									) : (
-										<td>{stringify(row[columnName])}</td>
+										<td>{stringifyCell(row[columnName])}</td>
 									),
 								)}
 								<td>
@@ -496,6 +489,7 @@ export const AdminResourceListView = ({
 	pageCount,
 	total,
 	dateHierarchy,
+	exportHref,
 	csrfToken,
 	t,
 }: AdminResourceListViewProps) => {
@@ -518,13 +512,16 @@ export const AdminResourceListView = ({
 
 	const results = (
 		<>
-			{canCreate && (
-				<div class="object-tools">
+			<div class="object-tools">
+				{canCreate && (
 					<a class="addlink" href={`${listUrl}/new`} aria-label={t("a11y.addItem", { label })}>
 						{t("action.create")}
 					</a>
-				</div>
-			)}
+				)}
+				<a class="exportlink" href={exportHref}>
+					{t("action.exportCsv")}
+				</a>
+			</div>
 			{dateHierarchy && <DateHierarchyNav dateHierarchy={dateHierarchy} t={t} />}
 			{searchEnabled && (
 				<SearchForm

@@ -169,6 +169,41 @@ kept for backward compatibility) redirects to the resource's list;
 `Save and add another` redirects to the resource's own new-form URL; and
 `Save and continue editing` redirects to the just-saved row's edit URL.
 
+### Exporting the list screen to CSV
+
+Every resource's list screen renders an "Export CSV" link
+(`GET /resources/<key>/export.csv`) next to "Add" — writable and read-only
+resources alike, since exporting is a read, not a write, operation. The
+link carries over the current `q`/filter/sort/date-hierarchy query state, so
+the exported rows always match what's on screen:
+
+```ts
+new AdminPanel({
+  authorize: (c) => accountGuard.use(c).role === "admin",
+  resources: [new PublisherResource()],
+});
+// GET /admin/resources/publishers?status=active&o=1
+// -> "Export CSV" links to
+//    /admin/resources/publishers/export.csv?status=active&o=1
+```
+
+The response is built with `@tknf/oven/view`'s `View` and
+`@tknf/oven/helpers`'s `csvDocument` (`AdminResourceCsvView`, internal to
+`AdminPanel`) — the header row is `AdminResource#columns()`'s display column
+names, and every cell is stringified the same way the list table renders it
+(a boolean column reads `"true"`/`"false"`, not `"1"`/`"0"`). The CSV is
+always built with `{ formulaGuard: true }` (see
+[Helpers](./helpers.md#gotchas--security-notes)): an admin operator is
+assumed to open this file in a spreadsheet app, so guarding against formula
+injection is the safe default, not opt-in.
+
+The export shares the list screen's own `resource.<key>.view` permission —
+there is no separate "export" permission to wire — and is capped at 10,000
+rows in one response (`AdminModel#listPage` with a fixed `limit`, no
+pagination). Rows beyond the cap are silently omitted rather than paginated
+or reported as truncated; export a narrower `q`/filter/date-hierarchy
+selection if a resource's matching row count can exceed it.
+
 ### Bulk deleting rows from the list screen
 
 For a writable resource, the list screen also shows a row-selection
@@ -695,6 +730,13 @@ language), the panel falls back to English.
   different header replaces, not adds to, the active sort); `?p=` pages
   via `listPage`'s `offset`, which does a full scan-and-discard for deep
   pages on large tables (the same tradeoff `listPage` itself documents).
+- **CSV export is capped at 10,000 rows and is never paginated.** Unlike the
+  list screen's `?p=` pagination, `GET /resources/<key>/export.csv` always
+  fetches up to the cap in one `AdminModel#listPage` call and silently
+  omits anything beyond it — there is no truncation warning in the
+  response. Narrow the export with `q`/a filter/`dateHierarchy()` if a
+  resource's row count can exceed the cap. See "Exporting the list screen
+  to CSV" above.
 - **`dateHierarchy()` assumes an integer epoch-millisecond column and lists
   every period in range, not only non-empty ones.** The year/month/day
   lists span the column's min to max value, so selecting a period that
@@ -727,3 +769,5 @@ language), the panel falls back to English.
   builds its create/edit screens on top of.
 - [i18n](./i18n.md) — `languageDetector` wiring and how the translation
   fallback chain behaves.
+- [Helpers](./helpers.md) and [View](./view.md) — the CSV assembly and
+  `View` machinery the list screen's CSV export is built on.

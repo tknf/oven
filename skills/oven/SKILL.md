@@ -433,6 +433,17 @@ code)` (verifies against the pending secret, only then sets
   current sort/search/filters. Both the resource list and the accounts-user
   list render this pagination with `OffsetPaginationView`
   (`@tknf/oven/pagination`).
+- **`AdminPanel`'s list screen has an "Export CSV" link**
+  (`GET /resources/:key/export.csv`) that dogfoods `@tknf/oven/view`'s
+  `View` (a `csv()`-only subclass, called directly rather than through
+  `respond()`) and `@tknf/oven/helpers`'s `csvDocument` (always with
+  `{ formulaGuard: true }` — the file is meant to be opened in a
+  spreadsheet app). It re-derives `where`/`orderBy` from the same
+  `q`/filter/date-hierarchy/`o` params as the list route, so the export
+  matches what's on screen, but is capped at 10,000 rows in one
+  `listPage` call (no pagination) — writable and read-only resources
+  alike, gated by the same `resource.<key>.view` permission as the list
+  itself (no separate export permission).
 - **`AdminResource#inlines()` renders and persists child rows, but not
   atomically.** Each `AdminInline` (child `model`/`table`/`primaryKey`/
   `foreignKey`/`form()`, plus `extra` blank rows, default 3) renders a
