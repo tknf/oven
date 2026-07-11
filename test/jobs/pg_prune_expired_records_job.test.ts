@@ -10,6 +10,7 @@
  * `test/session/pg_database_session_storage.test.ts`.
  */
 import { PGlite } from "@electric-sql/pglite";
+import { eq } from "drizzle-orm";
 import { bigint, pgTable, text } from "drizzle-orm/pg-core";
 import { drizzle } from "drizzle-orm/pglite";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vite-plus/test";
@@ -144,5 +145,51 @@ describe("PgPruneExpiredRecordsJob", () => {
 
 		const remaining = await db.select({ key: kvEntries.key }).from(kvEntries);
 		expect(remaining).toHaveLength(7);
+	});
+
+	test("a row renewed between the SELECT and DELETE phases survives, even though it was already selected as expired (issue #60)", async () => {
+		const db = drizzle(client);
+		const now = Date.now();
+		await db.insert(kvEntries).values([
+			{ key: "renewed", value: "v1", expiresAt: now - 1000 },
+			{ key: "stays-expired", value: "v2", expiresAt: now - 1000 },
+		]);
+		const target: PgPruneTarget = {
+			table: kvEntries,
+			pkColumn: kvEntries.key,
+			expiresAtColumn: kvEntries.expiresAt,
+		};
+		const job = new PgPruneExpiredRecordsJob(db, [target]);
+
+		/*
+		 * Deterministically reproduce the race without real concurrency: the
+		 * job's SELECT phase has already read "renewed" as expired by the
+		 * time `perform()` is called. `db.delete(table).where(...)` mutates
+		 * and returns the same builder instance (see drizzle-orm/pg-core's
+		 * `PgDeleteBase.where`), and that instance's `execute` is what
+		 * actually issues the DELETE, so patching `execute` lets us land a
+		 * renewal -- the same PK-preserving upsert
+		 * `PgDatabaseKeyValueStore.set`/`PgDatabaseSessionStorage.commit` use
+		 * to extend `expiresAt` -- in the exact window between the SELECT
+		 * and the DELETE.
+		 */
+		const originalDelete = db.delete.bind(db);
+		vi.spyOn(db, "delete").mockImplementation((table) => {
+			const deleteBuilder = originalDelete(table);
+			const originalExecute = deleteBuilder.execute.bind(deleteBuilder);
+			deleteBuilder.execute = async () => {
+				await db
+					.update(kvEntries)
+					.set({ expiresAt: now + 60_000 })
+					.where(eq(kvEntries.key, "renewed"));
+				return originalExecute();
+			};
+			return deleteBuilder;
+		});
+
+		await job.perform();
+
+		const remaining = await db.select({ key: kvEntries.key }).from(kvEntries);
+		expect(remaining.map((row) => row.key)).toEqual(["renewed"]);
 	});
 });
