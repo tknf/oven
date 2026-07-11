@@ -597,9 +597,12 @@ await accounts.disableTotp(user.id);
   but does not count attempts — pass `rateLimiter` (a `RateLimiter` from
   `@tknf/oven/security`) straight to `AdminPanel` instead of wrapping
   `authenticate` by hand. It is applied to `POST /login` **before**
-  `auth.authenticate` runs, keyed by the submitted username
-  (`` `admin-login:${username}` ``), so a request over the limit never
-  reaches the credential check at all:
+  `auth.authenticate` runs, keyed by the submitted username normalized the
+  same way the accounts services look it up (trim + lowercase, see
+  [the username-normalization gotcha](#gotchas--security-notes) below) — so
+  `Admin`/`ADMIN`/` admin ` share one budget rather than each getting their
+  own — as `` `admin-login:${normalizedUsername}` ``, so a request over the
+  limit never reaches the credential check at all:
 
   ```ts
   import { RateLimiter } from "@tknf/oven/security";
@@ -632,7 +635,11 @@ await accounts.disableTotp(user.id);
   const limiter = new RateLimiter(kvStore);
 
   authenticate: async (_c, credentials) => {
-    if (!(await limiter.consume(`admin-login:${credentials.username}`, 5, 300))) return null;
+    // Must match the normalization `accounts.authenticate` applies before its
+    // own lookup, or case/whitespace variants of one username would each get
+    // an independent budget instead of sharing one.
+    const rateLimitKey = `admin-login:${credentials.username.trim().toLowerCase()}`;
+    if (!(await limiter.consume(rateLimitKey, 5, 300))) return null;
     const user = await accounts.authenticate(credentials);
     return user ? { id: user.id, label: user.label ?? user.username } : null;
   },
@@ -686,8 +693,9 @@ await accounts.disableTotp(user.id);
   below, the same way as account lockout.** `rateLimiter`, when wired,
   protects the TOTP step too: `POST /login/totp` is checked against the same
   budget and window (`` `admin-totp:${pendingUserId}` ``, distinct from the
-  password step's `` `admin-login:${username}` `` key so the two steps don't
-  share a counter) before `verifyTotp` runs, and a successful code resets it.
+  password step's `` `admin-login:${normalizedUsername}` `` key so the two
+  steps don't share a counter) before `verifyTotp` runs, and a successful
+  code resets it.
   Without a rate limiter, `verifyTotp`'s replay guard still stops any single
   code from being reused, but nothing stops an attacker from submitting many
   DIFFERENT guesses in a row.

@@ -1074,6 +1074,36 @@ describe("AdminPanel", () => {
 			expect(authenticateCalls).toContain("someone-else");
 		});
 
+		test("case and whitespace variants of one username share a single budget", async () => {
+			const rateLimiter = new RateLimiter(new InMemoryKeyValueStore());
+			const { app, authenticateCalls } = buildRateLimitedApp({ rateLimiter });
+			const submitAs = (username: string) =>
+				app.request("/admin/login", {
+					method: "POST",
+					headers: { "content-type": "application/x-www-form-urlencoded" },
+					body: new URLSearchParams({ username, password: "wrong" }).toString(),
+				});
+
+			// Five attempts spread across case/whitespace variants of the same
+			// username all reach `authenticate` and consume the same rate-limit
+			// budget "admin" alone would.
+			await submitAs("admin");
+			await submitAs("Admin");
+			await submitAs("ADMIN");
+			await submitAs(" admin ");
+			await submitAs("admin");
+			expect(authenticateCalls).toHaveLength(5);
+
+			// A 6th attempt, in yet another case/whitespace variant, is still
+			// throttled rather than getting a fresh budget of its own.
+			const res = await submitAs("AdMiN");
+			const body = await res.text();
+
+			expect(res.status).toBe(429);
+			expect(body).toContain("Too many attempts. Try again later.");
+			expect(authenticateCalls).toHaveLength(5);
+		});
+
 		test("emits a one-time console.warn at construction when login is wired but rateLimiter is not injected", () => {
 			const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 			const storage = new InMemorySessionStorage();
