@@ -35,7 +35,7 @@ Peer dependencies: `hono@^4.12.27` and `drizzle-orm@^0.45.2` are required. Add `
 
 - [Getting started](docs/getting-started.md) — installation, project layout, and your first `RouteHandler`.
 - [Concepts](docs/concepts.md) — the class-based idiom shared across RouteHandler, Model, Session, Storage, and the rest.
-- [Documentation index](docs/README.md) — a guide per subpath export: routing, view, models, forms, sessions, auth, security, storage/kv/cache, jobs, realtime, mailer, i18n, admin, pagination, audit, database, logging, helpers, support, vite, deployment, and testing.
+- [Documentation index](docs/README.md) — a guide per subpath export: routing, view, models, forms, sessions, auth, security, storage/kv/cache, jobs, realtime, mailer, i18n, admin, pagination, audit, database, datasource, logging, helpers, support, vite, deployment, and testing.
 
 ## AI agent skill
 
@@ -83,7 +83,7 @@ vp test           # two projects: node (L1/L2) + workerd (L3)
 
 ## Status
 
-- Not yet published to npm (planned release as `@tknf/oven` once setup is complete).
+- Published on npm as [`@tknf/oven`](https://www.npmjs.com/package/@tknf/oven), currently on the `1.x` line. See [`CHANGELOG.md`](CHANGELOG.md) for release history.
 
 ## License
 
