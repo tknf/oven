@@ -59,7 +59,10 @@ export class GcsUrlSigner implements Presigner {
 
 	/**
 	 * Issues a presigned GET URL for `key`. It expires after `expiresInSeconds`
-	 * (must be within GCS's documented 1..604800 second bounds).
+	 * (must be a finite number within GCS's documented 1..604800 second
+	 * bounds; `NaN`/`Infinity` are rejected explicitly since they would
+	 * otherwise pass both bound comparisons and produce an invalid
+	 * `X-Goog-Expires`).
 	 *
 	 * `key` is encoded the same way `S3Storage`/`S3UrlSigner` encode an object
 	 * key: `encodeURIComponent`-encoded per path segment (`/` kept as the
@@ -67,19 +70,28 @@ export class GcsUrlSigner implements Presigner {
 	 * prefix). GCS's own manual-signing sample encodes a key the same way
 	 * (percent-encoding with `/` and `~` left as safe characters, which is
 	 * exactly what `encodeURIComponent` already does), so reusing
-	 * `encodeS3Key` here does not double-encode anything. An empty `key`
-	 * would sign the bucket root, so it is explicitly rejected.
+	 * `encodeS3Key` here does not double-encode anything. `encodeURIComponent`
+	 * does leave `! ' ( ) *` unescaped, though, and GCS re-canonicalizes the
+	 * path with a stricter safe set (`/` and `~` only) than that — so each
+	 * segment is additionally passed through `escapeRfc3986Extra`, the same
+	 * helper the canonical query string uses, to keep the signed path and
+	 * GCS's own recomputed path byte-for-byte identical. An empty `key` would
+	 * sign the bucket root, so it is explicitly rejected.
 	 */
 	async presignGet(key: string, expiresInSeconds: number): Promise<string> {
 		if (key === "") {
 			throw new Error("key must not be empty");
 		}
-		if (expiresInSeconds < MIN_EXPIRES_SECONDS || expiresInSeconds > MAX_EXPIRES_SECONDS) {
+		if (
+			!Number.isFinite(expiresInSeconds) ||
+			expiresInSeconds < MIN_EXPIRES_SECONDS ||
+			expiresInSeconds > MAX_EXPIRES_SECONDS
+		) {
 			throw new Error(
-				`expiresInSeconds must be between ${MIN_EXPIRES_SECONDS} and ${MAX_EXPIRES_SECONDS} (GCS's documented bounds), got ${expiresInSeconds}`,
+				`expiresInSeconds must be a finite number between ${MIN_EXPIRES_SECONDS} and ${MAX_EXPIRES_SECONDS} (GCS's documented bounds), got ${expiresInSeconds}`,
 			);
 		}
-		const path = `/${this.bucket}/${encodeS3Key(key)}`;
+		const path = `/${this.bucket}/${encodeS3Key(key)}`.split("/").map(escapeRfc3986Extra).join("/");
 
 		const now = new Date();
 		const requestTimestamp = formatRequestTimestamp(now);
@@ -123,8 +135,7 @@ const formatRequestTimestamp = (date: Date): string =>
 
 /**
  * Builds a canonical query string: keys sorted alphabetically, both keys and
- * values percent-encoded per RFC 3986, joined with `&`. `encodeURIComponent`
- * leaves `! ' ( ) *` unescaped, so those are escaped separately.
+ * values percent-encoded per RFC 3986, joined with `&`.
  */
 const buildCanonicalQueryString = (params: Record<string, string>): string =>
 	Object.keys(params)
@@ -133,10 +144,20 @@ const buildCanonicalQueryString = (params: Record<string, string>): string =>
 		.join("&");
 
 const encodeRfc3986Component = (value: string): string =>
-	encodeURIComponent(value).replace(
-		/[!'()*]/g,
-		(char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`,
-	);
+	escapeRfc3986Extra(encodeURIComponent(value));
+
+/**
+ * Escapes the RFC 3986 sub-delimiters `encodeURIComponent` leaves unescaped
+ * (`! ' ( ) *`) into upper-hex `%XX` sequences. `encodeURIComponent` already
+ * percent-encodes everything else RFC 3986 doesn't treat as unreserved, so
+ * this is the last step needed to bring its output to a strict "unreserved +
+ * %XX" encoding. Both the canonical query string and the canonical request
+ * path run their already-`encodeURIComponent`-encoded components through
+ * this so the two encode identically (a mismatch between the signed path and
+ * the path GCS recomputes on its end fails signature verification).
+ */
+const escapeRfc3986Extra = (value: string): string =>
+	value.replace(/[!'()*]/g, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`);
 
 const sha256Hex = async (input: string): Promise<string> =>
 	toHex(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input)));
