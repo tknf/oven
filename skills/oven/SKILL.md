@@ -233,7 +233,9 @@ username, password }) => Promise<AdminIdentity | null>` (verify however
 - **`AdminPanel`'s built-in `/login` is not rate-limited unless you inject
   `rateLimiter`** — a `RateLimiter` (`@tknf/oven/security`), applied to
   `POST /login` before `auth.authenticate` runs (5 attempts per submitted
-  username per 5 minutes, key `` `admin-login:${username}` ``); a rejected
+  username per 5 minutes, key `` `admin-login:${normalizeAdminUsername(username)}` ``
+  — see `normalize_username.ts` — so case/whitespace variants of one username
+  share one budget instead of each getting their own); a rejected
   attempt re-renders the login screen with a generic message and `429`
   without calling `authenticate` at all, and a successful login resets the
   counter. Only meaningful when login is wired (`auth`/`accounts`); when it

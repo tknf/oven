@@ -74,6 +74,7 @@ import {
 	resourcePermissions,
 } from "./admin_permissions.js";
 import type { AdminInline, AdminResource } from "./admin_resource.js";
+import { normalizeAdminUsername } from "./normalize_username.js";
 import { AdminAccountsGroupsDeleteView } from "./admin_accounts_groups_delete_view.js";
 import { AdminAccountsGroupsFormView } from "./admin_accounts_groups_form_view.js";
 import { AdminAccountsGroupsListView } from "./admin_accounts_groups_list_view.js";
@@ -1997,9 +1998,17 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 			 * reading of its check-and-increment API — and a successful login below
 			 * resets the counter, so a legitimate operator who mistypes their password
 			 * once is not penalized on their next real attempt.
+			 *
+			 * The key is built from `normalizeAdminUsername`, not the raw `username`,
+			 * so that case/whitespace variants of one username (`Admin`, `ADMIN`,
+			 * ` admin `) share a single budget — matching the normalization the
+			 * admin-accounts services apply before their own lookups (see that
+			 * helper's JSDoc). `username` itself is left raw everywhere else below
+			 * (passed to `auth.authenticate`, which normalizes internally, and echoed
+			 * back into the login form) since only the rate-limit key needs this.
 			 */
 			const rateLimiter = options.rateLimiter;
-			const rateLimitKey = `admin-login:${username}`;
+			const rateLimitKey = `admin-login:${normalizeAdminUsername(username)}`;
 			if (
 				rateLimiter &&
 				!(await rateLimiter.consume(
