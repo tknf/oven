@@ -87,9 +87,12 @@ export class PgPruneExpiredRecordsJob<
 			if (rows.length === 0) return;
 
 			await this.db.delete(target.table).where(
-				inArray(
-					target.pkColumn,
-					rows.map((row) => row.pk),
+				and(
+					inArray(
+						target.pkColumn,
+						rows.map((row) => row.pk),
+					),
+					isExpired,
 				),
 			);
 

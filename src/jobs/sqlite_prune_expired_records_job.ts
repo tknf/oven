@@ -31,11 +31,17 @@
  *
  * **Batch deletion algorithm**: `DELETE ... LIMIT` is not portable across
  * SQLite/Postgres/MySQL, so each target is swept by repeating "SELECT up to
- * `batchSize` expired primary keys, then `DELETE ... WHERE pk IN (...)`"
- * until a batch comes back with fewer than `batchSize` rows (nothing left to
- * prune) or `maxBatches` is reached (a hard cap so one `perform()` call
- * cannot run unboundedly against a table with a very large backlog of
- * expired rows).
+ * `batchSize` expired primary keys, then `DELETE ... WHERE pk IN (...) AND
+ * <still expired>`" until a batch comes back with fewer than `batchSize` rows
+ * (nothing left to prune) or `maxBatches` is reached (a hard cap so one
+ * `perform()` call cannot run unboundedly against a table with a very large
+ * backlog of expired rows). The DELETE re-checks the same expiry condition
+ * as the SELECT (against the same captured `now`, not a fresh one) rather
+ * than trusting the selected primary keys alone: both `SQLiteDatabaseKeyValueStore.set`
+ * and `SQLiteDatabaseSessionStorage.commit` renew a row in place (a
+ * PK-preserving upsert that extends `expiresAt`), so a row selected as
+ * expired can be renewed by the time the DELETE runs; without the repeated
+ * check, that renewal would be silently discarded.
  *
  * `db` (`BaseSQLiteDatabase`; assumes a libSQL/`@libsql/client`-family
  * driver, though the type itself is driver-independent) and `targets` are
@@ -117,9 +123,12 @@ export class SQLitePruneExpiredRecordsJob<
 			if (rows.length === 0) return;
 
 			await this.db.delete(target.table).where(
-				inArray(
-					target.pkColumn,
-					rows.map((row) => row.pk),
+				and(
+					inArray(
+						target.pkColumn,
+						rows.map((row) => row.pk),
+					),
+					isExpired,
 				),
 			);
 
