@@ -142,6 +142,13 @@ it depends on the `vite` package itself — it has no hard dependency on it).
 | `@tknf/oven/node`       | `FileKeyValueStore`, `FileStorage`                                                                                                                                                                                                                                                                                                                                                                     |
 | `@tknf/oven/test`       | `createTestDb`, `defineFactory`, `actingAs`, `TestJobQueue`, `TestMailer`, `TestBroadcaster`, `stubBinding`                                                                                                                                                                                                                                                                                            |
 
+Not a subpath export: the package also ships an `oven` bin (`oven generate
+<type> <Name>`, aliased `oven g`) that scaffolds a starting-point file for
+8 types — `handler`, `model`, `form`, `job`, `policy`, `view`, `seed`,
+`admin-resource` — into each type's conventional directory (`--dir`/
+`--dialect`/`--force` flags, `--dialect` only for `model`). See
+`docs/cli.md` for the full reference.
+
 The full narrative guides live in the package repo under `docs/` (one guide per
 area, example-first). Consult them for depth.
 
