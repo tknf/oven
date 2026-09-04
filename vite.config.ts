@@ -3,9 +3,10 @@ import { defineConfig, defineProject } from "vite-plus";
 
 /**
  * Exclude these paths from the code formatter/linter: user-facing docs (`docs/`),
- * agent definitions (`.agents/`, `.claude/`), and the generated lock file.
+ * Codex skills and agent definitions (`.agents/`, `.codex/`), and the generated
+ * lock file.
  */
-const ciIgnorePatterns = ["docs/**", ".agents/**", ".claude/**", "skills-lock.json"];
+const ciIgnorePatterns = ["docs/**", ".agents/**", ".codex/**", "skills-lock.json"];
 
 export default defineConfig({
 	staged: {
