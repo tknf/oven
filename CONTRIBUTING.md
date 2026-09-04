@@ -33,7 +33,8 @@ vp test             # two projects: node (L1/L2) + workerd (L3)
 
 - **Everything in the repository is written in English** — code, tests, docs, config, and commit messages alike. This includes every comment in `src/` (both the JSDoc that lands in `.d.ts` and internal implementation comments) and test names/comments.
 - The only Japanese that remains is genuine locale data (i18n catalog values, the output of a deliberately Japanese formatter, and examples that demonstrate a non-English locale).
-- See [`AGENTS.md`](./AGENTS.md) for the full working conventions.
+- Codex contributors should read [`AGENTS.md`](./AGENTS.md) for the repository's
+  complete working instructions before changing code or documentation.
 
 ## Database migrations
 
@@ -51,6 +52,39 @@ vp run test-fixtures:generate:mysql  # mysql
 - Add tests that cover your change.
 - Make sure `vp check` / `vp run typecheck` / `vp test` all pass.
 - Add an entry to `[Unreleased]` in `CHANGELOG.md` for any user-facing change.
+
+### Branches
+
+- Branch from an up-to-date `origin/main`.
+- Use `{type}/issue-{number}-{kebab-case-slug}` when an issue exists.
+- Without an issue, use `{type}/{yyyymmdd}_{kebab-case-slug}`.
+- Use one of `feat`, `fix`, `docs`, `refactor`, `test`, `chore`, `ci`, or
+  `release` as the type.
+- Never force push unless the maintainer explicitly requests it.
+
+### Commits
+
+- Keep each commit to one logical change and stage explicit paths.
+- Write an English imperative subject, normally 20–72 characters, without a
+  trailing period.
+- Explain what changed and why in the body when the change is not self-evident.
+- For code or configuration changes, include a `Verification:` line with the
+  commands and results actually observed.
+- Use `Refs #<number>` or `Closes #<number>` only when the relationship is known.
+- Do not add tool-specific trailers or non-contributing co-authors.
+
+## Versions and releases
+
+This package follows Semantic Versioning and Keep a Changelog. Incompatible public
+API or runtime changes require a major release, backward-compatible additions a
+minor release, and backward-compatible fixes a patch release. Documentation-only
+and repository-only changes do not bump the package version.
+
+Release preparation uses `vp pm version X.Y.Z -- --no-git-tag-version`, followed
+by `vp check`, `vp run typecheck`, `vp test`, and `vp run build`. Release commits use
+`Release vX.Y.Z`; the matching annotated `vX.Y.Z` tag triggers the GitHub Actions
+npm publish workflow. Do not publish manually in addition to the tag workflow.
+Release commits, tags, and pushes require explicit maintainer authorization.
 
 ## Security
 

@@ -37,15 +37,18 @@ Peer dependencies: `hono@^4.12.27` and `drizzle-orm@^0.45.2` are required. Add `
 - [Concepts](docs/concepts.md) — the class-based idiom shared across RouteHandler, Model, Session, Storage, and the rest.
 - [Documentation index](docs/README.md) — a guide per subpath export: routing, view, models, forms, sessions, auth, security, storage/kv/cache, jobs, realtime, mailer, i18n, admin, pagination, audit, database, datasource, logging, helpers, support, vite, deployment, and testing.
 
-## AI agent skill
+## Codex skill
 
-oven ships a [`SKILL.md`](skills/oven/SKILL.md) that teaches AI coding agents (Claude Code, Codex, and others) how to build with oven — the class-based idiom, the `register`/`use` DI convention, the subpath API map, and the security defaults. Install it into your project with [`npx skills`](https://github.com/vercel-labs/skills):
+oven ships a [Codex skill](skills/oven/SKILL.md) with the class idiom, the
+`register`/`use` wiring convention, the subpath API map, and security defaults.
+Ask Codex to install it from this repository with the built-in skill installer:
 
-```sh
-npx skills add tknf/oven
+```text
+$skill-installer Install the oven skill from https://github.com/tknf/oven/tree/main/skills/oven
 ```
 
-This drops the skill into your agent's config (e.g. `.claude/skills/`). To preview before installing, run `npx skills add tknf/oven --list`.
+To keep the skill inside a project for repository-scoped discovery, place the
+`oven` skill directory at `.agents/skills/oven/`.
 
 ## Supported runtimes
 
@@ -66,6 +69,10 @@ oven targets Web-standard `Request`/`Response` and runs anywhere Hono does, incl
 RouteHandler (extends Hono), Model (a thin base over Drizzle), Form (Standard Schema), Session (server-side + flash), CSRF, Guard (authentication), Storage (R2/S3 adapters with presigning split out), KeyValueStore, Mailer (with a template layer), RateLimiter, DI (typed context `register`/`use`), Layout, i18n catalogs, Queue/Scheduled, assorted helpers, and a test harness (`@tknf/oven/test`).
 
 ## Development
+
+Codex contributors should start with [`AGENTS.md`](AGENTS.md). Project agents live
+under [`.codex/agents/`](.codex/agents/), and reusable development workflows live
+under [`.agents/skills/`](.agents/skills/).
 
 ```sh
 vp install

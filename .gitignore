@@ -13,12 +13,8 @@ dist/
 .env.*
 !.env.example
 
-# Agent definitions live in `.agents/` (shared across coding agents). `.claude/`
-# holds only Claude Code local state/shims and is not committed. To let Claude Code
-# discover the agents, create a local `.claude/agents` symlink to `../.agents`.
-.claude/settings.local.json
-.claude/scheduled_tasks.lock
-.claude/agents
+# Local Codex logs (project agents under `.codex/agents/` are committed)
+.codex-log/
 
 # OS / editor
 .DS_Store
