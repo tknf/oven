@@ -146,6 +146,7 @@
 	"scripts": {
 		"build": "vp pack",
 		"check": "vp check",
+		"check:workflow-safety": "node scripts/check_workflow_safety.mjs",
 		"test": "vp test",
 		"typecheck": "tsc --noEmit",
 		"test-fixtures:generate": "drizzle-kit generate --config=test/test_support/fixtures/drizzle.config.ts",

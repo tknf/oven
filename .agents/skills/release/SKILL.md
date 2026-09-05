@@ -5,9 +5,10 @@ description: Prepare or publish an explicitly authorized Semantic Versioning rel
 
 # Release `@tknf/oven`
 
-This workflow handles package releases. A request to prepare a release does not
+The primary session owns this workflow. A request to prepare a release does not
 authorize creating or pushing a tag. Publishing requires explicit authorization
-for the exact version.
+for the exact version. Use a fresh `reviewer` when independent release inspection
+is warranted; do not delegate ordinary release preparation.
 
 ## Choose the version
 
