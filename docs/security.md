@@ -58,6 +58,8 @@ export default app;
 secret in the `Session` — see [Sessions](./sessions.md)); calling
 `csrf.verify` before `sessionAccessor.register` throws with the session
 key's name embedded, the same as any other unregistered `ContextAccessor`.
+By default, form token extraction accepts bodies up to 64 KiB (65,536 bytes).
+Larger forms receive `403 Invalid CSRF token`; header tokens do not read the body.
 
 ## Common tasks
 
@@ -83,6 +85,23 @@ Non-form requests (e.g. `fetch`) should send the token via the
 `X-CSRF-Token` header instead; `Csrf.verify` checks the header first and
 only falls back to the form body when the content type indicates a form
 submission.
+
+**Allowing larger HTML forms:**
+
+```ts
+const csrf = new Csrf({
+  session: sessionAccessor.use,
+  maxFormBodyBytes: 256 * 1024,
+});
+```
+
+`maxFormBodyBytes` must be a positive safe integer in bytes. The cap covers
+the entire encoded form, including multipart boundaries and files, regardless
+of `Content-Length`. A token placed first does not exempt the rest of the
+body. Oversized, malformed, or unreadable forms fail with the usual 403.
+For large file uploads, send `X-CSRF-Token` or raise the cap to the accepted
+form size. A non-empty header takes precedence even when its token is invalid.
+Successful form verification preserves the body for downstream Hono parsing.
 
 **Exempting a legitimate cross-site POST** (e.g. an OAuth provider's
 callback), instead of disabling CSRF protection wholesale:
@@ -167,25 +186,23 @@ As with `RateLimiter`'s IP-derived keys, only trust an address if
 actually the client's real address for your deployment — a client-supplied
 header like `X-Forwarded-For` taken at face value can be spoofed.
 
-**Limiting request body size.** oven has no request-size-limiting primitive
-of its own — apply Hono's own `hono/body-limit` upstream of anything that
-buffers the body, most importantly `Csrf#verify` (it reads the CSRF token
-from the form body via `c.req.parseBody()`) and any handler that does the
-same for a file upload:
+**Limiting request body size.** `Csrf` bounds only its own form-token
+extraction. Use Hono's `hono/body-limit` to enforce an application-wide
+request size limit, including requests authenticated by a CSRF header:
 
 ```ts
 import { bodyLimit } from "hono/body-limit";
 
-app.use(bodyLimit({ maxSize: 10 * 1024 * 1024 })); // before csrf.verify
+app.use(bodyLimit({ maxSize: 10 * 1024 * 1024 })); // before body-consuming middleware
 app.use(csrf.verify);
 ```
 
-Without this, `Csrf#verify` (and any multipart handler downstream of it)
-buffers the full request body before any size check runs — see
-[Forms](./forms.md#validating-an-uploaded-files-size-and-mime-type) for why
-`validateUploadedFile`'s `maxSizeBytes` does not substitute for this.
-`AdminPanel` exposes the same protection as its `bodyLimitBytes` option (see
-the [admin guide](./admin.md)).
+This does not increase `maxFormBodyBytes`: larger uploads still need a
+header token or an explicitly raised form cap. Handlers that parse uploads
+buffer the body before `validateUploadedFile` checks an individual file;
+see [Forms](./forms.md#validating-an-uploaded-files-size-and-mime-type).
+`AdminPanel` exposes Hono's body limit through `bodyLimitBytes` (see the
+[admin guide](./admin.md)).
 
 **Toggling maintenance mode:**
 
@@ -225,12 +242,13 @@ await maintenanceMode.disable();
   exception: it sends a strict default CSP on its own mounted routes
   regardless of whether `SecureHeaders` is wired elsewhere — see [Admin
   panel](./admin.md#content-security-policy).
-- **`Csrf#verify` calls `c.req.parseBody()` to read the submitted token**,
-  which buffers the whole request body — including any multipart file
-  upload — before CSRF verification even runs. Neither `Csrf` nor `Form`
-  imposes a cap on that buffering; apply `hono/body-limit` ahead of
-  `csrf.verify` if unbounded body buffering is a concern for your
-  deployment (see "Limiting request body size" above).
+- **Run `csrf.verify` before body-consuming middleware.** Its form fallback
+  bounds the read to `maxFormBodyBytes` (64 KiB by default) before parsing.
+  It supports already-cached Hono bodies, but cannot undo buffering performed
+  upstream. Cached `FormData` is re-encoded as multipart, so its cap applies to
+  that representation rather than the original wire bytes. Header tokens,
+  safe methods, and configured origin/path exceptions
+  skip the form read; apply a separate request body limit to upload handlers.
 - **`BroadcastWebSocket` needs its own Origin check and connection
   authorization**, performed in the `authorize` hook or inside the
   `channels` callback, to prevent Cross-Site WebSocket Hijacking. This is

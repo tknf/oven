@@ -201,8 +201,9 @@ only rejects a `File` value *after* `c.req.parseBody()` has already buffered
 it — and by then the full multipart body has already been received into
 memory. To actually bound how much a request is allowed to make the server
 buffer, apply Hono's `bodyLimit` middleware ahead of any handler that calls
-`parseBody` (this includes `Csrf#verify`, which reads the CSRF token from the
-form body):
+`parseBody`. `Csrf#verify` separately caps form-token extraction at 64 KiB
+by default: larger uploads need `X-CSRF-Token` or a raised `maxFormBodyBytes`,
+even if the hidden token field comes first (see [Security](./security.md)):
 
 ```ts
 import { bodyLimit } from "hono/body-limit";
