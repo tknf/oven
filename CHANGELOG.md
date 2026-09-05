@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Added `RateLimiter.isLimited()` as a read-only probe for failure-only verification flows.
+
 ### Fixed
 
 - Bound `Csrf` form-token extraction to 64 KiB by default with configurable `maxFormBodyBytes`; oversized or malformed forms return 403. Larger forms must send `X-CSRF-Token` or raise the cap, even when the token field comes first.

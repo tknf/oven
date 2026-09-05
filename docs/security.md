@@ -17,8 +17,9 @@ concern and is wired in individually:
   not set a `Content-Security-Policy` — see the Gotchas note below.
 - **`RateLimiter`** — fixed-window rate limiting backed by a
   `KeyValueStore` (`@tknf/oven/kv`), suitable for coarse-grained use cases
-  like login-attempt throttling. Not an IP allow/deny list either — it
-  throttles by whatever `key` you pass, not by network address.
+  like login-attempt throttling. Its `isLimited` probe reads the current
+  state without changing it. Not an IP allow/deny list either — it throttles
+  by whatever `key` you pass, not by network address.
 - **`TrustedHost`** — fail-closed `Host` header validation against an allow
   list, guarding against Host header spoofing behind misconfigured
   proxies. This is **not** an IP allow/deny list — see below.
@@ -112,7 +113,7 @@ const csrf = new Csrf({
 });
 ```
 
-**Rate-limiting login attempts:**
+**Rate-limiting failed login attempts:**
 
 ```ts
 import { RateLimiter } from "@tknf/oven/security";
@@ -122,14 +123,25 @@ const rateLimiter = new RateLimiter(new InMemoryKeyValueStore());
 
 app.post("/login", async (c) => {
   const key = `login:${c.req.header("CF-Connecting-IP") ?? "unknown"}`;
-  const allowed = await rateLimiter.consume(key, 5, 60); // 5 attempts per 60s window
-  if (!allowed) return c.text("Too many attempts", 429);
+  if (await rateLimiter.isLimited(key, 5, 60)) {
+    return c.text("Too many failed attempts", 429);
+  }
 
-  // ... verify credentials; on success:
-  await rateLimiter.reset(key);
+  const credentialsAreValid = await verifyCredentials(c);
+  if (!credentialsAreValid) {
+    const counted = await rateLimiter.consume(key, 5, 60);
+    if (!counted) return c.text("Too many failed attempts", 429);
+    return c.text("Invalid credentials", 401);
+  }
+
   return c.redirect("/dashboard");
 });
 ```
+
+This failure-only flow probes before verification, consumes only after a failed
+verification, and does not reset or consume after success. `isLimited` accepts
+`windowSeconds` for symmetry with `consume`, but an existing active `resetAt`
+remains authoritative; a probe never starts or extends a window.
 
 **Signing and verifying a time-limited link** (e.g. email verification):
 
@@ -244,9 +256,12 @@ await maintenanceMode.disable();
 - **`RateLimiter` is not atomic.** It reads then writes against a
   `KeyValueStore` in two steps, so concurrent requests against the same
   key can race and let the effective count exceed `limit` — an accepted
-  tradeoff for coarse use cases like login throttling. If `key` is derived
-  from a client IP, only use the IP attached by a trusted proxy layer, not
-  a client-spoofable header like `X-Forwarded-For` taken at face value.
+  tradeoff for coarse use cases like login throttling. In a failure-only
+  flow, `isLimited` → verification → `consume` is also non-atomic: an
+  eventually-consistent store can return stale data, and the probe creates a
+  wider race window before the failed verification is counted. If `key` is
+  derived from a client IP, only use the IP attached by a trusted proxy layer,
+  not a client-spoofable header like `X-Forwarded-For` taken at face value.
 - **If a `key` you pass to any `KeyValueStore`-backed class (including
   `RateLimiter`/`MaintenanceMode`) is derived from user input, sanitize it
   on the application side** so it can't contain `..` or path separators —
