@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Added `RateLimiter.isLimited()` as a read-only probe for failure-only verification flows.
+
 ### Changed
 
 - Simplified the Codex development workflow around Astra root ownership with only on-demand research, review, and bounded bulk-edit agents.
