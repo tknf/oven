@@ -95,6 +95,14 @@ username, password }) => Promise<AdminIdentity | null>` (verify however
   is and `rateLimiter` is omitted, a one-time `console.warn` fires at
   construction (`/login` still serves every submission — no fail-closed
   default).
+- **Use `RateLimiter.isLimited` for failure-only verification flows** — probe
+  before verification, call `consume` only after a failed verification, and do
+  not reset or consume after success. The probe accepts `windowSeconds` for API
+  symmetry but never starts or extends a window; an active stored `resetAt`
+  remains authoritative. This is non-atomic: eventually-consistent stores can
+  return stale data, and the probe widens the race window before a failed
+  verification is counted. The built-in `AdminPanel` login flow above remains
+  an every-attempt `consume`/success `reset` flow.
 - **`AdminPanel` has no request body size limit unless you inject
   `bodyLimitBytes`** — wires `hono/body-limit` (`bodyLimit({ maxSize:
 bodyLimitBytes })`) as the panel's very first middleware, ahead of CSRF

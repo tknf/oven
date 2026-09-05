@@ -106,6 +106,12 @@ per request (per-request state, e.g. bindings); `scope: "app"` memoizes once
 (expensive shared state, e.g. connection pools).
 `SessionAccessor`, `Guard`, and `DatabaseAccessor` are all `ContextAccessor`s.
 
+For failure-only verification throttling, call `RateLimiter.isLimited(key,
+limit, windowSeconds)` before verification and `consume` only after a failed
+verification. Do not reset or consume after success. This sequence is
+non-atomic, can observe stale data with an eventually-consistent store, and has
+a wider race window than consuming before every attempt.
+
 ## Read detailed references as needed
 
 Load only the reference relevant to the work:

@@ -20,6 +20,25 @@ describe("RateLimiter (real KV)", () => {
 		expect(await limiter.consume(key, 2, 30)).toBe(false);
 	});
 
+	test("isLimited probes the threshold without consuming an attempt", async () => {
+		const limiter = new RateLimiter(new CloudflareKVStore(env.KV));
+		const key = "oven:rate-limiter:is-limited";
+
+		expect(await limiter.isLimited(key, 2, 30)).toBe(false);
+		expect(await limiter.consume(key, 2, 30)).toBe(true);
+		const afterFirstConsume = await env.KV.get(key);
+
+		expect(await limiter.isLimited(key, 2, 1)).toBe(false);
+		expect(await env.KV.get(key)).toBe(afterFirstConsume);
+
+		expect(await limiter.consume(key, 2, 30)).toBe(true);
+		const atLimit = await env.KV.get(key);
+		expect(await limiter.isLimited(key, 2, 3_600)).toBe(true);
+		expect(await limiter.isLimited(key, 2, 1)).toBe(true);
+		expect(await env.KV.get(key)).toBe(atLimit);
+		expect(await limiter.consume(key, 2, 30)).toBe(false);
+	});
+
 	test("consecutive consumes within the window succeed without throwing even when windowSeconds is under 60 (regression for the production 500)", async () => {
 		const limiter = new RateLimiter(new CloudflareKVStore(env.KV));
 		const key = "oven:rate-limiter:short-window";

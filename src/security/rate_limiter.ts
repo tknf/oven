@@ -58,6 +58,35 @@ export class RateLimiter {
 		}
 	}
 
+	private async getWindowSnapshot(
+		key: string,
+	): Promise<{ nowSeconds: number; count: number; resetAt: number | null }> {
+		const nowSeconds = Math.floor(Date.now() / 1000);
+		const state = RateLimiter.parseState(await this.store.get(key));
+
+		if (!state || state.resetAt <= nowSeconds) {
+			return { nowSeconds, count: 0, resetAt: null };
+		}
+
+		return { nowSeconds, count: state.count, resetAt: state.resetAt };
+	}
+
+	/**
+	 * Returns whether `key`'s current count has reached `limit` without changing the stored state.
+	 * Missing, corrupt, or logically expired state is treated as a count of zero. `windowSeconds`
+	 * is accepted for symmetry with `consume`, but probing never starts or extends a window.
+	 *
+	 * For failure-only verification flows, call this before verification and call `consume` only
+	 * after a failed verification. This sequence is non-atomic: an eventually-consistent store can
+	 * return stale data, and the probe adds a wider race window between checking and consuming.
+	 */
+	async isLimited(key: string, limit: number, windowSeconds: number): Promise<boolean> {
+		void windowSeconds;
+
+		const { count } = await this.getWindowSnapshot(key);
+		return count >= limit;
+	}
+
 	/**
 	 * If `key`'s current count is below `limit`, increments it by 1 and returns true.
 	 * If it is at or above `limit`, leaves the count unchanged and returns false.
@@ -65,12 +94,8 @@ export class RateLimiter {
 	 * after `windowSeconds` has elapsed.
 	 */
 	async consume(key: string, limit: number, windowSeconds: number): Promise<boolean> {
-		const nowSeconds = Math.floor(Date.now() / 1000);
-		const state = RateLimiter.parseState(await this.store.get(key));
-
-		const isFreshWindow = !state || state.resetAt <= nowSeconds;
-		const resetAt = isFreshWindow ? nowSeconds + windowSeconds : state.resetAt;
-		const count = isFreshWindow ? 0 : state.count;
+		const { nowSeconds, count, resetAt: storedResetAt } = await this.getWindowSnapshot(key);
+		const resetAt = storedResetAt ?? nowSeconds + windowSeconds;
 
 		if (count >= limit) return false;
 
