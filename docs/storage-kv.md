@@ -20,6 +20,8 @@ core stays deployable to any runtime.
   account key) — separate because not every `Storage` backend can presign with
   the credentials it already has (an `R2Bucket` binding, for instance, cannot
   presign on its own).
+  Client-driven multipart uploads are another optional capability,
+  `MultipartUploader`, implemented by `R2Storage` and `InMemoryStorage`.
 - **`KeyValueStore`** (`get`/`set` with an optional TTL/`delete`) stores a
   single string value under a string key. Adapters: `InMemoryKeyValueStore`
   (dev/test), `UpstashRedisStore`, `{Pg,SQLite,MySql}DatabaseKeyValueStore`
@@ -141,7 +143,7 @@ const signer = new GcsUrlSigner({
 const url = await signer.presignGet("reports/2026-07.pdf", 300); // expires in 5 minutes (1..604800s)
 ```
 
-**Uploading large objects** — every `Storage` adapter switches to a
+**Uploading large objects in one `put` call** — the remote adapters below switch to a
 multi-request upload API once a `put` body crosses 100 MiB, but the protocol
 and the streaming story differ per backend, so pick the adapter with your
 upload shape in mind:
@@ -165,6 +167,78 @@ upload shape in mind:
 
 None of this changes the call site — `storage.put(key, data, contentType)`
 looks the same either way.
+
+### Client-driven multipart uploads
+
+Use the separate `MultipartUploader` interface when creation, each part,
+completion, and cancellation happen in separate HTTP requests. This is the
+shared capability chosen for this use case; `Storage` remains
+`put`/`get`/`delete`, and `R2Storage.put()` keeps its automatic multipart behavior.
+The capability and its plain-data types are exported from `@tknf/oven/storage`:
+
+| Method | Result |
+| --- | --- |
+| `createMultipartUpload(key, contentType)` | `MultipartUpload`: `{ key, uploadId }` |
+| `uploadPart(upload, partNumber, body)` | `UploadedPart`: `{ partNumber, etag }` |
+| `completeMultipartUpload(upload, parts)` | `MultipartUploadResult`: `{ size }`, the final stored object size in bytes |
+| `abortMultipartUpload(upload)` | `void` after discarding pending parts |
+
+```ts
+import { R2Storage } from "@tknf/oven/cloudflare";
+import type { MultipartUpload, MultipartUploader, UploadedPart } from "@tknf/oven/storage";
+
+const uploader: MultipartUploader = new R2Storage(env.UPLOADS);
+
+// Creation request: return this plain object to the client.
+const upload: MultipartUpload = await uploader.createMultipartUpload(
+  "uploads/video.mp4", "video/mp4",
+);
+
+// Each part request: reuse the reference, including with a new R2Storage instance.
+// `body` is that request's Blob, ArrayBuffer, or non-null ReadableStream.
+const part: UploadedPart = await uploader.uploadPart(upload, 1, body);
+
+// Completion request: the client sends the collected, current part metadata.
+const result = await uploader.completeMultipartUpload(upload, [part]);
+// result.size is the backend-confirmed byte count, for comparison with the
+// declared size or an application limit. The object is already stored here.
+
+// For cancellation, call this instead of completion:
+// await uploader.abortMultipartUpload(upload);
+```
+
+The client retains `{ key, uploadId }` and every `{ partNumber, etag }` across
+requests. Upload parts with positive integer numbers and complete with a
+nonempty list in ascending order without duplicates. Re-uploading a part
+number replaces it; retain the latest returned ETag as an opaque value.
+Only the selected parts become the object at completion, overwriting any
+existing object at that key. Creation and abort leave an existing object intact.
+Completion returns `MultipartUploadResult` with `size`, the finalized object's
+byte count from the backend, never a client-declared size. R2 maps this value
+from the object returned by `complete()`; `InMemoryStorage` uses the byte length
+of the assembled selected parts. Replaced or omitted parts do not contribute.
+Applications can compare the result with a declared size or total-size limit,
+but this check happens after the object is published. Applications own handling
+of mismatches and any cleanup; this result does not enforce a pre-upload limit.
+The existing `Storage.put()` and `abortMultipartUpload()` still resolve to void.
+
+`R2Storage` resumes the R2 upload for each operation and passes part bodies
+directly to the binding. Follow R2's part-size/count constraints: normally use
+equal-sized parts of at least 5 MiB (for example, 10 MiB), with a smaller final
+part allowed and no more than 10,000 parts. See the
+[R2 multipart guide](https://developers.cloudflare.com/r2/api/workers/workers-multipart-usage/)
+and [upload limits](https://developers.cloudflare.com/r2/objects/upload-objects/#multipart-upload-details).
+Errors propagate without automatic retries or aborts; the caller can retry a
+failed step or explicitly abort. Do not assume a reference is still active,
+or that complete/abort races or repeated completion succeed.
+
+For unit tests, inject one `InMemoryStorage` instance as `Storage & MultipartUploader`.
+It retains pending uploads on that instance, accepts small test parts, validates
+upload references and completion metadata, and exposes the assembled bytes via
+`get()`. Its ETags are opaque test identifiers, not content hashes. It buffers
+all parts and does not simulate R2 size/count limits, expiry, or provider error
+types. Use R2 binding integration tests for those backend behaviors.
+`S3Storage`, `GoogleCloudStorage`, and `FileStorage` do not implement this capability.
 
 **Reading and writing a KV entry with a TTL:**
 
@@ -219,6 +293,13 @@ const report = await cache.remember(
 
 ## Gotchas / Security notes
 
+- **Multipart references do not authorize uploads.** Authenticate each endpoint,
+  validate client JSON and part metadata, and bind the key/upload ID to the
+  authorized user or tenant on every step. Enforce per-request and total upload
+  limits in the application; the capability does not track quotas. For
+  cookie-authenticated browser uploads, send `X-CSRF-Token` and apply a separate
+  request-body limit. Arrange cleanup for abandoned uploads using the backend's
+  lifecycle policy or explicit aborts.
 - **Sanitize user-supplied `Storage`/`KeyValueStore` keys yourself.**
   Neither abstraction rejects `..` or path separators in a key by default.
   `S3Storage`/`S3UrlSigner`/`GcsUrlSigner` do reject `..` path segments

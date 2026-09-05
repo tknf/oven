@@ -42,6 +42,20 @@ For larger uploads, send `X-CSRF-Token` or explicitly increase the form cap;
 putting the hidden token first is insufficient. Keep a separate request size
 limit for handlers that parse uploads, including requests with header tokens.
 
+## Client-driven multipart uploads
+
+Use `MultipartUploader` from `@tknf/oven/storage` for uploads spanning requests:
+`createMultipartUpload(key, contentType)` returns `{ key, uploadId }`;
+`uploadPart(upload, partNumber, body)` returns `{ partNumber, etag }`;
+`completeMultipartUpload(upload, parts)` returns `MultipartUploadResult`:
+`{ size }`, the backend-confirmed final stored object size in bytes, not a client
+declaration. Size comparisons happen after publication; the application handles
+mismatches and cleanup. `abortMultipartUpload(upload)` returns void.
+`R2Storage` implements it; inject `InMemoryStorage` for unit tests. Keep the
+reference and current part metadata between requests, sort completion parts by
+number, and authorize each step. Backend limits apply; errors propagate without
+automatic abort. `Storage` and automatic multipart in `put()` are unchanged.
+
 ## Your first route
 
 `RouteHandler` extends `Hono`. Subclass it, implement `register()`, and mount an

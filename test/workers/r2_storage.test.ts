@@ -9,6 +9,9 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, test } from "vite-plus/test";
 import { R2Storage } from "../../src/cloudflare/r2_storage.js";
+import type { MultipartUploader } from "../../src/storage/index.js";
+
+const multipartStorage = (): R2Storage & MultipartUploader => new R2Storage(env.TEST_BUCKET);
 
 describe("R2Storage", () => {
 	test("put an ArrayBuffer and get it back in normalized form (body/contentType)", async () => {
@@ -56,5 +59,73 @@ describe("R2Storage", () => {
 		await storage.delete("test/delete-me");
 
 		expect(await storage.get("test/delete-me")).toBeNull();
+	});
+
+	test("completes a multipart upload across adapter instances with serializable metadata", async () => {
+		const upload = await multipartStorage().createMultipartUpload("test/multipart", "text/plain");
+		expect(Object.keys(upload).sort()).toEqual(["key", "uploadId"]);
+		const firstBytes = new Uint8Array(5 * 1024 * 1024).fill(65);
+		const second = await multipartStorage().uploadPart(
+			{ ...upload },
+			2,
+			new Blob(["tail"]).stream(),
+		);
+		const first = await multipartStorage().uploadPart({ ...upload }, 1, firstBytes.buffer);
+		expect(Object.keys(first).sort()).toEqual(["etag", "partNumber"]);
+		expect(await multipartStorage().get(upload.key)).toBeNull();
+		await expect(
+			multipartStorage().completeMultipartUpload({ ...upload }, [{ ...first }, { ...second }]),
+		).resolves.toEqual({ size: firstBytes.byteLength + 4 });
+		const object = await multipartStorage().get(upload.key);
+		expect(object?.contentType).toBe("text/plain");
+		const bytes = new Uint8Array(await new Response(object?.body).arrayBuffer());
+		expect(bytes.byteLength).toBe(firstBytes.byteLength + 4);
+		expect(bytes.subarray(0, firstBytes.length).every((byte) => byte === 65)).toBe(true);
+		expect(new TextDecoder().decode(bytes.subarray(firstBytes.length))).toBe("tail");
+		await expect(multipartStorage().uploadPart(upload, 3, new Blob(["late"]))).rejects.toThrow();
+	});
+
+	test("failed completion retains the upload for retry with replacement part metadata", async () => {
+		const storage = multipartStorage();
+		const upload = await storage.createMultipartUpload("test/multipart-retry", "text/plain");
+		await storage.put(upload.key, new Blob(["existing"]), "text/plain");
+		const old = await storage.uploadPart(upload, 1, new Blob(["old"]));
+		const replacement = await multipartStorage().uploadPart(upload, 1, new Blob(["replacement"]));
+		await expect(multipartStorage().completeMultipartUpload(upload, [old])).rejects.toThrow();
+		expect(await new Response((await storage.get(upload.key))?.body).text()).toBe("existing");
+		await expect(
+			multipartStorage().completeMultipartUpload(upload, [replacement]),
+		).resolves.toEqual({ size: 11 });
+		expect(await new Response((await storage.get(upload.key))?.body).text()).toBe("replacement");
+	});
+
+	test("aborts pending parts without deleting the existing object or another upload", async () => {
+		const storage = multipartStorage();
+		const upload = await storage.createMultipartUpload("test/multipart-abort", "text/plain");
+		await storage.put(upload.key, new Blob(["existing"]), "text/plain");
+		const part = await storage.uploadPart(upload, 1, new Blob(["pending"]));
+		const other = await storage.createMultipartUpload(upload.key, "text/plain");
+		const otherPart = await storage.uploadPart(other, 1, new Blob(["other"]));
+		await multipartStorage().abortMultipartUpload({ ...upload });
+		await expect(storage.completeMultipartUpload(upload, [part])).rejects.toThrow();
+		await expect(storage.uploadPart(upload, 2, new Blob(["late"]))).rejects.toThrow();
+		expect(await new Response((await storage.get(upload.key))?.body).text()).toBe("existing");
+		await storage.completeMultipartUpload(other, [otherPart]);
+		expect(await new Response((await storage.get(upload.key))?.body).text()).toBe("other");
+	});
+
+	test("invalid references and part numbers propagate backend errors without aborting", async () => {
+		const storage = multipartStorage();
+		const upload = await storage.createMultipartUpload("test/multipart-invalid", "text/plain");
+		for (const invalid of [
+			{ ...upload, key: "wrong" },
+			{ ...upload, uploadId: "missing" },
+		]) {
+			await expect(storage.uploadPart(invalid, 1, new Blob(["part"]))).rejects.toThrow();
+			await expect(storage.completeMultipartUpload(invalid, [])).rejects.toThrow();
+		}
+		await expect(storage.uploadPart(upload, 0, new Blob(["part"]))).rejects.toThrow();
+		const part = await storage.uploadPart(upload, 1, new Blob(["valid"]));
+		await storage.completeMultipartUpload(upload, [part]);
 	});
 });
