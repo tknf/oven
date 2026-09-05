@@ -9,9 +9,11 @@ dist/
 
 # Local secrets / env
 .dev.vars*
+!.dev.vars.example
 .env
 .env.*
 !.env.example
+secrets/
 
 # Local Codex logs (project agents under `.codex/agents/` are committed)
 .codex-log/

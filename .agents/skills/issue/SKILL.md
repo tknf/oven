@@ -1,91 +1,74 @@
 ---
 name: issue
-description: Carry an oven issue or substantial request through planning, implementation, independent review, and integration with role-specific Codex agents. Use when the user asks for the complete workflow rather than one phase.
+description: Have the primary session own an oven issue or substantial request from investigation through implementation, validation, and authorized integration.
 ---
 
-# Orchestrate an oven issue
+# Own an oven issue end to end
 
-This skill coordinates the phase skills and custom agents. The primary agent
-orchestrates; it does not implement or review the work itself. A full workflow may
-prepare a commit, but commit, push, issue edits, tags, and publication remain
-limited to actions explicitly authorized in the user's request.
+The primary session is the task owner. It investigates, plans, implements, fixes,
+validates, and integrates the requested change itself. Do not create subagents
+merely to assign ordinary phases. Commit, push, issue edits, tags, releases, and
+publication remain limited to actions explicitly authorized in the user's request.
 
-## Agent routing
+Read [Git safety gates](references/git-safety.md) before the first mutation and
+again before integration.
 
-Before starting, verify the definitions in `.codex/agents/`:
+## Workflow
 
-| Phase | Agent | Skill | Expected result |
-| --- | --- | --- | --- |
-| Plan | `planner` | `$plan` | `ready_for_implementation` |
-| Implement | `implementer` | `$impl` | `ready_for_review` |
-| Review | `reviewer` | `$review` | `passed` |
-| Integrate | `integrator` | `$wrapup` | `ready_for_final_review` or `complete` |
+1. If the user supplied an issue number, read its body and all comments. Use only
+   that issue or request and do not infer another number or requirement.
+2. Read `AGENTS.md`, relevant canonical docs, source, declarations, tests,
+   installed types, and `package.json` scripts. Run `$issue-slop-check` when work
+   originates from a GitHub issue.
+3. Fetch `origin/main`, collect workflow evidence, establish provenance for every
+   existing change and outgoing commit, and pass the start gate before modifying
+   repository or external state.
+4. Use `$plan` only when the decision complexity warrants it. A small change may
+   use an in-thread scope or an authorized issue comment. Resolve routine choices
+   from evidence; ask only when the answer changes acceptance, public behavior,
+   security policy, compatibility, or scope.
+5. Use `$impl` and implement the accepted scope in the primary session. Run
+   focused checks while the diff is changing.
+6. Require a fresh `reviewer` for security, authentication, authorization,
+   session, database migration, storage consistency, concurrency, packaging,
+   major architecture, or similarly high-impact work. Otherwise decide whether
+   independent review is worth its cost from the concrete risk and impact.
+7. Fix findings in the primary session. Re-review the changed area and direct
+   dependencies when review is mandatory. Stop if the same blocking finding
+   survives two fixes or a correction requires a material new decision.
+8. Move durable plan decisions to canonical documentation, preserve necessary
+   technical invariants in code comments, and remove a temporary plan when its
+   work is complete. Create follow-up issues only when authorized.
+9. Use `$wrapup` for final validation, explicit staging, commit, push, and issue
+   updates within the user's current authorization.
 
-Use `researcher` for bounded read-only fact gathering and `auditor` for a deep
-cross-cutting or release audit. They do not replace the change reviewer.
+## On-demand delegation
 
-## Start conditions
+- Use `researcher` for a large repository search, an external specification, or
+  independent fact gathering. Require facts, inferences, and unknowns to be
+  separated.
+- Use `worker` only for mechanical bulk work whose exclusive file or directory
+  ownership, acceptance criteria, and focused validation can be stated exactly.
+  While it runs, the primary session does not modify repository or external state.
+- Start `reviewer` without inherited conversation. Provide the request or issue,
+  accepted scope, paths, diff, tests, and matching validation evidence, but not the
+  writer's conclusions or defense.
+- Use `auditor` only for a requested or warranted deep cross-cutting audit. It does
+  not replace change review.
 
-1. Use only the issue number or request the user supplied. Do not infer one.
-2. Inspect the current branch, upstream, HEAD, status, outgoing commits, and active
-   agents. Fetch the expected base when network access is available.
-3. Identify the owner of every existing change. Stop before writing if overlapping
-   changes have unknown provenance.
-4. Keep only one write-enabled agent active. The orchestrator does not edit while
-   a phase owner is writing.
-5. Create a stable `workflowId` from the issue or request and starting HEAD. Keep
-   workflow state in the orchestrator thread, not in a temporary repository file.
-6. Use `references/phase-handoff.md` after every phase. Recheck repository state
-   before starting the next phase.
+Do not stop merely because a subagent is unavailable unless mandatory independent
+review cannot be completed; in that case, do not push.
 
-## Sequence
+## Manual checks and stopping conditions
 
-1. If the request comes from a GitHub issue, run `$issue-slop-check` read-only.
-   Stop on `SLOP`; return `HUMAN` decisions to the user; incorporate an evidenced
-   `NEEDS-EDIT` correction into planning without mutating the issue unless
-   authorized.
-2. Start `planner` with only the target, current workflow state, relevant paths,
-   and the preceding handoff. Have it use `$plan`.
-3. For `needs_user_decision`, retain the workflow state and ask only the material
-   questions. Resume the same workflow after the answer without asking the user to
-   invoke `$issue` again.
-4. After `ready_for_implementation`, verify the plan or accepted scope in the
-   repository, then start `implementer` with `$impl`.
-5. Stop the implementer and verify the resulting handoff and diff. Start a fresh
-   `reviewer` with `$review`; pass repository evidence, not the implementer's
-   conclusions as facts.
-6. On `rework_required`, start a fresh implementer and then a fresh reviewer. On
-   `needs_replan`, return to the planner. Allow at most two implementation retries
-   in one workflow.
-7. After `passed`, start `integrator` with `$wrapup` in preparation mode. Have a
-   fresh reviewer perform integration review of the staged diff without modifying
-   it.
-8. If integration review passes and commit or push is authorized, start a fresh
-   integrator in publish mode. Otherwise stop with the reviewed staged candidate
-   and report the exact next authorized action.
+Classify an automated-test gap as `blocking` when its result could change scope or
+acceptance, otherwise as an `observation`. Do not integrate with an unresolved
+blocking check. Carry observations into the final report and authorized issue
+update.
 
-## Stop conditions
-
-Stop and report the workflow state when:
-
-- a material user decision or new authorization is required;
-- repository evidence changes unexpectedly;
-- another writer or an unknown overlapping change is present;
-- a blocking manual check remains unresolved;
-- two implementation retries do not pass review;
-- a phase result is incomplete or inconsistent with the repository; or
-- remote divergence makes the planned integration unsafe.
-
-An agent error may be retried once only if repository state is unchanged. Do not
-count an infrastructure-only retry as implementation rework.
-
-## Phase results
-
-- Planner: `ready_for_implementation`, `issue_rejected`,
-  `needs_user_decision`, `blocked`
-- Implementer: `ready_for_review`, `needs_replan`, `blocked`
-- Reviewer: `passed`, `rework_required`, `integration_rework_required`,
-  `needs_replan`, `blocked`
-- Integrator: `ready_for_final_review`, `complete`, `blocked`
-
-Treat a result as unsuccessful when its handoff is missing required evidence.
+Stop and report the exact recovery action when user authority is missing,
+repository evidence changes unexpectedly, another writer or unknown change is
+present, validation or mandatory review fails, or a safety gate rejects the base,
+commit sequence, staged paths, working tree, branch, or secret metadata state.
+Resume the same workflow after the blocker is resolved; do not require the user to
+invoke `$issue` again.

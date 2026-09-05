@@ -1,6 +1,6 @@
 ---
 name: review
-description: Independently review a stable oven diff against its plan, issue, tests, security requirements, and documentation. Use after implementation or for final staged-diff review.
+description: Independently review a stable oven diff in fresh read-only context against its request, tests, security requirements, and validation evidence.
 ---
 
 # Review an oven change
@@ -8,40 +8,42 @@ description: Independently review a stable oven diff against its plan, issue, te
 Start only after the writer has stopped and the diff is stable. Review in
 read-only mode.
 
-## Implementation review
+## Review
 
-1. Read `AGENTS.md`, the plan or request, acceptance criteria, affected canonical
-   docs, full `git diff`, and current `git status`.
-2. Complete static review before running tests. Trace the changed execution path
-   and check correctness, public compatibility, validation, authentication and
-   authorization, CSRF/origin handling, secret exposure, error paths, concurrency,
-   resource bounds, types, migration safety, and docs/skill synchronization as
-   applicable.
-3. Confirm that tests can fail for the defect or behavior they claim to cover.
+1. Read `AGENTS.md`, the plan or request, acceptance criteria, and affected
+   canonical docs.
+2. Read `git status`, `git diff`, and evidence from
+   `node scripts/issue_workflow_evidence.mjs`. Use Node directly because Vite+ may
+   initialize caches in a read-only environment.
+3. Complete static review before evaluating runtime results. Trace the changed
+   execution path and check correctness, public compatibility, validation,
+   authentication and authorization, CSRF/origin handling, secret exposure, error
+   paths, concurrency, resource bounds, types, migration safety, and docs/skill
+   synchronization as applicable.
+4. Confirm that tests can fail for the defect or behavior they claim to cover.
    Flag weakened assertions and missing boundary coverage.
-4. If a blocking finding exists, return it before expensive runtime validation.
-   Otherwise run or reuse `vp check` and the smallest relevant tests. A prior
-   result is reusable only when HEAD and relevant content are unchanged; identify
-   reused results explicitly.
-5. Report findings first in descending severity. Include exact locations,
+5. If a blocking finding exists, return it before evaluating runtime validation.
+   Otherwise verify that the supplied results match the current HEAD and content
+   fingerprint and cover the risk. Report missing validation as a finding; do not
+   rerun the unfiltered repository suite.
+6. Report findings first in descending severity. Include exact locations,
    evidence, impact, and the smallest safe correction. Do not report speculative
    best practices as defects.
 
-## Integration review
-
-When the integrator has staged a final candidate, inspect `git diff --cached`,
-unstaged changes, staged paths, final validation receipts, changelog decisions,
-and commit boundaries. Do not change the index, files, or validation state.
+For a re-review, inspect the corrected area and its direct dependencies. Repeat the
+full review only when a new concrete risk appears or the affected area cannot be
+bounded.
 
 ## Boundaries
 
 - Do not fix even small findings yourself.
 - Do not stage, unstage, format, commit, push, tag, publish, or edit GitHub state.
+- Do not start another agent or modify caches.
 - Do not dismiss a failing check as pre-existing without evidence from the base
   revision.
+- Leave Git stage and push consistency to the deterministic safety gate; do not
+  require a second LLM integration review.
 
-When called from `$issue`, return `PHASE_RESULT reviewer <status>` followed by the
-handoff object from `../issue/references/phase-handoff.md`.
-
-Statuses: `passed`, `rework_required`, `integration_rework_required`,
-`needs_replan`, or `blocked`.
+Return findings in descending severity with exact paths and lines, then end with
+one of `REVIEW_RESULT passed`, `REVIEW_RESULT rework_required`,
+`REVIEW_RESULT needs_decision`, or `REVIEW_RESULT blocked`.

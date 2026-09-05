@@ -78,82 +78,94 @@ Verify examples against `src/**` and `test/**`. Afterward, run `vp check`, verif
 relative documentation links and GitHub heading anchors, and search public-facing
 text for prohibited framework analogies.
 
-## Codex agents
+## Codex ownership and agents
 
-Project agents live in `.codex/agents/*.toml`. Their model and reasoning settings
-are deliberate; change them only when the user asks or a measured workflow result
-justifies it.
+The `gpt-6-astra` primary/root session is the task owner. Its model is selected by
+the host rather than a repository TOML. It owns investigation, planning,
+implementation, correction, validation, integration, release preparation, user
+communication, and the final diff. Do not delegate ordinary phases merely to
+separate roles.
 
-| Agent             | Model          | Reasoning | Access          | Responsibility                                                                      |
-| ----------------- | -------------- | --------- | --------------- | ----------------------------------------------------------------------------------- |
-| `planner`         | `gpt-5.6-sol`  | `max`     | workspace write | Investigate and produce an implementation-ready plan                                |
-| `researcher`      | `gpt-5.6-luna` | `max`     | read-only       | Gather facts from code, tests, history, and primary documentation                   |
-| `implementer`     | `gpt-5.6-luna` | `max`     | workspace write | Implement an accepted plan and run targeted validation                              |
-| `reviewer`        | `gpt-5.6-sol`  | `ultra`   | read-only       | Review a stable diff independently against its acceptance criteria                  |
-| `auditor`         | `gpt-5.6-sol`  | `ultra`   | read-only       | Audit a release, subsystem, or cross-cutting risk in depth                          |
-| `integrator`      | `gpt-5.6-sol`  | `max`     | workspace write | Prepare the final candidate, stage explicit paths, commit, and push when authorized |
-| `release_manager` | `gpt-5.6-sol`  | `max`     | workspace write | Prepare and publish a SemVer release when explicitly authorized                     |
+Project subagents live in `.codex/agents/*.toml`. Use them only when their
+independence or bounded parallelism is worth the delegation, reloading, and
+integration cost. Their model and reasoning settings are deliberate.
 
-Use agents when the task benefits from role separation or independent review. Do
-not delegate a small edit merely because an agent exists. The primary Codex agent
-owns the scope, user communication, final diff, and acceptance.
+| Agent        | Model          | Reasoning | Access          | Use                                                                      |
+| ------------ | -------------- | --------- | --------------- | ------------------------------------------------------------------------ |
+| `researcher` | `gpt-5.6-luna` | `max`     | read-only       | Large repository searches, external specifications, or independent facts |
+| `reviewer`   | `gpt-5.6-sol`  | `ultra`   | read-only       | Fresh-context review of high-risk or explicitly requested changes        |
+| `auditor`    | `gpt-5.6-sol`  | `ultra`   | read-only       | Deep subsystem, security, or release audits                              |
+| `worker`     | `gpt-5.6-luna` | `max`     | workspace write | Mechanical bulk work with exclusive, explicitly named path ownership     |
 
-Delegation prompts must name the target, allowed paths, completion criteria,
-source material, and validation commands. The primary agent must review the report
-and repository state before starting the next phase. Only one write-enabled agent
-may operate on the shared worktree at a time. Read-only agents may run in parallel
-when their investigations are independent.
+Delegation prompts must name the exact question or owned paths, source material,
+acceptance criteria, and validation commands. A `worker` must not make product or
+scope decisions. While a write-enabled subagent is active, the primary session
+may inspect state and communicate but must not modify repository, index, GitHub,
+or other external state. Read-only agents may run in parallel when their scopes
+are independent.
+
+The primary session reviews every report and the current repository state before
+acting on it. If a blocking review finding is fixed, re-review the changed area and
+its direct dependencies. Repeat the full review only when a new concrete risk
+appears or the affected area cannot be bounded.
 
 ## Codex workflows
 
-Repository workflows are reusable skills under `.agents/skills/`:
+Repository workflows are reusable skills under `.agents/skills/`. The primary
+session invokes and executes them directly unless independent review is warranted.
 
-| Skill               | Owner                   | Result                                                                         |
-| ------------------- | ----------------------- | ------------------------------------------------------------------------------ |
-| `$issue-slop-check` | primary or `researcher` | Read-only issue verdict grounded in current evidence                           |
-| `$plan`             | `planner`               | Accepted scope, decisions, risks, and testable acceptance criteria             |
-| `$impl`             | `implementer`           | Implementation plus targeted validation, without staging or committing         |
-| `$review`           | `reviewer`              | Independent findings-first review of the stable diff                           |
-| `$wrapup`           | `integrator`            | Final validation, explicit staging, commit, and optional push                  |
-| `$issue`            | primary orchestrator    | Sequential plan, implementation, review, and integration workflow              |
-| `$release`          | `release_manager`       | Version bump, changelog finalization, release commit, tag, and authorized push |
+| Skill               | Owner                        | Result                                                                        |
+| ------------------- | ---------------------------- | ----------------------------------------------------------------------------- |
+| `$issue-slop-check` | primary or `researcher`      | Read-only issue verdict grounded in current evidence                          |
+| `$plan`             | primary                      | Accepted scope, decisions, risks, and testable acceptance criteria            |
+| `$impl`             | primary                      | Implementation and focused validation without integration                     |
+| `$review`           | fresh `reviewer` when needed | Independent findings-first review of a stable diff                            |
+| `$wrapup`           | primary                      | Final validation, explicit staging, commit, and authorized external actions   |
+| `$issue`            | primary                      | End-to-end ownership of an issue or substantial request                       |
+| `$release`          | primary                      | Version bump, changelog, validation, release commit, tag, and authorized push |
 
-For a full issue workflow, the primary agent runs one phase at a time:
+For a full issue workflow, the primary session:
 
-1. Establish the branch, upstream, issue or request, and clean ownership of all
-   existing changes.
-2. Run the read-only issue check when the work originates from a GitHub issue.
-3. Have `planner` use `$plan`. Resolve any material product or compatibility
-   decision before implementation.
-4. Have `implementer` use `$impl` after the plan is accepted.
-5. Stop the writer, then have a fresh `reviewer` use `$review` without receiving
-   the implementer's conclusions as facts.
-6. Return blocking findings to the implementer. Allow at most two implementation
-   retries in one workflow; re-plan when the finding changes scope or acceptance.
-7. After review passes, have `integrator` use `$wrapup` to run final repository
-   checks, stage explicit paths, and commit or push only within the user's current
-   authorization.
+1. Establishes the request, branch, current `origin/main`, existing commits and
+   changes, and ownership of every changed path.
+2. Runs `$issue-slop-check` when work originates from a GitHub issue.
+3. Uses `$plan` only as much as the decision complexity requires. A small change
+   can use an issue comment or an in-thread scope instead of a plan file.
+4. Implements the accepted scope itself and runs focused validation while the
+   diff is changing.
+5. Requests a fresh `reviewer` for security, authentication, authorization,
+   session, migration, storage consistency, concurrency, packaging, large
+   architecture, or similarly high-impact work. Review is optional for ordinary
+   low-risk changes unless the user requests it.
+6. Fixes findings itself. Stop after the same blocking finding survives two fixes,
+   or when a fix requires a material scope or product decision.
+7. Uses `$wrapup` to reconcile durable documentation, run final validation once,
+   stage explicit paths, and perform only the commit, push, or issue actions the
+   user authorized.
 
-Phase handoffs use `.agents/skills/issue/references/phase-handoff.md`. A handoff
-records repository state, changed paths, validation actually performed, manual
-checks, findings, and unresolved items. Do not claim a reused validation result was
-rerun. A result is reusable only while the relevant content and HEAD are unchanged.
+Use `.agents/skills/issue/references/git-safety.md` and the deterministic workflow
+evidence and gate scripts at mutation boundaries. Keep workflow state in the
+primary session rather than a temporary repository file.
 
 ## Validation strategy
 
-Avoid repeating the full suite on an unchanged diff:
+Avoid repeating expensive validation on unchanged content:
 
-- The implementer runs `vp check` and the smallest relevant tests.
-- The reviewer completes static review before running or reusing tests. Blocking
-  findings stop the review before expensive validation.
-- The integrator runs `vp check`, `vp run typecheck`, and `vp test` once on the
-  final candidate. Run `vp run build` when packaging or published output can
+- During implementation, the primary session runs `vp check` and the smallest
+  tests that exercise the changed behavior.
+- A reviewer completes static review before evaluating runtime results. Blocking
+  findings are fixed before more expensive validation.
+- For the final candidate, run `vp check`, `vp run typecheck`, and unfiltered
+  `vp test` when the same HEAD and content fingerprint do not already have valid
+  successful results. Run `vp run build` when packaging or published output can
   change.
-- The release manager reruns the release gate on the exact release commit or
-  records which CI gate provides equivalent coverage.
+- A release reruns the release gate on the exact release commit or records the CI
+  gate that provides equivalent coverage.
 
-If validation changes files, inspect the new diff and run only the checks that the
-new content invalidated. Record commands, scope, results, and skipped coverage.
+Record each command, scope, result, HEAD, and content fingerprint. A result may be
+reused only while HEAD and relevant content are unchanged, and must never be
+reported as rerun. Classify manual checks as `blocking` when their outcome can
+change scope or acceptance; otherwise carry them as `observation`.
 
 ## Branch rules
 
@@ -217,8 +229,9 @@ workflow explicitly supports an appropriate npm dist-tag.
 - Commit only when the user explicitly asks or invokes a workflow whose request
   explicitly includes committing. Push, tags, releases, issue edits, and npm
   publication require authorization for that specific action.
-- Keep the index unchanged during read-only review. The integrator stages only the
-  reviewed paths and does not sweep in internal notes such as `docs/research/*`.
+- Keep the index unchanged during read-only review. The primary session stages
+  only reviewed paths and does not sweep in internal notes such as
+  `docs/research/*`.
 - Use the scoped package name `@tknf/oven`; the unscoped `oven` name is also owned.
 
 ## Final verification
@@ -235,3 +248,6 @@ For documentation-only changes, still run checks required by the affected
 tooling. Validate every changed skill with the Codex skill validator, verify local
 links, and report commands that were skipped. If Vite+ setup or runtime behavior
 appears wrong, run `vp env doctor` and include its output in the report.
+
+When workflow instructions, skills, agent definitions, or workflow safety scripts
+change, also run `vp run check:workflow-safety`.
