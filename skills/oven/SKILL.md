@@ -33,6 +33,15 @@ installed package. Before writing a non-trivial example, check the real types in
 that appear in the project's own tests. Hono / Drizzle / Standard Schema APIs:
 confirm against their installed types too.
 
+## CSRF form body limit
+
+`Csrf` accepts `maxFormBodyBytes` (positive safe integer, default 65,536).
+Form fallback stops reading when the total body size exceeds that cap;
+oversized or malformed data returns 403. Place verification before body-consuming middleware.
+For larger uploads, send `X-CSRF-Token` or explicitly increase the form cap;
+putting the hidden token first is insufficient. Keep a separate request size
+limit for handlers that parse uploads, including requests with header tokens.
+
 ## Your first route
 
 `RouteHandler` extends `Hono`. Subclass it, implement `register()`, and mount an

@@ -629,9 +629,13 @@ Hono's own default `413 Payload Too Large`; a request with no body (e.g.
 field-level `File` validation (`maxSizeBytes` via `validateUploadedFile` —
 see [Forms](./forms.md#validating-an-uploaded-files-size-and-mime-type)),
 which only rejects an already-fully-buffered file after the fact.
-`bodyLimitBytes` is optional and has no default — omitting it keeps the
-existing unlimited-body behavior, and (unlike `csrf`/`rateLimiter`) omitting
-it does not log a warning, since not every panel accepts uploads.
+`bodyLimitBytes` is optional and has no default; omitting it adds no overall
+request limit or warning. An injected `Csrf` still caps form-token extraction
+at 64 KiB by default. For larger HTML uploads, configure that instance's
+`maxFormBodyBytes` to the intended form size (for example, `10 * 1024 * 1024`
+for the panel above), or send `X-CSRF-Token`. Setting `bodyLimitBytes` alone
+does not raise the CSRF cap, and placing the hidden token first is insufficient.
+See [Security](./security.md) for CSRF configuration.
 
 ### Content Security Policy
 
@@ -656,7 +660,7 @@ new AdminPanel({
 ```
 
 This is unrelated to `hono/secure-headers` — see
-[Security](./security.md#secureheaders) for the app-wide CSP story.
+[Security](./security.md#gotchas--security-notes) for the app-wide CSP story.
 
 ### Localizing the admin UI
 
@@ -691,11 +695,11 @@ language), the panel falls back to English.
   or by verifying upstream. Without it, the panel logs a one-time
   `console.warn` on the first unsafe-method request, but still serves it
   — it does not fail closed on its own.
-- **The panel imposes no request body size limit unless you inject
-  `bodyLimitBytes`.** Without it, every route — including any
-  `AdminResource` form with a `File` field — buffers a request body of any
-  size before `validateUploadedFile`'s `maxSizeBytes` ever gets a chance to
-  reject it. See "Limiting request body size" above.
+- **Use `bodyLimitBytes` for an overall request body limit.** An injected
+  `Csrf` independently limits form-token extraction, but header-token requests
+  skip that read. Upload parsing still buffers files before
+  `validateUploadedFile` checks `maxSizeBytes`. See "Limiting request body size"
+  above for configuring both limits.
 - **`/login` is not rate-limited unless you inject `rateLimiter`.** Pass a
   `RateLimiter` (`@tknf/oven/security`) so brute-force credential guessing
   is bounded; see [Admin accounts](./admin-accounts.md#gotchas--security-notes)

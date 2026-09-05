@@ -44,13 +44,15 @@
   method that can leak); see the "Tenant-scoped models" recipe in
   `docs/models.md` for the full pattern, including `with(tx)` and the
   INSERT-side pitfall.
-- **`Csrf#verify` and `validateUploadedFile` both act only after the body is
-  already fully buffered** — `Csrf#verify` calls `c.req.parseBody()` to read
-  the submitted token (including on a multipart request), and
-  `validateUploadedFile`'s `maxSizeBytes` (`@tknf/oven/form`) only rejects an
-  already-buffered `File`. Neither one bounds how large a request the server
-  will actually receive into memory; apply Hono's own `bodyLimit`
-  (`hono/body-limit`) upstream of both if that matters.
+- **`Csrf#verify` caps form-token extraction at 64 KiB by default.** Set
+  `maxFormBodyBytes` to a positive safe integer to change the byte cap.
+  Oversized or malformed forms return 403 even with the token field first;
+  use `X-CSRF-Token` for larger uploads or raise the cap. A non-empty header
+  takes precedence and skips the body read. Run verification before
+  body-consuming middleware: cached Hono bodies are supported, but previous
+  buffering cannot be undone. `validateUploadedFile` still checks an already
+  buffered `File`; use `hono/body-limit` ahead of upload parsing for an overall
+  request limit, including header-token requests.
 - **`widget: "file"` has no `value`** — browsers refuse to pre-populate
   `input[type=file]`'s selection, so `Form#toInput` never sets a key for it
   either; render a previously uploaded file separately if you need to show it.
@@ -101,8 +103,10 @@ bodyLimitBytes })`) as the panel's very first middleware, ahead of CSRF
   verification and any of the panel's own `parseBody` calls, so an oversized
   request (e.g. against an `AdminResource` form with a `File` field) is
   rejected before it's buffered rather than after. Omitting it keeps the
-  previous unlimited-body behavior and, unlike `csrf`/`rateLimiter`, emits no
-  one-time warning (not every panel accepts uploads).
+  absence of an overall request limit and emits no one-time warning. An injected
+  `Csrf` independently caps form-token extraction at 64 KiB; configure its
+  `maxFormBodyBytes` for larger HTML uploads or send `X-CSRF-Token`.
+  `bodyLimitBytes` alone does not raise that cap.
 - **`AdminPanel` sends a strict `Content-Security-Policy` header on every
   response by default — no wiring needed.** The default is
   `default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`

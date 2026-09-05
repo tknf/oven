@@ -35,6 +35,7 @@
 import type { Context, Env, MiddlewareHandler } from "hono";
 import { createMiddleware } from "hono/factory";
 import { HTTPException } from "hono/http-exception";
+import { cloneRawRequest } from "hono/request";
 import { decodeBase64Url, encodeBase64Url } from "../support/base64url.js";
 import { constantTimeEqual } from "../support/constant_time.js";
 import type { Session } from "../session/session.js";
@@ -50,6 +51,8 @@ export type CsrfOptions<E extends Env> = {
 	 * Only exempted when both the `Origin` header and the request path match.
 	 */
 	exceptions?: CsrfExceptionPath[];
+	/** Maximum form body size in bytes for token extraction. Defaults to 64 KiB; must be a positive safe integer. Header tokens bypass this read. */
+	maxFormBodyBytes?: number;
 };
 
 const SESSION_SECRET_KEY = "csrfSecret";
@@ -110,16 +113,55 @@ const unmaskToken = (masked: string, secretLength: number): Uint8Array | null =>
 };
 
 /** Extracts the submitted token, preferring the header and falling back to the form body. */
-const extractSubmittedToken = async (c: Context): Promise<string | undefined> => {
+const extractSubmittedToken = async (
+	c: Context,
+	maxFormBodyBytes: number,
+): Promise<string | undefined> => {
 	const header = c.req.header(CSRF_HEADER_NAME);
 	if (header) return header;
 
 	const contentType = c.req.header("content-type") ?? "";
 	if (!FORM_CONTENT_TYPE_RE.test(contentType)) return undefined;
 
-	const body = await c.req.parseBody();
-	const value = body[CSRF_FORM_FIELD_NAME];
-	return typeof value === "string" ? value : undefined;
+	let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+	try {
+		/** Preserve the original body, including bodies cached by upstream Hono middleware. */
+		const request =
+			c.req.raw.bodyUsed && c.req.bodyCache.formData
+				? new Response(await c.req.formData())
+				: await cloneRawRequest(c.req);
+		reader = request.body?.getReader();
+		if (!reader) return undefined;
+
+		const chunks: Uint8Array[] = [];
+		let size = 0;
+		while (true) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			size += value.byteLength;
+			if (size > maxFormBodyBytes) return undefined;
+			if (value.byteLength > 0) chunks.push(value);
+		}
+
+		const bytes = new Uint8Array(size);
+		let offset = 0;
+		for (const chunk of chunks) {
+			bytes.set(chunk, offset);
+			offset += chunk.byteLength;
+		}
+		const body = await new Response(bytes, { headers: request.headers }).formData();
+		/** Hono cannot reconstruct form data from its text cache with the original content type. */
+		if (c.req.raw.bodyUsed) c.req.bodyCache.formData = body;
+		/** Match parseBody's default behavior for repeated fields: the last value wins. */
+		const value = body.getAll(CSRF_FORM_FIELD_NAME).at(-1);
+		return typeof value === "string" ? value : undefined;
+	} catch {
+		return undefined;
+	} finally {
+		/** A cloned stream's cancellation can wait for the unread original branch. */
+		void reader?.cancel().catch(() => {});
+		reader?.releaseLock();
+	}
 };
 
 /**
@@ -129,10 +171,15 @@ const extractSubmittedToken = async (c: Context): Promise<string | undefined> =>
 export class Csrf<E extends Env> {
 	private readonly useSession: (c: Context<E>) => Session;
 	private readonly exceptions: CsrfExceptionPath[];
+	private readonly maxFormBodyBytes: number;
 
 	constructor(options: CsrfOptions<E>) {
 		this.useSession = options.session;
 		this.exceptions = options.exceptions ?? [];
+		this.maxFormBodyBytes = options.maxFormBodyBytes ?? 64 * 1024;
+		if (!Number.isSafeInteger(this.maxFormBodyBytes) || this.maxFormBodyBytes <= 0) {
+			throw new RangeError("maxFormBodyBytes must be a positive safe integer");
+		}
 	}
 
 	/** An arrow-function class field so it can be passed by reference from handlers/views (Form/Layout). */
@@ -157,7 +204,7 @@ export class Csrf<E extends Env> {
 		}
 
 		const secret = ensureSecret(this.useSession(c));
-		const submitted = await extractSubmittedToken(c);
+		const submitted = await extractSubmittedToken(c, this.maxFormBodyBytes);
 		const unmasked = submitted ? unmaskToken(submitted, secret.length) : null;
 
 		if (!unmasked || !constantTimeEqual(unmasked, secret)) {
