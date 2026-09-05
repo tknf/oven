@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- Added the optional `MultipartUploader` capability with backend-neutral upload references and part metadata, implemented by `R2Storage` and `InMemoryStorage` for client-driven create, upload-part, complete, and abort operations across requests.
+- Added the optional `MultipartUploader` capability with backend-neutral upload references and part metadata, implemented by `R2Storage` and `InMemoryStorage` for client-driven create, upload-part, complete, and abort operations across requests. Completion returns `MultipartUploadResult` with the final stored object size in bytes.
 - Added `RateLimiter.isLimited()` as a read-only probe for failure-only verification flows.
 
 ### Fixed

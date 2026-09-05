@@ -1,5 +1,9 @@
 import { describe, expect, test } from "vite-plus/test";
-import { InMemoryStorage, type MultipartUploader } from "../../src/storage/index.js";
+import {
+	InMemoryStorage,
+	type MultipartUploader,
+	type MultipartUploadResult,
+} from "../../src/storage/index.js";
 
 const createUpload = async () => {
 	const storage = new InMemoryStorage();
@@ -11,17 +15,19 @@ const createUpload = async () => {
 describe("InMemoryStorage multipart uploads", () => {
 	test("publishes selected parts in order only on completion and retains content type", async () => {
 		const { storage, uploader, upload } = await createUpload();
-		const third = await uploader.uploadPart(upload, 3, new Blob(["third"]).stream());
+		const third = await uploader.uploadPart(upload, 3, new Blob(["third📦"]).stream());
 		const first = await uploader.uploadPart(upload, 1, new TextEncoder().encode("first").buffer);
 		await uploader.uploadPart(upload, 2, new Blob(["omitted"]));
 		expect(await storage.get(upload.key)).toBeNull();
 
-		await expect(
-			uploader.completeMultipartUpload({ ...upload }, [first, third]),
-		).resolves.toBeUndefined();
+		const result: MultipartUploadResult = await uploader.completeMultipartUpload({ ...upload }, [
+			first,
+			third,
+		]);
+		expect(result).toEqual({ size: 14 });
 		const object = await storage.get(upload.key);
 		expect(object?.contentType).toBe("text/plain");
-		expect(await new Response(object?.body).text()).toBe("firstthird");
+		expect(await new Response(object?.body).text()).toBe("firstthird📦");
 		await expect(uploader.uploadPart(upload, 4, new Blob(["late"]))).rejects.toThrow();
 		await expect(uploader.completeMultipartUpload(upload, [first, third])).rejects.toThrow();
 	});
@@ -33,8 +39,19 @@ describe("InMemoryStorage multipart uploads", () => {
 		const replacement = await uploader.uploadPart(upload, 1, new Blob(["replacement"]));
 		await expect(uploader.completeMultipartUpload(upload, [old])).rejects.toThrow();
 		expect(await new Response((await storage.get(upload.key))?.body).text()).toBe("existing");
-		await uploader.completeMultipartUpload(upload, [replacement]);
+		await expect(uploader.completeMultipartUpload(upload, [replacement])).resolves.toEqual({
+			size: 11,
+		});
 		expect(await new Response((await storage.get(upload.key))?.body).text()).toBe("replacement");
+	});
+
+	test("returns zero bytes when completing an empty part", async () => {
+		const { storage, uploader, upload } = await createUpload();
+		const part = await uploader.uploadPart(upload, 1, new Blob([]));
+		await expect(uploader.completeMultipartUpload(upload, [part])).resolves.toEqual({ size: 0 });
+		const object = await storage.get(upload.key);
+		expect(object).not.toBeNull();
+		expect((await new Response(object?.body).arrayBuffer()).byteLength).toBe(0);
 	});
 
 	test("abort preserves the stored object and does not affect another upload for the key", async () => {

@@ -10,6 +10,7 @@
 import type {
 	MultipartUpload,
 	MultipartUploader,
+	MultipartUploadResult,
 	UploadedPart,
 } from "../storage/multipart_uploader.js";
 import { Storage, type StorageObject } from "../storage/storage.js";
@@ -77,8 +78,11 @@ export class R2Storage extends Storage implements MultipartUploader {
 	completeMultipartUpload = async (
 		upload: MultipartUpload,
 		parts: UploadedPart[],
-	): Promise<void> => {
-		await this.bucket.resumeMultipartUpload(upload.key, upload.uploadId).complete(parts);
+	): Promise<MultipartUploadResult> => {
+		const object = await this.bucket
+			.resumeMultipartUpload(upload.key, upload.uploadId)
+			.complete(parts);
+		return { size: object.size };
 	};
 
 	abortMultipartUpload = async (upload: MultipartUpload): Promise<void> => {

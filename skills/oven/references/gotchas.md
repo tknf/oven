@@ -359,7 +359,10 @@ code)` (verifies against the pending secret, only then sets
   `@tknf/oven/storage`. Creation returns `{ key, uploadId }`; uploading a part
   returns `{ partNumber, etag }`. Retain both, use the latest metadata when
   replacing a part, and pass a nonempty ascending list without duplicates to
-  complete. Complete/abort return void. R2 passes bodies to its binding and
+  complete. Completion returns `MultipartUploadResult` with the finalized
+  object's backend-confirmed byte count as `size`; abort returns void. A size
+  comparison here runs after publication, so the application handles mismatches
+  and cleanup. R2 passes bodies to its binding and
   propagates errors without automatically aborting; handle expired uploads and
   races in the caller. Authenticate and validate each request, authorize the
   key/upload ID, enforce request/total limits, and clean up abandoned uploads.

@@ -10,5 +10,6 @@ identity })` (auth cookie), and `TestJobQueue`/`TestMailer`/`TestBroadcaster`
 For client-driven multipart uploads, inject one `InMemoryStorage` instance
 (`@tknf/oven/storage`) as `Storage & MultipartUploader`. It holds upload state
 between calls, validates references and completion metadata, and publishes
-assembled bytes only on completion. Small parts are allowed; R2 size/count
+assembled bytes only on completion, returning their actual byte count as
+`MultipartUploadResult.size`. Small parts are allowed; R2 size/count
 limits, expiry, and provider error types require binding integration tests.

@@ -6,7 +6,12 @@
  * held as a `Uint8Array`, and `get` creates and returns a new `ReadableStream`
  * each time (so the same content can be read multiple times).
  */
-import type { MultipartUpload, MultipartUploader, UploadedPart } from "./multipart_uploader.js";
+import type {
+	MultipartUpload,
+	MultipartUploader,
+	MultipartUploadResult,
+	UploadedPart,
+} from "./multipart_uploader.js";
 import { Storage, type StorageObject } from "./storage.js";
 
 type Entry = {
@@ -80,7 +85,7 @@ export class InMemoryStorage extends Storage implements MultipartUploader {
 	completeMultipartUpload = async (
 		upload: MultipartUpload,
 		parts: UploadedPart[],
-	): Promise<void> => {
+	): Promise<MultipartUploadResult> => {
 		const pending = this.pendingUpload(upload);
 		if (parts.length === 0) throw new Error("At least one uploaded part is required");
 		let previousPartNumber = 0;
@@ -101,6 +106,7 @@ export class InMemoryStorage extends Storage implements MultipartUploader {
 		}
 		this.store.set(upload.key, { bytes, contentType: pending.contentType });
 		this.uploads.delete(upload.uploadId);
+		return { size: bytes.byteLength };
 	};
 
 	abortMultipartUpload = async (upload: MultipartUpload): Promise<void> => {

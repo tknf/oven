@@ -47,7 +47,10 @@ limit for handlers that parse uploads, including requests with header tokens.
 Use `MultipartUploader` from `@tknf/oven/storage` for uploads spanning requests:
 `createMultipartUpload(key, contentType)` returns `{ key, uploadId }`;
 `uploadPart(upload, partNumber, body)` returns `{ partNumber, etag }`;
-`completeMultipartUpload(upload, parts)` and `abortMultipartUpload(upload)` return void.
+`completeMultipartUpload(upload, parts)` returns `MultipartUploadResult`:
+`{ size }`, the backend-confirmed final stored object size in bytes, not a client
+declaration. Size comparisons happen after publication; the application handles
+mismatches and cleanup. `abortMultipartUpload(upload)` returns void.
 `R2Storage` implements it; inject `InMemoryStorage` for unit tests. Keep the
 reference and current part metadata between requests, sort completion parts by
 number, and authorize each step. Backend limits apply; errors propagate without

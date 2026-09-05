@@ -10,6 +10,12 @@ export type UploadedPart = {
 	etag: string;
 };
 
+/** Result of successfully publishing a multipart upload. */
+export type MultipartUploadResult = {
+	/** Final stored object size in bytes, determined by the backend rather than declared by the client. */
+	size: number;
+};
+
 /**
  * Optional capability for uploads spanning multiple requests, independent of `Storage`.
  * Callers retain the upload reference and part metadata between requests. Backend errors
@@ -30,9 +36,13 @@ export interface MultipartUploader {
 	/**
 	 * Publishes the selected parts, replacing an existing object at the key.
 	 * Supply a nonempty list of current part metadata in ascending order without duplicates.
-	 * Success resolves to void, matching `Storage.put`; the upload can no longer accept parts.
+	 * Returns the final stored object size in bytes; the upload can no longer accept parts.
+	 * Size checks on this result run after publication, not as a pre-upload limit.
 	 */
-	completeMultipartUpload(upload: MultipartUpload, parts: UploadedPart[]): Promise<void>;
+	completeMultipartUpload(
+		upload: MultipartUpload,
+		parts: UploadedPart[],
+	): Promise<MultipartUploadResult>;
 
 	/** Discards pending parts without deleting an already stored object. */
 	abortMultipartUpload(upload: MultipartUpload): Promise<void>;

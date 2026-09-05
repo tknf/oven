@@ -75,7 +75,7 @@ describe("R2Storage", () => {
 		expect(await multipartStorage().get(upload.key)).toBeNull();
 		await expect(
 			multipartStorage().completeMultipartUpload({ ...upload }, [{ ...first }, { ...second }]),
-		).resolves.toBeUndefined();
+		).resolves.toEqual({ size: firstBytes.byteLength + 4 });
 		const object = await multipartStorage().get(upload.key);
 		expect(object?.contentType).toBe("text/plain");
 		const bytes = new Uint8Array(await new Response(object?.body).arrayBuffer());
@@ -93,7 +93,9 @@ describe("R2Storage", () => {
 		const replacement = await multipartStorage().uploadPart(upload, 1, new Blob(["replacement"]));
 		await expect(multipartStorage().completeMultipartUpload(upload, [old])).rejects.toThrow();
 		expect(await new Response((await storage.get(upload.key))?.body).text()).toBe("existing");
-		await multipartStorage().completeMultipartUpload(upload, [replacement]);
+		await expect(
+			multipartStorage().completeMultipartUpload(upload, [replacement]),
+		).resolves.toEqual({ size: 11 });
 		expect(await new Response((await storage.get(upload.key))?.body).text()).toBe("replacement");
 	});
 

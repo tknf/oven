@@ -180,7 +180,7 @@ The capability and its plain-data types are exported from `@tknf/oven/storage`:
 | --- | --- |
 | `createMultipartUpload(key, contentType)` | `MultipartUpload`: `{ key, uploadId }` |
 | `uploadPart(upload, partNumber, body)` | `UploadedPart`: `{ partNumber, etag }` |
-| `completeMultipartUpload(upload, parts)` | `void` after publishing the object |
+| `completeMultipartUpload(upload, parts)` | `MultipartUploadResult`: `{ size }`, the final stored object size in bytes |
 | `abortMultipartUpload(upload)` | `void` after discarding pending parts |
 
 ```ts
@@ -199,7 +199,9 @@ const upload: MultipartUpload = await uploader.createMultipartUpload(
 const part: UploadedPart = await uploader.uploadPart(upload, 1, body);
 
 // Completion request: the client sends the collected, current part metadata.
-await uploader.completeMultipartUpload(upload, [part]);
+const result = await uploader.completeMultipartUpload(upload, [part]);
+// result.size is the backend-confirmed byte count, for comparison with the
+// declared size or an application limit. The object is already stored here.
 
 // For cancellation, call this instead of completion:
 // await uploader.abortMultipartUpload(upload);
@@ -211,7 +213,14 @@ nonempty list in ascending order without duplicates. Re-uploading a part
 number replaces it; retain the latest returned ETag as an opaque value.
 Only the selected parts become the object at completion, overwriting any
 existing object at that key. Creation and abort leave an existing object intact.
-Completion returns no provider-specific object metadata, consistent with `put()`.
+Completion returns `MultipartUploadResult` with `size`, the finalized object's
+byte count from the backend, never a client-declared size. R2 maps this value
+from the object returned by `complete()`; `InMemoryStorage` uses the byte length
+of the assembled selected parts. Replaced or omitted parts do not contribute.
+Applications can compare the result with a declared size or total-size limit,
+but this check happens after the object is published. Applications own handling
+of mismatches and any cleanup; this result does not enforce a pre-upload limit.
+The existing `Storage.put()` and `abortMultipartUpload()` still resolve to void.
 
 `R2Storage` resumes the R2 upload for each operation and passes part bodies
 directly to the binding. Follow R2's part-size/count constraints: normally use
