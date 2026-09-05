@@ -142,10 +142,12 @@ another full validation cycle.
 
 - Branch from an up-to-date `origin/main`. Do not commit directly to `main` unless
   the user explicitly requests it.
-- Use `{type}/issue-{number}-{kebab-case-slug}` when an issue exists. Otherwise use
-  `{type}/{yyyymmdd}_{kebab-case-slug}`.
-- Allowed types are `feat`, `fix`, `docs`, `refactor`, `test`, `chore`, `ci`, and
-  `release`. Choose the type from the primary change.
+- Follow the global `{prefix}/{issueID|yyyymmdd}_{name}` naming convention.
+  Use the issue number when an issue exists; otherwise use the work start date
+  as `yyyymmdd`. Write `name` in lowercase kebab-case, for example
+  `feat/85_multipart-upload` or `docs/20260905_storage-guide`.
+- Allowed prefixes are `feat`, `fix`, `docs`, `refactor`, `test`, `chore`, `ci`, and
+  `release`. Choose the prefix from the primary change.
 - Keep one logical change on one branch. Do not mix unrelated cleanup.
 - Never use force push unless the user explicitly requests it. Before pushing,
   fetch the remote and confirm the branch, upstream, and outgoing commits.
