@@ -345,7 +345,7 @@ code)` (verifies against the pending secret, only then sets
   that since the adapter retries on its own.
 - **Sanitize user-derived `Storage`/`KeyValueStore` keys** (no `..` or path
   separators) at the application boundary.
-- **Every `Storage` adapter's `put` auto-switches to a multi-request upload
+- **The remote adapters below auto-switch `put` to a multi-request upload
   above 100 MiB, but the protocol and streaming story differ per backend.**
   `S3Storage` buffers a `ReadableStream` fully first (SigV4 needs the whole
   body), then multiparts a `Blob`/`ArrayBuffer` above the threshold.
@@ -354,6 +354,18 @@ code)` (verifies against the pending secret, only then sets
   upload regardless of size. `R2Storage` (`@tknf/oven/cloudflare`)
   multiparts all three body types above the threshold, including a
   `ReadableStream` (chunked on the fly, no full buffering).
+- **For multipart uploads across client requests, use `MultipartUploader`.**
+  `R2Storage` and `InMemoryStorage` implement this optional interface from
+  `@tknf/oven/storage`. Creation returns `{ key, uploadId }`; uploading a part
+  returns `{ partNumber, etag }`. Retain both, use the latest metadata when
+  replacing a part, and pass a nonempty ascending list without duplicates to
+  complete. Complete/abort return void. R2 passes bodies to its binding and
+  propagates errors without automatically aborting; handle expired uploads and
+  races in the caller. Authenticate and validate each request, authorize the
+  key/upload ID, enforce request/total limits, and clean up abandoned uploads.
+  Cookie-authenticated browser uploads need CSRF protection (`X-CSRF-Token`).
+  The in-memory implementation buffers everything and skips provider size/count
+  limits and expiry; use it for unit tests, not production large uploads.
 - **`GcsUrlSigner` signs with a service account's RSA key, not a shared
   secret.** `clientEmail`/`privateKeyPem` come from a service account JSON
   key's `client_email`/`private_key` fields — treat `privateKeyPem` like any

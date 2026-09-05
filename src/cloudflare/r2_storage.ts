@@ -7,6 +7,11 @@
  * callers (domain-specific wrappers) never need to be aware of whether their data is large
  * (https://developers.cloudflare.com/r2/objects/upload-objects/#multipart-upload-details).
  */
+import type {
+	MultipartUpload,
+	MultipartUploader,
+	UploadedPart,
+} from "../storage/multipart_uploader.js";
 import { Storage, type StorageObject } from "../storage/storage.js";
 
 /** Threshold for switching to Multipart Upload; also the size of each part once switched. */
@@ -16,7 +21,7 @@ const MULTIPART_PART_SIZE_BYTES = 100 * 1024 * 1024;
 type PartData = Blob | ArrayBuffer | Uint8Array;
 
 /** `Storage` implementation backed by an R2 bucket. */
-export class R2Storage extends Storage {
+export class R2Storage extends Storage implements MultipartUploader {
 	constructor(private readonly bucket: R2Bucket) {
 		super();
 	}
@@ -50,6 +55,35 @@ export class R2Storage extends Storage {
 	async delete(key: string): Promise<void> {
 		await this.bucket.delete(key);
 	}
+
+	createMultipartUpload = async (key: string, contentType: string): Promise<MultipartUpload> => {
+		const upload = await this.bucket.createMultipartUpload(key, {
+			httpMetadata: { contentType },
+		});
+		return { key: upload.key, uploadId: upload.uploadId };
+	};
+
+	uploadPart = async (
+		upload: MultipartUpload,
+		partNumber: number,
+		body: Blob | ReadableStream | ArrayBuffer,
+	): Promise<UploadedPart> => {
+		const part = await this.bucket
+			.resumeMultipartUpload(upload.key, upload.uploadId)
+			.uploadPart(partNumber, body);
+		return { partNumber: part.partNumber, etag: part.etag };
+	};
+
+	completeMultipartUpload = async (
+		upload: MultipartUpload,
+		parts: UploadedPart[],
+	): Promise<void> => {
+		await this.bucket.resumeMultipartUpload(upload.key, upload.uploadId).complete(parts);
+	};
+
+	abortMultipartUpload = async (upload: MultipartUpload): Promise<void> => {
+		await this.bucket.resumeMultipartUpload(upload.key, upload.uploadId).abort();
+	};
 
 	/**
 	 * Looks ahead only the first two parts of the stream: if a second part does not exist
