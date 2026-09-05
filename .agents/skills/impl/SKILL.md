@@ -21,10 +21,10 @@ or user request as the implementation specification.
    minimal. Generate migrations or fixtures only through project scripts.
 5. When the public surface changes, update the relevant `docs/` guide,
    `skills/oven/SKILL.md` references, and `[Unreleased]` changelog entry together.
-6. Run `vp check` and the smallest tests that exercise the changed behavior. Use
-   `vp run typecheck` when the targeted path does not already provide equivalent
-   type coverage. Leave the unfiltered repository test run for the final candidate
-   unless the risk requires it now.
+6. Run validation in proportion to the changed surface. Use `vp check` for code or
+   tooling changes and the smallest tests that exercise changed behavior. Add
+   `vp run typecheck`, unfiltered `vp test`, or a build only when the affected
+   surface warrants it.
 7. Review the complete diff and report changed paths, commands and results,
    skipped coverage, unresolved observations, and any plan deviation.
 

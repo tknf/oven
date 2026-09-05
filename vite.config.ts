@@ -10,7 +10,7 @@ const ciIgnorePatterns = ["docs/**", ".agents/**", ".codex/**", "skills-lock.jso
 
 export default defineConfig({
 	staged: {
-		"*": "vp check --fix",
+		"*": "vp check",
 	},
 	fmt: {
 		ignorePatterns: ciIgnorePatterns,

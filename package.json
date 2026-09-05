@@ -154,9 +154,7 @@
 		"test-fixtures:generate:mysql": "drizzle-kit generate --config=test/test_support/fixtures/mysql_drizzle.config.ts",
 		"prepare": "vp config",
 		"prepublishOnly": "vp pack",
-		"playground": "vp dev -c playground/vite.config.ts",
-		"workflow:evidence": "node scripts/issue_workflow_evidence.mjs",
-		"workflow:gate": "node scripts/issue_workflow_gate.mjs"
+		"playground": "vp dev -c playground/vite.config.ts"
 	},
 	"dependencies": {
 		"@standard-schema/spec": "^1.1.0",

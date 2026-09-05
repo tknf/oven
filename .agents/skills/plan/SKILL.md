@@ -12,7 +12,7 @@ request the user provided; never infer an issue number.
 
 1. Read `AGENTS.md`, the request or complete issue discussion, relevant guides,
    affected source and tests, and `package.json` scripts.
-2. For a GitHub issue, run `$issue-slop-check` before accepting its premise.
+2. For a GitHub issue, verify its premise against the current code before accepting it.
 3. Reproduce or trace current behavior. Resolve stale line numbers by symbol and
    content. Verify external APIs from installed types or primary documentation.
 4. Decide routine implementation details from repository evidence. Ask the user
@@ -33,10 +33,8 @@ request the user provided; never infer an issue number.
 ## Boundaries
 
 - Do not modify implementation code, tests, generated files, or release state.
-- Before changing a plan file, issue, index, or commit, read
-  `../issue/references/git-safety.md` and pass the applicable gate. Do not stage,
-  commit, push, tag, publish, or edit GitHub state unless the user explicitly
-  included that action in the planning request.
+- Do not stage, commit, push, tag, publish, or edit GitHub state unless the user
+  explicitly included that action in the planning request.
 - Do not expand the design for hypothetical future requirements.
 - Do not read secret-bearing files.
 

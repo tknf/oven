@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- Changed the Codex development workflow to an Astra-root-owned model with on-demand research, review, audit, and bounded bulk-edit agents.
+- Simplified the Codex development workflow around Astra root ownership with only on-demand research, review, and bounded bulk-edit agents.
 
 ## [1.2.0] - 2026-07-11
 

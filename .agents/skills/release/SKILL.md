@@ -7,8 +7,8 @@ description: Prepare or publish an explicitly authorized Semantic Versioning rel
 
 The primary session owns this workflow. A request to prepare a release does not
 authorize creating or pushing a tag. Publishing requires explicit authorization
-for the exact version. Use a fresh `auditor` or `reviewer` when independent release
-inspection is warranted; do not delegate ordinary release preparation.
+for the exact version. Use a fresh `reviewer` when independent release inspection
+is warranted; do not delegate ordinary release preparation.
 
 ## Choose the version
 
@@ -23,8 +23,7 @@ is reasonable. Verify that the version and tag are not already published.
 
 ## Prepare
 
-1. Read `../issue/references/git-safety.md`, then start from a reviewed, clean
-   release branch based on current `origin/main`.
+1. Start from a reviewed, clean release branch based on current `origin/main`.
 2. Review every `[Unreleased]` entry against the commits being released. Move the
    entries to `## [X.Y.Z] - YYYY-MM-DD` and leave a new empty `[Unreleased]`
    section at the top.
