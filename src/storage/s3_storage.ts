@@ -7,7 +7,8 @@
  * a `ReadableStream` passed to `put` is read fully into an `ArrayBuffer`
  * before being sent (streaming upload is not supported). The maximum number
  * of bytes read can be capped via `S3StorageConfig#maxBytes`; set this to
- * avoid OOM under a Worker's memory limit.
+ * stop consuming oversized streams. This bounds accepted bytes, not total
+ * memory: producer chunks and signing/buffering copies still take space.
  *
  * Once the (now fully-buffered) body exceeds `MULTIPART_PART_SIZE_BYTES`
  * (100 MiB, mirroring the R2 adapter's threshold convention), `put`
@@ -33,7 +34,9 @@ export type S3StorageConfig = {
 	 * previous behavior). Because aws4fetch's signing requirement forces
 	 * streams to be read fully into memory, allowing unlimited uploads under
 	 * a Worker's memory limit (128MB) can cause an OOM. When set, throws
-	 * before sending if the fully-read body exceeds this byte count.
+	 * as soon as a stream crosses this byte count and cancels further reading,
+	 * before signing or sending. This is not a hard process-memory limit;
+	 * producer chunks and buffering/signing copies also consume memory.
 	 */
 	maxBytes?: number;
 	/**
@@ -104,7 +107,8 @@ export class S3Storage extends Storage {
 		data: Blob | ReadableStream | ArrayBuffer,
 		contentType: string,
 	): Promise<void> {
-		const body = data instanceof ReadableStream ? await S3Storage.readAll(data) : data;
+		const body =
+			data instanceof ReadableStream ? await S3Storage.readAll(data, this.maxBytes) : data;
 		const size = await S3Storage.byteLength(body);
 		if (this.maxBytes !== undefined && size > this.maxBytes) {
 			throw new Error(`Upload size exceeds the limit (${this.maxBytes} bytes)`);
@@ -284,8 +288,24 @@ export class S3Storage extends Storage {
 		return `${this.endpoint}/${this.bucket}/${encodeS3Key(key)}`;
 	}
 
-	private static async readAll(stream: ReadableStream): Promise<ArrayBuffer> {
-		return new Response(stream).arrayBuffer();
+	private static async readAll(
+		stream: ReadableStream,
+		maxBytes: number | undefined,
+	): Promise<ArrayBuffer> {
+		if (maxBytes === undefined) return new Response(stream).arrayBuffer();
+		let size = 0;
+		const bounded = stream.pipeThrough(
+			new TransformStream<Uint8Array, Uint8Array>({
+				transform: (chunk, controller) => {
+					size += chunk.byteLength;
+					if (size > maxBytes) {
+						throw new Error(`Upload size exceeds the limit (${maxBytes} bytes)`);
+					}
+					controller.enqueue(chunk);
+				},
+			}),
+		);
+		return new Response(bounded).arrayBuffer();
 	}
 
 	/** Returns the byte length of `put`'s body (`Blob | ArrayBuffer`). */

@@ -149,7 +149,11 @@ and the streaming story differ per backend, so pick the adapter with your
 upload shape in mind:
 
 - **`S3Storage`** buffers a `ReadableStream` fully into memory first (SigV4
-  signing needs the whole body up front — see the class doc), then, once the
+  signing needs the whole body up front — see the class doc). Set `maxBytes`
+  to reject and cancel an oversized stream as soon as its running byte count
+  crosses the cap, before signing or sending. The cap bounds accepted bytes,
+  not total memory: producer chunks and buffering/signing copies still consume
+  space. With no cap, streams remain unbounded. Once the
   buffered size is known, switches a `Blob`/`ArrayBuffer` above 100 MiB to
   S3's Multipart Upload API (`CreateMultipartUpload`/`UploadPart`/
   `CompleteMultipartUpload`, aborting via `AbortMultipartUpload` on failure).

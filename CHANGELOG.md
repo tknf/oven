@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Reject and cancel oversized `S3Storage.put()` streams while reading when `maxBytes` is set, before signing or sending the body.
+
 ## [1.3.0] - 2026-09-05
 
 ### Added
