@@ -160,13 +160,71 @@ app.post("/logout", async (c) => {
 });
 ```
 
+### Reset passwords atomically
+
+`PasswordReset` handles token delivery, verification, and password hashing. Its
+required `updatePassword(user, passwordHash, expectedFingerprint)` callback must
+perform a single conditional write and return whether that write succeeded.
+Use the full stored password hash as the fingerprint so the condition can compare
+one column directly. For SQLite or Postgres with Drizzle:
+
+```ts
+import { and, eq } from "drizzle-orm";
+import { PasswordReset } from "@tknf/oven/auth";
+
+const passwordReset = new PasswordReset<Account>({
+  secrets: [env.RESET_TOKEN_SECRET],
+  findByEmail: (email) => accounts.findByEmail(email),
+  provider: (identity) => accounts.get(identity),
+  identityOf: (account) => account.id,
+  fingerprintOf: (account) => account.passwordHash,
+  resetUrl: (token) => `https://example.com/reset?token=${encodeURIComponent(token)}`,
+  deliver: (account, url) => mailer.deliver(new PasswordResetMail(account.email, url)),
+  updatePassword: async (account, passwordHash, expectedFingerprint) => {
+    const updated = await db.update(accountsTable)
+      .set({ passwordHash })
+      .where(and(
+        eq(accountsTable.id, account.id),
+        eq(accountsTable.passwordHash, expectedFingerprint),
+      ))
+      .returning({ id: accountsTable.id });
+    return updated.length === 1;
+  },
+});
+
+await passwordReset.request(email); // same response whether or not the email exists
+const preview = await passwordReset.verify(token); // display/pre-check only, does not consume
+const account = await passwordReset.reset(token, validatedPassword);
+// null for an invalid token, removed account, or a concurrent reset/password change
+```
+
+For MySQL, use the driver's affected-row result instead of `returning()`.
+Keep the comparison and update in the same database statement: a separate read
+followed by an unconditional write, or a lock in one process, cannot prevent
+requests on different instances from both succeeding. `expectedFingerprint` is
+captured during signature verification; do not replace it with a fresh value
+read from the user or the database after hashing. Only a literal `true` from the
+callback makes `reset()` return the verified user; hash/storage errors propagate.
+The returned user is the verified snapshot, not a fresh database read.
+
+**Migration from the old callback (breaking change):** replace
+`updatePassword(user, passwordHash): void | Promise<void>` with the three-argument,
+boolean-returning callback above. There is no unconditional fallback. Do not
+merely append `return true` to the old write: implement the conditional update
+and return its actual outcome. If you keep an existing fingerprint expression,
+the database condition must compare that same expression; changing the fingerprint
+to the full hash invalidates already-issued links, so request new links afterward.
+Every successful update must change the fingerprint, including when resetting to
+the same password: the default `hashPassword` uses a fresh salt, and a custom
+`hash` function must provide the same property. Validate the new password in the
+application before calling `reset`, and retain the handler's CSRF/rate limits.
+
 **Passwordless (magic-link) login.** `PasswordlessLogin` follows the same
 `request`/`verify` shape as `EmailVerification`/`PasswordReset`, plus `login`
 to complete the flow. A login-granting link must be genuinely single-use
 (anyone who observes the URL — mail forwarding, a shared machine, a proxy
-log — must not be able to replay it), which the other two flows either don't
-need or get "for free" from data that already changes; see the class's own
-JSDoc in `src/auth/passwordless_login.ts` for the full comparison. To get
+log — must not be able to replay it). Like `PasswordReset`'s atomic password
+update, this flow needs a conditional change to its fingerprint. To get
 single-use here, wire `fingerprintOf` to a per-user random nonce and
 `rotateNonce` to a compare-and-swap that only replaces it when the stored
 value still matches the nonce `login` just verified against — a blind
@@ -332,11 +390,15 @@ login second step) instead of wiring the primitives above by hand.
   `Guard` reads it with a plain `session.get`, and a flashed value is
   consumed (and disappears) on the very first read — this manifests as
   users being logged out immediately after logging in.
-- **Tokens (`RememberToken`, `ApiToken`, `EmailVerification`,
-  `PasswordReset`, `PasswordlessLogin`) are all generated with
-  `crypto.getRandomValues` high-entropy random bytes** — there is no
-  low-entropy path to opt into, but if you build your own token scheme on
-  top, don't substitute a weaker source.
+- **Reset and verification links use signed `DataToken` payloads.** The
+  fingerprint is included in the signed content, not exposed in the payload.
+  Tokens may be identical for the same identity, fingerprint, and expiry;
+  issuing another link alone does not revoke earlier links. Use strong signing
+  secrets and an atomic fingerprint change when single-use behavior is required.
+- **`PasswordReset.updatePassword` is a required compare-and-swap.** It must
+  change the value returned by `fingerprintOf` and return true only for the
+  successful conditional update. `verify()` alone never consumes a token. See
+  [Reset passwords atomically](#reset-passwords-atomically) for migration details.
 - **`PasswordlessLogin` is only single-use if `rotateNonce` actually rotates
   the same value `fingerprintOf` reads, and only `login` (not `verify`)
   triggers it.** Skip either half of that wiring — or complete the flow by

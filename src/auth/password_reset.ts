@@ -11,6 +11,8 @@
  * By using a fragment of the current password hash etc. as the `DataToken`
  * fingerprint, an already-issued but unused token is automatically invalidated
  * once the reset completes (the password changes) (see `data_token.ts`).
+ * Concurrent use is rejected by the required atomic `updatePassword` callback,
+ * which compares the stored fingerprint with the exact value verified here.
  *
  * `request` does not throw even when the target email does not exist, and
  * returns the same `void` (enumeration prevention). However, since whether
@@ -35,14 +37,32 @@ export type PasswordResetOptions<TUser> = {
 	provider: (identity: string) => TUser | null | undefined | Promise<TUser | null | undefined>;
 	/** Extracts the identifier (the string embedded in the token) from a user. */
 	identityOf: (user: TUser) => string;
-	/** Extracts the fingerprint (e.g. a trailing fragment of the password hash) from a user. */
+	/**
+	 * Extracts the current fingerprint, preferably the full stored password hash.
+	 * A successful `updatePassword` MUST change this value to invalidate old tokens.
+	 */
 	fingerprintOf: (user: TUser) => string;
 	/** Builds the reset URL (the full URL placed in the email) from a token. */
 	resetUrl: (token: string) => string;
 	/** Sends the reset email. Enqueueing to a DeliverMailJob etc. also happens here. */
 	deliver: (user: TUser, url: string) => void | Promise<void>;
-	/** Updates the user with the new password hash. */
-	updatePassword: (user: TUser, passwordHash: string) => void | Promise<void>;
+	/**
+	 * Atomically writes `passwordHash` ONLY IF the stored fingerprint still equals
+	 * `expectedFingerprint`, the exact value used to verify the token. Return true
+	 * only when this call updated the row; return false when it no longer matches
+	 * or the user was removed. A false result makes `reset` return null.
+	 *
+	 * Use one conditional database update (compare-and-swap), not a separate read
+	 * and write or a process-local lock. With a full password-hash fingerprint:
+	 * `UPDATE users SET password_hash = ? WHERE id = ? AND password_hash = ?`.
+	 * Check affected rows (or returned rows) and never return true unconditionally.
+	 * A custom hash function must produce a fresh hash on every successful reset.
+	 */
+	updatePassword: (
+		user: TUser,
+		passwordHash: string,
+		expectedFingerprint: string,
+	) => boolean | Promise<boolean>;
 	/** The password hashing function. Defaults to hashPassword (password.ts). */
 	hash?: (password: string) => Promise<string>;
 };
@@ -84,32 +104,43 @@ export class PasswordReset<TUser> {
 		await this.options.deliver(user, this.options.resetUrl(token));
 	};
 
-	/** Verifies a token and, on success, returns the target user. Returns `null` on failure (malformed, expired, or already invalidated). */
-	readonly verify = async (token: string): Promise<TUser | null> => {
-		let resolvedUser: TUser | null = null;
-
+	/** Captures the exact verified fingerprint before asynchronous hashing or a concurrent update. */
+	private readonly verifyWithFingerprint = async (
+		token: string,
+	): Promise<{ user: TUser; fingerprint: string } | null> => {
+		let resolved: { user: TUser; fingerprint: string } | null = null;
 		const identity = await this.dataToken.verify(token, async (identity) => {
 			const user = await this.options.provider(identity);
 			if (!user) return null;
-
-			resolvedUser = user;
-			return this.options.fingerprintOf(user);
+			const fingerprint = this.options.fingerprintOf(user);
+			resolved = { user, fingerprint };
+			return fingerprint;
 		});
+		return identity === null ? null : resolved;
+	};
 
-		return identity === null ? null : resolvedUser;
+	/** Checks a token for display purposes without consuming it. Use `reset` to change the password. */
+	readonly verify = async (token: string): Promise<TUser | null> => {
+		const result = await this.verifyWithFingerprint(token);
+		return result ? result.user : null;
 	};
 
 	/**
-	 * Verifies a token and, on success, updates the user with the hash of
-	 * `password` and returns them. Returns `null` on failure.
+	 * Verifies a token and atomically updates the password via `updatePassword`.
+	 * Returns the verified user only when the update reports true; returns null
+	 * for an invalid token or a lost update race. Hashing/storage errors propagate.
 	 */
 	readonly reset = async (token: string, password: string): Promise<TUser | null> => {
-		const user = await this.verify(token);
-		if (!user) return null;
+		const result = await this.verifyWithFingerprint(token);
+		if (!result) return null;
 
 		const hash = this.options.hash ?? hashPassword;
 		const passwordHash = await hash(password);
-		await this.options.updatePassword(user, passwordHash);
-		return user;
+		const updated = await this.options.updatePassword(
+			result.user,
+			passwordHash,
+			result.fingerprint,
+		);
+		return updated === true ? result.user : null;
 	};
 }

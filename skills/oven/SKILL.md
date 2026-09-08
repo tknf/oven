@@ -93,6 +93,17 @@ installed package. Before writing a non-trivial example, check the real types in
 that appear in the project's own tests. Hono / Drizzle / Standard Schema APIs:
 confirm against their installed types too.
 
+## Atomic password reset
+
+`PasswordReset.updatePassword(user, passwordHash, expectedFingerprint)` must
+atomically update only when the stored fingerprint matches the exact verified
+value and return `boolean | Promise<boolean>`. Only `true` completes `reset()`;
+a lost race returns `null`. This replaces the old void-returning callback with
+no unsafe fallback. Prefer the full stored hash as `fingerprintOf`, keep the
+comparison and update in one database statement, and change the fingerprint on
+every success. `verify()` is display-only; custom hashing must use fresh salts.
+See the auth guide's migration recipe before upgrading existing callers.
+
 ## Expired-record pruning
 
 `{SQLite,Pg,MySql}PruneExpiredRecordsJob.perform()` attempts every target in order,
