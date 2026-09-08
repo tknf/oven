@@ -3,15 +3,16 @@
  * Injects a dummy fetch and only checks method/URL/headers/404 behavior (no real S3 traffic).
  */
 import { describe, expect, test, vi } from "vite-plus/test";
-import { S3Storage } from "../../src/storage/s3_storage.js";
+import { S3Storage, type S3StorageConfig } from "../../src/storage/s3_storage.js";
 
-const buildStorage = (fetchImpl: typeof fetch) =>
+const buildStorage = (fetchImpl: typeof fetch, options: Partial<S3StorageConfig> = {}) =>
 	new S3Storage({
 		endpoint: "https://dummy-account-id.r2.cloudflarestorage.com",
 		bucket: "dummy-bucket",
 		accessKeyId: "dummy-access-key-id",
 		secretAccessKey: "dummy-secret-access-key",
 		fetch: fetchImpl,
+		...options,
 	});
 
 /**
@@ -198,6 +199,54 @@ describe("S3Storage", () => {
 		await storage.get("key");
 
 		expect(fetch).toHaveBeenCalledOnce();
+	});
+
+	test("maxBytes stops and cancels an oversized stream before fetching", async () => {
+		const fetch = vi.fn<typeof globalThis.fetch>();
+		const cancel = vi.fn();
+		let reads = 0;
+		const stream = new ReadableStream<Uint8Array>({
+			pull: (controller) => {
+				reads += 1;
+				controller.enqueue(new Uint8Array(3));
+				if (reads === 100) controller.close();
+			},
+			cancel,
+		});
+		await expect(
+			buildStorage(fetch, { maxBytes: 4 }).put("key", stream, "text/plain"),
+		).rejects.toThrow("Upload size exceeds the limit (4 bytes)");
+		expect(reads).toBeLessThanOrEqual(3);
+		expect(cancel).toHaveBeenCalledOnce();
+		expect(fetch).not.toHaveBeenCalled();
+	});
+
+	test.each([0, 3, 4])("maxBytes accepts a stream of %i bytes within the cap", async (size) => {
+		const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
+			if (!(input instanceof Request)) throw new Error("expected a Request");
+			expect(new Uint8Array(await input.arrayBuffer())).toEqual(new Uint8Array(size).fill(7));
+			return new Response(null, { status: 200 });
+		});
+		const stream = new ReadableStream<Uint8Array>({
+			start: (controller) => {
+				for (let i = 0; i < size; i += 1) controller.enqueue(new Uint8Array([7]));
+				controller.close();
+			},
+		});
+		await buildStorage(fetch, { maxBytes: 4 }).put("key", stream, "text/plain");
+		expect(fetch).toHaveBeenCalledOnce();
+	});
+
+	test("a stream read error propagates before fetching", async () => {
+		const fetch = vi.fn<typeof globalThis.fetch>();
+		const error = new Error("source failed");
+		const stream = new ReadableStream<Uint8Array>({
+			pull: (controller) => controller.error(error),
+		});
+		await expect(
+			buildStorage(fetch, { maxBytes: 4 }).put("key", stream, "text/plain"),
+		).rejects.toBe(error);
+		expect(fetch).not.toHaveBeenCalled();
 	});
 
 	test("when maxBytes is not set, put works as before without a size check", async () => {

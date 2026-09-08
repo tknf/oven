@@ -348,7 +348,9 @@ code)` (verifies against the pending secret, only then sets
 - **The remote adapters below auto-switch `put` to a multi-request upload
   above 100 MiB, but the protocol and streaming story differ per backend.**
   `S3Storage` buffers a `ReadableStream` fully first (SigV4 needs the whole
-  body), then multiparts a `Blob`/`ArrayBuffer` above the threshold.
+  body); configure `maxBytes` to reject and cancel a stream as soon as its
+  running byte count crosses the cap, before signing or sending. This limits
+  accepted bytes, not producer allocations or buffering/signing copies. It then multiparts a `Blob`/`ArrayBuffer` above the threshold.
   `GoogleCloudStorage` switches a `Blob`/`ArrayBuffer` above the threshold to
   a resumable upload, but a `ReadableStream` always stays on the simple
   upload regardless of size. `R2Storage` (`@tknf/oven/cloudflare`)

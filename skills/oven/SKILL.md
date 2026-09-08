@@ -42,6 +42,13 @@ For larger uploads, send `X-CSRF-Token` or explicitly increase the form cap;
 putting the hidden token first is insufficient. Keep a separate request size
 limit for handlers that parse uploads, including requests with header tokens.
 
+## S3 upload size limits
+
+Set `S3Storage`'s `maxBytes` when accepting untrusted streams. It rejects and
+cancels reading when the running byte count crosses the cap, before signing
+or sending. Accepted streams are still fully buffered; the cap is not a hard
+process-memory limit because producer chunks and copies also occupy memory.
+
 ## Client-driven multipart uploads
 
 Use `MultipartUploader` from `@tknf/oven/storage` for uploads spanning requests:
