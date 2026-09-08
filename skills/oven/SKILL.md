@@ -49,6 +49,13 @@ cancels reading when the running byte count crosses the cap, before signing
 or sending. Accepted streams are still fully buffered; the cap is not a hard
 process-memory limit because producer chunks and copies also occupy memory.
 
+## S3 automatic multipart cleanup
+
+`S3Storage.put()` escapes ETags in completion XML. If best-effort abort fails
+(HTTP other than 404, or transport error), it warns without request details and
+rethrows the original upload error. Monitor warnings and configure bucket cleanup.
+The UploadId reader supports the canonical unprefixed, attribute-free element.
+
 ## Client-driven multipart uploads
 
 Use `MultipartUploader` from `@tknf/oven/storage` for uploads spanning requests:

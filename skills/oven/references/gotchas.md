@@ -356,6 +356,11 @@ code)` (verifies against the pending secret, only then sets
   upload regardless of size. `R2Storage` (`@tknf/oven/cloudflare`)
   multiparts all three body types above the threshold, including a
   `ReadableStream` (chunked on the fly, no full buffering).
+- **S3 automatic multipart cleanup is best-effort.** Failed abort requests
+  (HTTP other than 404, or transport errors) warn without sensitive request
+  details, preserving the original upload error. Monitor warnings and configure
+  incomplete-upload lifecycle cleanup. Completion XML escapes ETags; UploadId
+  parsing expects the canonical unprefixed, attribute-free element.
 - **For multipart uploads across client requests, use `MultipartUploader`.**
   `R2Storage` and `InMemoryStorage` implement this optional interface from
   `@tknf/oven/storage`. Creation returns `{ key, uploadId }`; uploading a part

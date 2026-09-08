@@ -34,7 +34,10 @@ const LARGE_BODY = new ArrayBuffer(MULTIPART_PART_SIZE_BYTES + 1024);
  * `getCompleteBody`) the test asserts against after calling `put`.
  */
 const buildMultipartFetch = (
-	overrides: { uploadPartResponse?: (partNumber: number) => Response } = {},
+	overrides: {
+		uploadPartResponse?: (partNumber: number) => Response;
+		abortResponse?: () => Response;
+	} = {},
 ) => {
 	const uploadId = "upload-123";
 	const calls: string[] = [];
@@ -62,6 +65,7 @@ const buildMultipartFetch = (
 		}
 		if (input.method === "DELETE" && url.searchParams.has("uploadId")) {
 			calls.push("abort");
+			if (overrides.abortResponse) return overrides.abortResponse();
 			return new Response(null, { status: 204 });
 		}
 		if (input.method === "POST" && url.searchParams.has("uploadId")) {
@@ -286,7 +290,7 @@ describe("S3Storage", () => {
 		expect(calls).toEqual(["create", "upload-part-1", "upload-part-2", "complete"]);
 		expect(partSizes).toEqual([MULTIPART_PART_SIZE_BYTES, 1024]);
 		expect(getCompleteBody()).toBe(
-			'<?xml version="1.0" encoding="UTF-8"?><CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>"etag-1"</ETag></Part><Part><PartNumber>2</PartNumber><ETag>"etag-2"</ETag></Part></CompleteMultipartUpload>',
+			'<?xml version="1.0" encoding="UTF-8"?><CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>&quot;etag-1&quot;</ETag></Part><Part><PartNumber>2</PartNumber><ETag>&quot;etag-2&quot;</ETag></Part></CompleteMultipartUpload>',
 		);
 	});
 
@@ -300,6 +304,59 @@ describe("S3Storage", () => {
 			storage.put("media/big.bin", LARGE_BODY, "application/octet-stream"),
 		).rejects.toThrow(/S3 UploadPart failed/);
 		expect(calls).toEqual(["create", "upload-part-1", "abort"]);
+	});
+
+	test("completion escapes XML-special characters in opaque ETags", async () => {
+		const { fetch, getCompleteBody } = buildMultipartFetch({
+			uploadPartResponse: () =>
+				new Response(null, {
+					status: 200,
+					headers: { ETag: `"tag<&amp;>'"` },
+				}),
+		});
+		await buildStorage(fetch).put("key", LARGE_BODY, "application/octet-stream");
+		expect(getCompleteBody()).toContain("<ETag>&quot;tag&lt;&amp;amp;&gt;&apos;&quot;</ETag>");
+	});
+
+	test.each(["http", "network"])(
+		"a failed %s abort warns and preserves the upload error",
+		async (failure) => {
+			const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+			try {
+				const { fetch, calls } = buildMultipartFetch({
+					uploadPartResponse: () => new Response("original failure", { status: 500 }),
+					abortResponse: () => {
+						if (failure === "network") throw new Error("sensitive request details");
+						return new Response("sensitive response details", { status: 403 });
+					},
+				});
+				await expect(
+					buildStorage(fetch).put("private/key", LARGE_BODY, "application/octet-stream"),
+				).rejects.toThrow("S3 UploadPart failed (500): original failure");
+				expect(calls).toEqual(["create", "upload-part-1", "abort"]);
+				expect(warn).toHaveBeenCalledExactlyOnceWith(
+					"S3 multipart cleanup failed; an incomplete upload may remain",
+				);
+			} finally {
+				warn.mockRestore();
+			}
+		},
+	);
+
+	test.each([204, 404])("an abort returning %i needs no cleanup warning", async (status) => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			const { fetch } = buildMultipartFetch({
+				uploadPartResponse: () => new Response("original failure", { status: 500 }),
+				abortResponse: () => new Response(null, { status }),
+			});
+			await expect(
+				buildStorage(fetch).put("key", LARGE_BODY, "application/octet-stream"),
+			).rejects.toThrow("S3 UploadPart failed");
+			expect(warn).not.toHaveBeenCalled();
+		} finally {
+			warn.mockRestore();
+		}
 	});
 
 	test("a part response missing an ETag header aborts and throws a clear error", async () => {
