@@ -681,6 +681,20 @@ app.route("/admin", new AdminPanel({ authorize: (c) => accountGuard.use(c).role 
 Without `languageDetector` applied (or for an unsupported/undetected
 language), the panel falls back to English.
 
+### Internal routing conventions
+
+The panel uses `NamedRoutes` for its links, form actions, and redirects, sharing
+route templates with registration. `basePath` must match the mount path, for
+example `app.route("/staff", new AdminPanel({ ...options, basePath: "/staff" }))`.
+Resource keys remain literal mount segments; record IDs are encoded as URL
+parameters, including in edit forms and their validation responses.
+
+Resource index, new, create, show, and edit routes use a nested `RouteHandler`
+and `resources()`. CSV export is registered before the member route. Updates
+remain native `POST /resources/:key/:id`; deletion keeps its GET confirmation
+and `POST /resources/:key/:id/delete`. The panel's authorization, CSRF,
+read-only resource rules, and bulk-action handling apply to the mounted routes.
+
 ## Gotchas / Security notes
 
 - **The Content-Security-Policy header is on by default and needs no

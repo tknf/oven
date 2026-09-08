@@ -17,6 +17,7 @@
  * `POST /accounts/users/:id/password`), plus the delete link into the
  * confirmation screen (`AdminAccountsUsersDeleteView`).
  */
+import { adminPathFor } from "./admin_routes.js";
 import { CSRF_FORM_FIELD_NAME } from "../security/csrf.js";
 import type { AdminT } from "./admin_catalog.js";
 
@@ -118,7 +119,7 @@ const ChangePasswordForm = ({
 				{passwordError}
 			</p>
 		)}
-		<form method="post" action={`${basePath}/accounts/users/${encodeURIComponent(id)}/password`}>
+		<form method="post" action={adminPathFor(basePath, "userPassword", { id })}>
 			<CsrfHiddenInput csrfToken={csrfToken} />
 			<div class="form-row">
 				<label for="id_new_password">{t("accounts.users.field.newPassword")}</label>
@@ -152,7 +153,7 @@ export const AdminAccountsUsersFormView = ({
 	csrfToken,
 	t,
 }: AdminAccountsUsersFormViewProps) => {
-	const listHref = `${basePath}/accounts/users`;
+	const listHref = adminPathFor(basePath, "users");
 
 	return (
 		<>
@@ -231,7 +232,7 @@ export const AdminAccountsUsersFormView = ({
 					/>
 					<a
 						class="deletelink"
-						href={`${listHref}/${encodeURIComponent(id)}/delete`}
+						href={adminPathFor(basePath, "userDelete", { id })}
 						aria-label={t("a11y.deleteItem", { name: values.username })}
 					>
 						{t("action.delete")}

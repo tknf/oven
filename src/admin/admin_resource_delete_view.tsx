@@ -10,6 +10,7 @@
  * familiar admin-console's delete-confirmation contract) is submitted. There is no
  * JS; the "No, take me back" control is a plain link back to the resource's list.
  */
+import { adminResourcePathFor } from "./admin_routes.js";
 import type { AdminT } from "./admin_catalog.js";
 import { CSRF_FORM_FIELD_NAME } from "../security/csrf.js";
 
@@ -52,8 +53,8 @@ export const AdminResourceDeleteView = ({
 	t,
 }: AdminResourceDeleteViewProps) => {
 	const id = stringify(row[primaryKey]);
-	const listHref = `${basePath}/resources/${resourceKey}`;
-	const deleteHref = `${listHref}/${encodeURIComponent(id)}/delete`;
+	const listHref = adminResourcePathFor(basePath, resourceKey, "index");
+	const deleteHref = adminResourcePathFor(basePath, resourceKey, "delete", { id });
 
 	return (
 		<>

@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Encode admin resource IDs consistently in edit form actions and validation responses, including IDs containing reserved URL characters.
+
 - Reject and cancel oversized `S3Storage.put()` streams while reading when `maxBytes` is set, before signing or sending the body.
 - Escape S3 multipart completion ETags as XML text and warn on failed best-effort aborts while preserving the original upload error.
 - Continue expired-record pruning after individual target failures in every database dialect, then report the original failures in an `AggregateError`.

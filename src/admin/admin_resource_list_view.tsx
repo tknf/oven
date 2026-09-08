@@ -31,6 +31,7 @@
  * link that changes sort or a filter resets back to page 0 (`buildListUrl`'s
  * `page` argument); only page links preserve the current page.
  */
+import { adminResourcePathFor } from "./admin_routes.js";
 import type { AdminFilter } from "./admin_resource.js";
 import type { AdminT } from "./admin_catalog.js";
 import { stringifyCell } from "./stringify_cell.js";
@@ -101,7 +102,7 @@ const buildListUrl = (
 	if (page > 0) params.set("p", String(page));
 
 	const qs = params.toString();
-	const base = `${basePath}/resources/${resourceKey}`;
+	const base = adminResourcePathFor(basePath, resourceKey, "index");
 	return qs ? `${base}?${qs}` : base;
 };
 
@@ -216,7 +217,7 @@ const SearchForm = ({
 	t: AdminT;
 }) => (
 	<div id="toolbar">
-		<form role="search" method="get" action={`${basePath}/resources/${resourceKey}`}>
+		<form role="search" method="get" action={adminResourcePathFor(basePath, resourceKey, "index")}>
 			<label class="visually-hidden" for="admin-search">
 				{t("action.search")}
 			</label>
@@ -339,7 +340,7 @@ const ResourceTable = ({
 				<tbody>
 					{rows.map((row) => {
 						const id = stringifyCell(row[primaryKey]);
-						const detailHref = `${basePath}/resources/${resourceKey}/${encodeURIComponent(id)}`;
+						const detailHref = adminResourcePathFor(basePath, resourceKey, "show", { id });
 						const name = rowDisplayName(row, columns, id);
 						return (
 							<tr>
@@ -366,14 +367,17 @@ const ResourceTable = ({
 										{t("action.detail")}
 									</a>
 									{canUpdate && (
-										<a href={`${detailHref}/edit`} aria-label={t("a11y.editItem", { name })}>
+										<a
+											href={adminResourcePathFor(basePath, resourceKey, "edit", { id })}
+											aria-label={t("a11y.editItem", { name })}
+										>
 											{t("action.edit")}
 										</a>
 									)}
 									{canDelete && (
 										<a
 											class="deletelink"
-											href={`${detailHref}/delete`}
+											href={adminResourcePathFor(basePath, resourceKey, "delete", { id })}
 											aria-label={t("a11y.deleteItem", { name })}
 										>
 											{t("action.delete")}
@@ -493,7 +497,7 @@ export const AdminResourceListView = ({
 	csrfToken,
 	t,
 }: AdminResourceListViewProps) => {
-	const listUrl = `${basePath}/resources/${resourceKey}`;
+	const listUrl = adminResourcePathFor(basePath, resourceKey, "index");
 	const state: ListState = { query, activeFilters, sort };
 	const table = (
 		<ResourceTable
@@ -514,7 +518,11 @@ export const AdminResourceListView = ({
 		<>
 			<div class="object-tools">
 				{canCreate && (
-					<a class="addlink" href={`${listUrl}/new`} aria-label={t("a11y.addItem", { label })}>
+					<a
+						class="addlink"
+						href={adminResourcePathFor(basePath, resourceKey, "new")}
+						aria-label={t("a11y.addItem", { label })}
+					>
 						{t("action.create")}
 					</a>
 				)}

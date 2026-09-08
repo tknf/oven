@@ -9,6 +9,7 @@
  * in each form. When not injected, it stays `null` and no hidden input is emitted, as
  * before (backward compatible).
  */
+import { adminPathFor } from "./admin_routes.js";
 import { CSRF_FORM_FIELD_NAME } from "../security/csrf.js";
 import type { AdminT } from "./admin_catalog.js";
 import type { AdminJobRow } from "./admin_types.js";
@@ -67,10 +68,7 @@ const PendingJobsTable = ({
 							<td>{formatTime(row.runAt)}</td>
 							<td>{row.attempts}</td>
 							<td>
-								<form
-									method="post"
-									action={`${basePath}/jobs/${encodeURIComponent(row.id)}/delete`}
-								>
+								<form method="post" action={adminPathFor(basePath, "jobDelete", { id: row.id })}>
 									<CsrfHiddenInput csrfToken={csrfToken} />
 									<button type="submit" aria-label={t("a11y.deleteItem", { name: row.id })}>
 										{t("action.delete")}
@@ -122,16 +120,13 @@ const FailedJobsTable = ({
 							<td>{formatTime(row.failedAt)}</td>
 							<td>{row.lastError ?? "-"}</td>
 							<td>
-								<form method="post" action={`${basePath}/jobs/${encodeURIComponent(row.id)}/retry`}>
+								<form method="post" action={adminPathFor(basePath, "jobRetry", { id: row.id })}>
 									<CsrfHiddenInput csrfToken={csrfToken} />
 									<button type="submit" aria-label={`${t("action.retry")} ${row.id}`}>
 										{t("action.retry")}
 									</button>
 								</form>
-								<form
-									method="post"
-									action={`${basePath}/jobs/${encodeURIComponent(row.id)}/delete`}
-								>
+								<form method="post" action={adminPathFor(basePath, "jobDelete", { id: row.id })}>
 									<CsrfHiddenInput csrfToken={csrfToken} />
 									<button type="submit" aria-label={t("a11y.deleteItem", { name: row.id })}>
 										{t("action.delete")}

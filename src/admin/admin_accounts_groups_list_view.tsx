@@ -7,6 +7,7 @@
  * (`AdminAccountsGroups#listGroups` always returns every group, and the
  * expected group count is small), so it renders the full set in one table.
  */
+import { adminPathFor } from "./admin_routes.js";
 import { parseStoredPermissions } from "./admin_permissions.js";
 import type { AdminT } from "./admin_catalog.js";
 import type { AdminAccountsGroupRow } from "./admin_types.js";
@@ -45,7 +46,7 @@ const GroupsTable = ({
 				</thead>
 				<tbody>
 					{rows.map((row) => {
-						const editHref = `${basePath}/accounts/groups/${encodeURIComponent(row.id)}/edit`;
+						const editHref = adminPathFor(basePath, "groupEdit", { id: row.id });
 						return (
 							<tr>
 								<th scope="row">{row.name}</th>
@@ -56,7 +57,7 @@ const GroupsTable = ({
 									</a>
 									<a
 										class="deletelink"
-										href={`${basePath}/accounts/groups/${encodeURIComponent(row.id)}/delete`}
+										href={adminPathFor(basePath, "groupDelete", { id: row.id })}
 										aria-label={t("a11y.deleteItem", { name: row.name })}
 									>
 										{t("action.delete")}
@@ -84,7 +85,7 @@ export const AdminAccountsGroupsListView = ({
 			<a href={usersHref}>{t("accounts.groups.usersLink")}</a>
 			<a
 				class="addlink"
-				href={`${basePath}/accounts/groups/new`}
+				href={adminPathFor(basePath, "groupNew")}
 				aria-label={t("a11y.addItem", { label: t("accounts.groups.singular") })}
 			>
 				{t("action.create")}

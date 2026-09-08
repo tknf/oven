@@ -309,6 +309,51 @@ describe("AdminPanel resource CRUD", () => {
 		ctx.client.close();
 	});
 
+	test("custom mounts preserve encoded IDs through edit, validation and POST redirects", async () => {
+		const id = "pub/日本語 ?#%";
+		await insertPublisher(ctx.db, {
+			id,
+			name: "Encoded publisher",
+			contactEmail: "test@example.com",
+		});
+		const resource = new PublisherResource(new PublisherModel(ctx.db));
+		const basePath = "/staff/control";
+		const collection = `${basePath}/resources/publishers`;
+		const member = `${collection}/${encodeURIComponent(id)}`;
+		const app = new Hono();
+		app.route(basePath, new AdminPanel({ basePath, authorize: () => true, resources: [resource] }));
+
+		const list = await app.request(collection);
+		expect(list.status).toBe(200);
+		expect(await list.text()).toContain(`href="${member}/edit"`);
+		const edit = await app.request(`${member}/edit`);
+		expect(edit.status).toBe(200);
+		expect(await edit.text()).toContain(`action="${member}"`);
+		const invalid = await app.request(member, {
+			method: "POST",
+			body: new URLSearchParams({ name: "", contactEmail: "test@example.com" }),
+		});
+		expect(invalid.status).toBe(422);
+		expect(await invalid.text()).toContain(`action="${member}"`);
+		const update = await app.request(member, {
+			method: "POST",
+			body: new URLSearchParams({
+				name: "Updated",
+				contactEmail: "test@example.com",
+				_continue: "1",
+			}),
+		});
+		expect(update.status).toBe(303);
+		expect(update.headers.get("Location")).toBe(`${member}/edit`);
+		expect((await resource.model.retrieve(id))?.name).toBe("Updated");
+		const show = await app.request(member);
+		expect(show.status).toBe(200);
+		expect(await show.text()).toContain(`href="${member}/delete"`);
+		const confirmation = await app.request(`${member}/delete`);
+		expect(confirmation.status).toBe(200);
+		expect(await confirmation.text()).toContain(`action="${member}/delete"`);
+	});
+
 	test("list: includes the name of seeded rows", async () => {
 		await insertPublisher(ctx.db, { id: "pub-1", name: "TKNF Books" });
 		await insertPublisher(ctx.db, { id: "pub-2", name: "Another Press" });

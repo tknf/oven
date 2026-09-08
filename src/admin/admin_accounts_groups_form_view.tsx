@@ -10,6 +10,7 @@
  * `AdminAccountsCheckboxOption` shape and `<fieldset>`/`<legend>` markup as the
  * users form for visual and accessibility consistency.
  */
+import { adminPathFor } from "./admin_routes.js";
 import { CSRF_FORM_FIELD_NAME } from "../security/csrf.js";
 import { CheckboxGroup } from "./admin_accounts_users_form_view.js";
 import type { AdminAccountsCheckboxOption } from "./admin_accounts_users_form_view.js";
@@ -59,7 +60,7 @@ export const AdminAccountsGroupsFormView = ({
 	csrfToken,
 	t,
 }: AdminAccountsGroupsFormViewProps) => {
-	const listHref = `${basePath}/accounts/groups`;
+	const listHref = adminPathFor(basePath, "groups");
 
 	return (
 		<>
@@ -94,7 +95,7 @@ export const AdminAccountsGroupsFormView = ({
 			{mode === "edit" && id !== undefined && (
 				<a
 					class="deletelink"
-					href={`${listHref}/${encodeURIComponent(id)}/delete`}
+					href={adminPathFor(basePath, "groupDelete", { id })}
 					aria-label={t("a11y.deleteItem", { name: values.name })}
 				>
 					{t("action.delete")}

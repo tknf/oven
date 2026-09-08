@@ -20,6 +20,7 @@
  * This step (D-i1) only declares and renders the markup; the parent's
  * create/update handlers do not yet read or persist inline rows.
  */
+import { adminResourcePathFor } from "./admin_routes.js";
 import type { FormBinding } from "../form/form.js";
 import { FormField, FormView } from "../form/form_field.js";
 import type { AdminT } from "./admin_catalog.js";
@@ -78,7 +79,7 @@ const DeleteLink = ({
 }) => (
 	<a
 		class="deletelink"
-		href={`${basePath}/resources/${resourceKey}/${encodeURIComponent(id)}/delete`}
+		href={adminResourcePathFor(basePath, resourceKey, "delete", { id })}
 		aria-label={t("a11y.deleteItem", { name: label })}
 	>
 		{t("action.delete")}
@@ -174,6 +175,6 @@ export const AdminResourceFormView = ({
 		{mode === "edit" && id !== undefined && (
 			<DeleteLink basePath={basePath} resourceKey={resourceKey} id={id} label={label} t={t} />
 		)}
-		<a href={`${basePath}/resources/${resourceKey}`}>{t("action.backToList")}</a>
+		<a href={adminResourcePathFor(basePath, resourceKey, "index")}>{t("action.backToList")}</a>
 	</>
 );

@@ -215,6 +215,10 @@ verification. Do not reset or consume after success. This sequence is
 non-atomic, can observe stale data with an eventually-consistent store, and has
 a wider race window than consuming before every attempt.
 
+AdminPanel uses `NamedRoutes` for URL generation and `resources()` for compatible
+CRUD routes; its native POST update/delete routes remain explicit. Resource IDs
+are encoded once in links and form actions; keep `basePath` equal to the mount.
+
 ## Read detailed references as needed
 
 Load only the reference relevant to the work:

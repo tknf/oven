@@ -8,6 +8,7 @@
  * `<form method="post">` submission happens.
  */
 
+import { adminResourcePathFor } from "./admin_routes.js";
 import type { AdminT } from "./admin_catalog.js";
 
 /**
@@ -52,7 +53,6 @@ export const AdminResourceShowView = ({
 	t,
 }: AdminResourceShowViewProps) => {
 	const id = stringify(row[primaryKey]);
-	const detailHref = `${basePath}/resources/${resourceKey}/${encodeURIComponent(id)}`;
 
 	return (
 		<>
@@ -70,7 +70,7 @@ export const AdminResourceShowView = ({
 			{canUpdate && (
 				<a
 					class="button"
-					href={`${detailHref}/edit`}
+					href={adminResourcePathFor(basePath, resourceKey, "edit", { id })}
 					aria-label={t("a11y.editItem", { name: label })}
 				>
 					{t("action.edit")}
@@ -79,13 +79,13 @@ export const AdminResourceShowView = ({
 			{canDelete && (
 				<a
 					class="deletelink"
-					href={`${detailHref}/delete`}
+					href={adminResourcePathFor(basePath, resourceKey, "delete", { id })}
 					aria-label={t("a11y.deleteItem", { name: label })}
 				>
 					{t("action.delete")}
 				</a>
 			)}
-			<a href={`${basePath}/resources/${resourceKey}`}>{t("action.backToList")}</a>
+			<a href={adminResourcePathFor(basePath, resourceKey, "index")}>{t("action.backToList")}</a>
 		</>
 	);
 };
