@@ -22,6 +22,15 @@
   fallback to routing-order exclusion (mounting a public handler before
   `require`) — `except: ["/admin/login"]` skips session/provider resolution
   entirely for that path (no glob/prefix matching, so keep the list minimal).
+- **Password reset requires an atomic conditional update.**
+  `PasswordReset.updatePassword(user, passwordHash, expectedFingerprint)` returns
+  true only if the stored fingerprint still matches and the password changed.
+  Compare against the supplied verification-time fingerprint, never a fresh
+  read after hashing. `reset()` returns null on a lost race; `verify()` does not
+  consume. Migrate old void-returning callbacks to this required contract, with
+  no blind-write fallback. Prefer a full password-hash fingerprint and ensure
+  custom hashing changes it even for the same password. Changing an existing
+  fingerprint expression invalidates outstanding links; reissue them.
 - **`secrets` must be high-entropy random ~32 bytes** (`Encrypter`, `UrlSigner`,
   `CookieSessionStorage`, ...). Weak/short secrets only emit a `console.warn`,
   never throw — do not rely on the runtime to catch it.

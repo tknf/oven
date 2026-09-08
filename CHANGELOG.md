@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** `PasswordResetOptions.updatePassword` now receives the exact verified fingerprint as a third argument and must atomically update only while it matches, returning a boolean. `reset()` returns `null` when that conditional update loses a race. Replace old unconditional, void-returning callbacks with the conditional update described in the authentication guide before upgrading.
+
 ### Fixed
 
 - Reject and cancel oversized `S3Storage.put()` streams while reading when `maxBytes` is set, before signing or sending the body.
