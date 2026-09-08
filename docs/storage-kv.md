@@ -153,6 +153,13 @@ upload shape in mind:
   buffered size is known, switches a `Blob`/`ArrayBuffer` above 100 MiB to
   S3's Multipart Upload API (`CreateMultipartUpload`/`UploadPart`/
   `CompleteMultipartUpload`, aborting via `AbortMultipartUpload` on failure).
+  Completion XML escapes opaque ETags. Cleanup is best-effort: HTTP failures
+  other than 404 and transport failures emit a `console.warn` without keys,
+  upload IDs, or response bodies; the original upload error still propagates.
+  Monitor these warnings and configure incomplete-upload lifecycle cleanup on
+  the bucket. The UploadId reader expects the canonical `<UploadId>value</UploadId>`
+  response form; arbitrary XML extensions such as attributes or namespace prefixes
+  on that element are not supported.
 - **`GoogleCloudStorage`** switches a `Blob`/`ArrayBuffer` above 100 MiB to
   GCS's resumable upload protocol (initiate, then PUT fixed-size chunks to
   the returned session URI, canceling the session on failure — mirroring

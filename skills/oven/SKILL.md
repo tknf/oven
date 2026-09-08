@@ -42,6 +42,13 @@ For larger uploads, send `X-CSRF-Token` or explicitly increase the form cap;
 putting the hidden token first is insufficient. Keep a separate request size
 limit for handlers that parse uploads, including requests with header tokens.
 
+## S3 automatic multipart cleanup
+
+`S3Storage.put()` escapes ETags in completion XML. If best-effort abort fails
+(HTTP other than 404, or transport error), it warns without request details and
+rethrows the original upload error. Monitor warnings and configure bucket cleanup.
+The UploadId reader supports the canonical unprefixed, attribute-free element.
+
 ## Client-driven multipart uploads
 
 Use `MultipartUploader` from `@tknf/oven/storage` for uploads spanning requests:

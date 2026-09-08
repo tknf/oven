@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Escape S3 multipart completion ETags as XML text and warn on failed best-effort aborts while preserving the original upload error.
+
 ## [1.3.0] - 2026-09-05
 
 ### Added

@@ -156,7 +156,7 @@ export class S3Storage extends Storage {
 	 * Multipart Upload API: create, then upload fixed-size parts in order,
 	 * then complete. Aborts the upload and rethrows on any failure after
 	 * creation (the abort itself is best-effort; its own failure never masks
-	 * the original error).
+	 * the original error; cleanup failures emit a warning without request details).
 	 */
 	private async putMultipart(
 		key: string,
@@ -179,7 +179,7 @@ export class S3Storage extends Storage {
 			try {
 				await this.abortMultipartUpload(key, uploadId);
 			} catch {
-				// Best-effort cleanup; the original error below always wins.
+				console.warn("S3 multipart cleanup failed; an incomplete upload may remain");
 			}
 			throw error;
 		}
@@ -259,7 +259,10 @@ export class S3Storage extends Storage {
 		url.searchParams.set("uploadId", uploadId);
 
 		const request = await this.client.sign(url, { method: "DELETE" });
-		await this.fetch(request, this.timeoutInit());
+		const response = await this.fetch(request, this.timeoutInit());
+		if (!response.ok && response.status !== 404) {
+			throw new Error(`S3 AbortMultipartUpload failed (${response.status})`);
+		}
 	}
 
 	/** Builds the `<CompleteMultipartUpload>` XML body, preserving `parts`' order (ascending `partNumber`, as required by S3). */
@@ -267,10 +270,20 @@ export class S3Storage extends Storage {
 		const items = parts
 			.map(
 				(part) =>
-					`<Part><PartNumber>${part.partNumber}</PartNumber><ETag>${part.eTag}</ETag></Part>`,
+					`<Part><PartNumber>${part.partNumber}</PartNumber><ETag>${S3Storage.escapeXml(part.eTag)}</ETag></Part>`,
 			)
 			.join("");
 		return `<?xml version="1.0" encoding="UTF-8"?><CompleteMultipartUpload>${items}</CompleteMultipartUpload>`;
+	}
+
+	/** Escapes XML text without interpreting entity-like content in an opaque ETag. */
+	private static escapeXml(value: string): string {
+		return value
+			.replaceAll("&", "&amp;")
+			.replaceAll("<", "&lt;")
+			.replaceAll(">", "&gt;")
+			.replaceAll('"', "&quot;")
+			.replaceAll("'", "&apos;");
 	}
 
 	/** Returns a `RequestInit` containing `signal` only when `timeoutMs` is set (merged into the signed `Request` via the second argument). */
