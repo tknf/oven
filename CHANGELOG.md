@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Continue expired-record pruning after individual target failures in every database dialect, then report the original failures in an `AggregateError`.
+
 ## [1.3.0] - 2026-09-05
 
 ### Added

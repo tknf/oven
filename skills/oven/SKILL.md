@@ -33,6 +33,12 @@ installed package. Before writing a non-trivial example, check the real types in
 that appear in the project's own tests. Hono / Drizzle / Standard Schema APIs:
 confirm against their installed types too.
 
+## Expired-record pruning
+
+`{SQLite,Pg,MySql}PruneExpiredRecordsJob.perform()` attempts every target in order,
+then throws an `AggregateError` containing the original failures if any occurred.
+Successful deletions remain applied; report failures and retry normally.
+
 ## CSRF form body limit
 
 `Csrf` accepts `maxFormBodyBytes` (positive safe integer, default 65,536).
