@@ -39,16 +39,16 @@ Drizzle schemas/queries, and Standard Schema validators are official parts of
 oven's composition model. Use them directly at those boundaries without an
 exception justification. The priority rule does not ban them.
 
-| Responsibility | Start with oven                                                                              | Intended extension                                                                                                |
-| -------------- | -------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| Routing        | `RouteHandler`, `NamedRoutes`; `resources()` for matching CRUD actions                       | `register()`, `middleware()`, `layout()`; mount with Hono `app.route()`                                           |
-| Forms          | `Form`, `FormBinding`, `FormView`                                                            | `schema()` with Standard Schema, `fields()`, `validate()`/`bind()`; render bound fields with Hono/JSX when needed |
-| Persistence    | `SQLiteModel` / `PgModel` / `MySqlModel`                                                     | `table` / `primaryKey` getters; domain methods using the protected Drizzle `db`                                   |
-| Views/layouts  | `View`, `LayoutComponent` / `LayoutProps`, snippet helpers                                   | Representation methods and `formats()`; compose Hono/JSX through `RouteHandler.layout()` and `c.render()`         |
-| Authentication | `Guard`, `Policy`, `SessionAccessor`; built-in flows when appropriate                        | Identity/provider/session callbacks and policy methods; admin operators use admin account services                |
-| CSRF           | `Csrf` with token issuance and verification middleware                                       | Inject the session; wire `verify`, retrieve `csrfToken(c)`, and pass it to `FormView` or `X-CSRF-Token`           |
-| Audit          | `SQLiteAuditLog` / `PgAuditLog` / `MySqlAuditLog`                                            | Explicit `record()` calls, or `AdminPanel` audit wiring; choose safe domain action/changes data                   |
-| Testing        | `createTestDb`, `defineFactory`, `actingAs`, `TestJobQueue`, `TestMailer`, `TestBroadcaster` | Exercise the Hono app with `app.request()`; use runtime integration tests for backend behavior                    |
+| Responsibility | Start with oven                                                                              | Intended extension                                                                                                           |
+| -------------- | -------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| Routing        | `RouteHandler`, `NamedRoutes`; `resources()` for matching CRUD actions                       | `register()`, `middleware()`, `layout()`; mount with Hono `app.route()`                                                      |
+| Forms          | `Form`, `FormBinding`, `FormView`                                                            | `schema()` with Standard Schema, `fields()`, `validate()`/`bind()`; render bound fields with Hono/JSX when needed            |
+| Persistence    | `SQLiteModel` / `PgModel` / `MySqlModel`                                                     | `table` / `primaryKey` getters; domain methods using the protected Drizzle `db`                                              |
+| Views/layouts  | `View`, `LayoutComponent` / `LayoutProps`, snippet helpers                                   | Representation methods and `formats()`; compose Hono/JSX through `RouteHandler.layout()` and `c.render()`                    |
+| Authentication | `Guard`, `Policy`, `SessionAccessor`; built-in flows when appropriate                        | Request `authenticate` or identity/provider/session callbacks and policy methods; admin operators use admin account services |
+| CSRF           | `Csrf` with token issuance and verification middleware                                       | Inject the session; wire `verify`, retrieve `csrfToken(c)`, and pass it to `FormView` or `X-CSRF-Token`                      |
+| Audit          | `SQLiteAuditLog` / `PgAuditLog` / `MySqlAuditLog`                                            | Explicit `record()` calls, or `AdminPanel` audit wiring; choose safe domain action/changes data                              |
+| Testing        | `createTestDb`, `defineFactory`, `actingAs`, `TestJobQueue`, `TestMailer`, `TestBroadcaster` | Exercise the Hono app with `app.request()`; use runtime integration tests for backend behavior                               |
 
 For native HTML CRUD forms, match the transport to the routes: `FormView`
 accepts `get`/`post`/`dialog` and defaults to `post`, while `resources()` maps
@@ -92,6 +92,18 @@ installed package. Before writing a non-trivial example, check the real types in
 `node_modules/@tknf/oven/dist/**/*.d.ts` (or the source), and prefer patterns
 that appear in the project's own tests. Hono / Drizzle / Standard Schema APIs:
 confirm against their installed types too.
+
+## Request authentication
+
+`Guard` supports either `session` + `identityKey` + `provider` (optional `remember`)
+or `authenticate(c)` without those properties. Both use `onFailure`, exact `except`
+paths, `require`/`register`/`use`, and default `Cache-Control: no-store`. Return a
+verified subject or null/undefined; callback errors propagate. For an external
+assertion, read its header in `authenticate` and call an application-owned verifier
+that validates the signature, issuer, audience, expiry, and claim types. Never
+trust a decoded payload alone or cache subjects across requests. A separate
+`SessionAccessor` + `Csrf` may protect browser writes without storing auth identity.
+See the auth guide's [request example](https://github.com/tknf/oven/blob/main/docs/auth.md#authenticate-each-request-without-a-session).
 
 ## Atomic password reset
 

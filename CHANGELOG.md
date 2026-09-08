@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Add session-free request authentication to `Guard` via `authenticate(c)`, with mutually exclusive mode options, per-request subject resolution, and unchanged failure, exclusion, and cache-control behavior.
+
 ### Changed
 
 - **Breaking:** `PasswordResetOptions.updatePassword` now receives the exact verified fingerprint as a third argument and must atomically update only while it matches, returning a boolean. `reset()` returns `null` when that conditional update loses a race. Replace old unconditional, void-returning callbacks with the conditional update described in the authentication guide before upgrading.

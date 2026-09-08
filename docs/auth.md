@@ -7,10 +7,10 @@ rather than folded into a single "auth module":
 
 - **Authentication** — deciding *who* is making the request. `Guard`
   (extends `ContextAccessor`, the same `register`/`use` convention as
-  everything else in oven) reads an identifier out of the current
-  `Session`, resolves it to a subject through a `provider` callback you
-  supply, and `c.set`s the result — or hands off to `onFailure` if
-  resolution fails.
+  everything else in oven) resolves a subject either from a `Session`
+  identifier through `provider`, or directly from the request through
+  `authenticate`. It registers a non-nullish result with `c.set`, or hands
+  off to `onFailure` when resolution returns `null`/`undefined`.
 - **Authorization** — deciding *what* an already-identified subject is
   allowed to do. `Policy` is an abstract base class: subclass it, declare
   abilities as boolean-returning arrow-function fields
@@ -54,7 +54,7 @@ export const accountGuard = new Guard<AppEnv, "account">("account", {
 ```
 
 On an excepted path, `require` does nothing but `await next()` — it never
-reads the session, calls `provider`, or `c.set`s the subject. Only use
+reads the session, calls `provider`/`authenticate`, or `c.set`s the subject. Only use
 `except` for genuinely public routes that don't also call `accountGuard.use(c)`.
 
 ## Minimal example
@@ -99,6 +99,102 @@ export default app;
 ```
 
 ## Common tasks
+
+### Authenticate each request without a session
+
+Use `authenticate(c)` when a verified external assertion, API credential, or
+another request credential is the source of identity. No `SessionAccessor` or
+session variable is required for this mode. `Guard` calls the callback for every
+non-excepted request and never caches subjects across requests.
+
+For example, Cloudflare Access forwards an assertion in `Cf-Access-Jwt-Assertion`.
+The application must validate it; merely decoding a JWT or trusting an identity
+header is insufficient. See [Cloudflare's JWT validation guide](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/validating-json/).
+
+```ts
+import { Hono } from "hono";
+import { Guard } from "@tknf/oven/auth";
+import { verifyAccessAssertion } from "./access_assertion.js";
+import type { AccessSubject } from "./access_assertion.js";
+
+/**
+ * access_assertion.ts is application-owned, not an oven API.
+ * AccessSubject contains the validated identity, including id: string.
+ */
+type AppEnv = {
+  Bindings: { ACCESS_ISSUER: string; ACCESS_AUDIENCE: string };
+  Variables: { account: AccessSubject };
+};
+
+const accountGuard = new Guard<AppEnv, "account">("account", {
+  authenticate: async (c) => {
+    const assertion = c.req.header("Cf-Access-Jwt-Assertion");
+    if (!assertion) return null;
+    return verifyAccessAssertion(assertion, {
+      issuer: c.env.ACCESS_ISSUER,
+      audience: c.env.ACCESS_AUDIENCE,
+    });
+  },
+  onFailure: (c) => c.json({ error: "unauthorized" }, 401),
+});
+
+const app = new Hono<AppEnv>();
+app.get("/me", accountGuard.require, (c) => c.json(accountGuard.use(c)));
+```
+
+`verifyAccessAssertion` above must return `Promise<AccessSubject | null>` and
+validate the signature with trusted keys, the allowed algorithm, expected issuer
+and audience, expiry, and the required claim types before constructing the
+subject. Treat invalid credentials as `null`; let key-fetch/network/service
+failures throw. `Guard` does not install a JWT library or catch these exceptions:
+they reach Hono's error handler instead of `onFailure` or the protected handler.
+Do not put authentication subjects in an application-wide cache.
+
+Choose exactly one option shape:
+
+- Session: `session`, `identityKey`, `provider`, and optional `remember`.
+- Request: `authenticate`, with none of the four session-mode properties.
+
+Both require `onFailure` and support the same `require`/`register`/`use`, `except`,
+and `cacheControl` behavior. Types reject incomplete modes and mixing configured
+values from both modes. Construction also throws `TypeError` for these cases,
+including a non-function `authenticate`. Omit properties from the other mode
+entirely, even when their value would be `undefined`: without TypeScript
+[`exactOptionalPropertyTypes`](https://www.typescriptlang.org/tsconfig/exactOptionalPropertyTypes.html),
+optional `never` properties still accept explicit `undefined` at compile time,
+but Guard rejects their presence at runtime. `null`/`undefined` results do not register a subject or run the next
+handler. `use(c)` still throws when no subject was registered. Successful protected
+responses get `Cache-Control: no-store` by default; `cacheControl: false` disables
+that addition. Existing session-mode callers require no migration.
+
+### Keep CSRF sessions independent of authentication
+
+Request authentication does not replace CSRF protection for browser write
+requests. A separate session may hold only the CSRF secret; the request guard
+neither reads it for identity nor creates, updates, or regenerates it.
+Continue from the request guard above, extending its environment for CSRF:
+
+```ts
+import { Csrf } from "@tknf/oven/security";
+import { SessionAccessor } from "@tknf/oven/session";
+import type { Session } from "@tknf/oven/session";
+import { csrfStorage } from "./session.js";
+
+type FormEnv = AppEnv & { Variables: AppEnv["Variables"] & { csrfSession: Session } };
+const csrfSession = new SessionAccessor<FormEnv, "csrfSession">("csrfSession", csrfStorage);
+const csrf = new Csrf<FormEnv>({ session: csrfSession.use });
+const forms = new Hono<FormEnv>();
+
+forms.use(accountGuard.require, csrfSession.register, csrf.verify);
+forms.get("/token", (c) => c.text(csrf.csrfToken(c)));
+forms.post("/action", (c) => c.json({ accountId: accountGuard.use(c).id }));
+```
+
+`csrfStorage` is an application-owned `SessionStorage` configured as in the
+[session guide](./sessions.md). Submit the issued token in the form's `csrf_token`
+field or `X-CSRF-Token` header. The session middleware manages the CSRF session's
+cookie; this does not turn it into an authentication session. Keep `except` to
+exact public paths, which skip authentication and do not make `use(c)` available.
 
 **Authorizing an action with `Policy`:**
 
@@ -386,7 +482,11 @@ login second step) instead of wiring the primitives above by hand.
 - **`RememberToken`'s cookie `secure` attribute is not on by default**,
   same as the session cookie — pass `cookie: { secure: true }` explicitly
   in production.
-- **`identityKey` must be set with `session.set`, never `session.flash`.**
+- **Request authentication verifies every request.** Return only validated
+  subjects from `authenticate`; return nullish values for invalid credentials
+  and propagate service errors. Authentication does not remove the need for
+  CSRF protection on browser writes; a separate CSRF session is supported.
+- **In session mode, `identityKey` must be set with `session.set`, never `session.flash`.**
   `Guard` reads it with a plain `session.get`, and a flashed value is
   consumed (and disappears) on the very first read — this manifests as
   users being logged out immediately after logging in.
@@ -445,7 +545,7 @@ login second step) instead of wiring the primitives above by hand.
 
 ## See also
 
-- [Sessions](./sessions.md) — `Guard` and `RememberToken` both read from
+- [Sessions](./sessions.md) — session-mode `Guard` and `RememberToken` read from
   and write to the `Session` established by `SessionAccessor`.
 - [Security](./security.md) — CSRF, rate limiting, and other cross-cutting
   protections that typically sit alongside `Guard` on write routes.

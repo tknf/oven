@@ -1,9 +1,10 @@
 /**
- * Authentication guard. Folds the skeleton shared by authentication checks
- * that differ only in their failure response (302 redirect, 401 JSON, 303
- * redirect, etc.) — "cookie -> identifier from session -> resolve subject ->
- * `c.set`" — into a single class where only the failure-response behavior is
- * swappable.
+ * Authentication guard. Resolves a subject either from a session identifier
+ * via `provider`, or directly from each request via `authenticate`. Only a
+ * non-nullish result is registered in the context before the next handler runs.
+ * Nullish results go to `onFailure`; callback errors propagate unchanged.
+ * The request mode never accesses a session and performs no JWT verification
+ * itself: the application callback must return only a verified subject.
  *
  * `session` is accepted the same way as `Csrf` (`(c) => Session`; intended to
  * be passed `SessionAccessor`'s `use` as-is). If the session is not wired up
@@ -60,7 +61,7 @@ import type { Context, Env, MiddlewareHandler, Next } from "hono";
 import { ContextAccessor } from "../routing/context_accessor.js";
 import type { Session } from "../session/session.js";
 
-export type GuardOptions<E extends Env, K extends keyof E["Variables"] & string> = {
+type GuardSessionOptions<E extends Env, K extends keyof E["Variables"] & string> = {
 	/** Session accessor. Intended to be passed `SessionAccessor`'s `use` as-is. */
 	session: (c: Context<E>) => Session;
 	/**
@@ -85,10 +86,6 @@ export type GuardOptions<E extends Env, K extends keyof E["Variables"] & string>
 		identity: string,
 		c: Context<E>,
 	) => E["Variables"][K] | null | undefined | Promise<E["Variables"][K] | null | undefined>;
-	/** Builds the response for an unauthenticated request (302/303 redirect, 401 JSON, etc. — the differences among the current 3 kinds all fold in here). */
-	onFailure: (c: Context<E>) => Response | Promise<Response>;
-	/** Whether to attach `Cache-Control: no-store` after passing authentication. Default `true`. */
-	cacheControl?: boolean;
 	/**
 	 * The remember-me token consumption entry point. `consume` is tried only
 	 * when the session has no identifier; if an identity is obtained,
@@ -98,13 +95,38 @@ export type GuardOptions<E extends Env, K extends keyof E["Variables"] & string>
 	 * as a structural type, so there is no direct dependency).
 	 */
 	remember?: { consume: (c: Context<E>) => Promise<string | null> };
+	authenticate?: never;
+};
+
+type GuardRequestOptions<E extends Env, K extends keyof E["Variables"] & string> = {
+	/**
+	 * Verifies this request and returns its subject without using a session.
+	 * Called for every non-excepted request; results are never cached by Guard.
+	 * Return null/undefined for invalid credentials. Errors propagate unchanged.
+	 * JWT signatures, issuer, audience, expiry, and claims are the caller's responsibility.
+	 */
+	authenticate: (
+		c: Context<E>,
+	) => E["Variables"][K] | null | undefined | Promise<E["Variables"][K] | null | undefined>;
+	session?: never;
+	identityKey?: never;
+	provider?: never;
+	remember?: never;
+};
+
+/** Exactly one authentication mode: session/provider or request authentication. */
+export type GuardOptions<E extends Env, K extends keyof E["Variables"] & string> = {
+	/** Builds the response for an unauthenticated request (302/303 redirect, 401 JSON, etc. — the differences among the current 3 kinds all fold in here). */
+	onFailure: (c: Context<E>) => Response | Promise<Response>;
+	/** Whether to attach `Cache-Control: no-store` after passing authentication. Default `true`. */
+	cacheControl?: boolean;
 	/**
 	 * Request paths (`c.req.path`) that are exempted from this Guard entirely.
 	 * A path is exempted only on an **exact match** — no glob/prefix matching.
 	 * Keep the list minimal.
 	 *
 	 * On an exempted request, `handle` does nothing but `await next()`: it does
-	 * not read the session, does not call `provider`, does not `c.set` the
+	 * not read the session or call `provider`/`authenticate`, does not `c.set` the
 	 * subject, and does not attach `Cache-Control`. Because the subject is
 	 * never set, calling this Guard's `use(c)` inside a handler mounted on an
 	 * excepted path will throw (per `ContextAccessor#use`'s contract) — only
@@ -116,7 +138,7 @@ export type GuardOptions<E extends Env, K extends keyof E["Variables"] & string>
 	 * a future reordering mistake would silently bypass authentication.
 	 */
 	except?: string[];
-};
+} & (GuardSessionOptions<E, K> | GuardRequestOptions<E, K>);
 
 export class Guard<E extends Env, K extends keyof E["Variables"] & string> extends ContextAccessor<
 	E,
@@ -126,6 +148,27 @@ export class Guard<E extends Env, K extends keyof E["Variables"] & string> exten
 
 	constructor(key: K, options: GuardOptions<E, K>) {
 		super(key);
+		if ("authenticate" in options) {
+			if (
+				typeof options.authenticate !== "function" ||
+				["session", "identityKey", "provider", "remember"].some((name) => name in options)
+			) {
+				throw new TypeError(
+					"Guard: authenticate must be a function and cannot be combined with session, identityKey, provider, or remember",
+				);
+			}
+		} else if (
+			typeof options.session !== "function" ||
+			typeof options.identityKey !== "string" ||
+			typeof options.provider !== "function"
+		) {
+			throw new TypeError(
+				"Guard: provide authenticate or all of session, identityKey, and provider",
+			);
+		}
+		if (typeof options.onFailure !== "function") {
+			throw new TypeError("Guard: onFailure must be a function");
+		}
 		this.options = options;
 	}
 
@@ -137,38 +180,38 @@ export class Guard<E extends Env, K extends keyof E["Variables"] & string> exten
 	readonly require: MiddlewareHandler<E> = this.register;
 
 	protected async handle(c: Context<E>, next: Next): Promise<Response | void> {
-		const {
-			session: useSession,
-			identityKey,
-			provider,
-			onFailure,
-			cacheControl = true,
-			remember,
-			except = [],
-		} = this.options;
+		const options = this.options;
+		const { onFailure, cacheControl = true, except = [] } = options;
 
 		if (except.includes(c.req.path)) {
 			await next();
 			return;
 		}
 
-		const session = useSession(c);
-		let identity = session.get(identityKey);
+		let subject: E["Variables"][K] | null | undefined;
+		if (options.authenticate !== undefined) {
+			subject = await options.authenticate(c);
+		} else {
+			const { session: useSession, identityKey, provider, remember } = options;
+			const session = useSession(c);
+			let identity = session.get(identityKey);
 
-		if (typeof identity !== "string" && remember) {
-			const rememberedIdentity = await remember.consume(c);
-			if (typeof rememberedIdentity === "string") {
-				session.set(identityKey, rememberedIdentity);
-				session.regenerate();
-				identity = rememberedIdentity;
+			if (typeof identity !== "string" && remember) {
+				const rememberedIdentity = await remember.consume(c);
+				if (typeof rememberedIdentity === "string") {
+					session.set(identityKey, rememberedIdentity);
+					session.regenerate();
+					identity = rememberedIdentity;
+				}
 			}
+
+			if (typeof identity !== "string") {
+				return onFailure(c);
+			}
+
+			subject = await provider(identity, c);
 		}
 
-		if (typeof identity !== "string") {
-			return onFailure(c);
-		}
-
-		const subject = await provider(identity, c);
 		if (subject === null || subject === undefined) {
 			return onFailure(c);
 		}

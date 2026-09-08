@@ -334,6 +334,43 @@ describe("Guard", () => {
 		expect(res.headers.get("Location")).toBe("/login");
 	});
 
+	test("an existing session identity bypasses remember and is resolved on every request", async () => {
+		const storage = new InMemorySessionStorage();
+		const sessionAccessor = new SessionAccessor<AppEnv, "session">("session", storage);
+		let providerCalls = 0;
+		let rememberCalls = 0;
+		const guard = new Guard<AppEnv, "account">("account", {
+			session: sessionAccessor.use,
+			identityKey: "accountId",
+			provider: (identity) => {
+				providerCalls++;
+				return { id: identity, name: "Alice" };
+			},
+			remember: {
+				consume: async () => {
+					rememberCalls++;
+					return "other";
+				},
+			},
+			onFailure: (c) => c.text("unauthorized", 401),
+		});
+		const app = new Hono<AppEnv>();
+		app.use(sessionAccessor.register);
+		app.post("/login", (c) => {
+			sessionAccessor.use(c).set("accountId", "acc_1");
+			return c.text("ok");
+		});
+		app.get("/protected", guard.require, (c) => c.text(guard.use(c).id));
+		const cookie = await login(app);
+		for (let index = 0; index < 2; index++) {
+			const response = await app.request("/protected", { headers: { Cookie: cookie } });
+			expect(response.status).toBe(200);
+			expect(await response.text()).toBe("acc_1");
+		}
+		expect(providerCalls).toBe(2);
+		expect(rememberCalls).toBe(0);
+	});
+
 	describe("except", () => {
 		/** Builds a test app that protects `/admin/*` with a single Guard except `/admin/login`. */
 		const buildAppWithExcept = () => {
