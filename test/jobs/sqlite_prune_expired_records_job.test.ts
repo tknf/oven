@@ -87,6 +87,33 @@ describe("SQLitePruneExpiredRecordsJob", () => {
 		expect(remaining.map((row) => row.key).sort()).toEqual(["future", "no-ttl"]);
 	});
 
+	test("continues past failed targets and reports every failure after pruning healthy targets", async () => {
+		const db = drizzle(client);
+		const buildEntry = (key: string, expiresAt: number) => ({ key, value: "value", expiresAt });
+		await db
+			.insert(kvEntries)
+			.values([buildEntry("expired", Date.now() - 1000), buildEntry("future", Date.now() + 1000)]);
+		await client.execute("DROP TABLE sessions");
+		const missingTarget = {
+			table: sessions,
+			pkColumn: sessions.id,
+			expiresAtColumn: sessions.expiresAt,
+		} satisfies SQLitePruneTarget;
+		const job = new SQLitePruneExpiredRecordsJob(db, [
+			missingTarget,
+			{ table: kvEntries, pkColumn: kvEntries.key, expiresAtColumn: kvEntries.expiresAt },
+			missingTarget,
+		]);
+
+		const error: unknown = await job.perform().catch((error: unknown) => error);
+		expect(error).toBeInstanceOf(AggregateError);
+		if (!(error instanceof AggregateError)) throw new Error("expected an AggregateError");
+		expect(error.errors).toHaveLength(2);
+		expect(error.errors).toEqual([expect.any(Error), expect.any(Error)]);
+		const remaining = await db.select({ key: kvEntries.key }).from(kvEntries);
+		expect(remaining).toEqual([{ key: "future" }]);
+	});
+
 	test("sweeps every target in the targets array, across differently-shaped tables in one call", async () => {
 		const db = drizzle(client);
 		const now = Date.now();

@@ -207,6 +207,12 @@ names, in a single run. `options.batchSize` (default 500) and
 `options.maxBatches` (default 1000) bound how much work one `perform()` call
 does per target — see the Gotchas note below.
 
+Each `perform()` call visits targets in order. A failure stops work on that target,
+but subsequent targets are still pruned. After the sweep, any failures are thrown
+as an `AggregateError`; its `errors` array retains the original errors in target
+order. Successful deletions are not rolled back. Let the scheduler or queue report
+the failure and retry normally; already-pruned rows need no special handling.
+
 **Deploying to Cloudflare Queues:** see [Deployment](./deployment.md)
 for wiring `CloudflareJobQueue` (producer) and `QueueConsumer` (consumer,
 called from your Worker's `queue(batch, env, ctx)` handler) to a Queue

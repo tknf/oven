@@ -388,6 +388,10 @@ code)` (verifies against the pending secret, only then sets
   `{SQLite,Pg,MySql}PruneExpiredRecordsJob`, invoked directly
   (`job.perform()`) from a `Schedule` entry / `ScheduledDispatcher` (see
   `docs/jobs.md`'s "Pruning expired rows" task).
+- **Expired-record pruning isolates target failures.** Each
+  `{SQLite,Pg,MySql}PruneExpiredRecordsJob.perform()` attempts all targets and
+  then throws an `AggregateError` with original failures in target order.
+  Successful deletions remain applied; retries safely revisit the targets.
 - **`Datasource`/`RestDatasource` treat every response body as untrusted** —
   always pass a `schema`; a failed validation throws
   `DatasourceValidationError` (distinct from `DatasourceError`, which covers
