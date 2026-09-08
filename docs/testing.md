@@ -17,7 +17,7 @@ bundle.
   per-test `overrides` onto sequenced defaults, and a `create()` that
   persists via a function you supply (any ORM, any dialect).
 - **`actingAs`** — builds a `Cookie` header for an already-authenticated
-  session, so tests can hit `Guard`-protected routes without going through
+  session, so tests can hit session-mode `Guard`-protected routes without going through
   a real login flow.
 - **`TestJobQueue`** / **`TestMailer`** / **`TestBroadcaster`** — fake
   `JobQueue`/`Mailer`/`Broadcaster` implementations that record what was
@@ -30,7 +30,7 @@ bundle.
 flowchart LR
     Test["Your *.test.ts"] --> createTestDb --> Model["@tknf/oven/model code"]
     Test --> defineFactory -->|persist| Model
-    Test --> actingAs -->|Cookie header| Guard["Guard-protected route"]
+    Test --> actingAs -->|Cookie header| Guard["Session-mode Guard route"]
     Test --> TestJobQueue -->|"enqueue() recorded"| Assertion
     Test --> TestMailer -->|"send() recorded"| Assertion
     Test --> TestBroadcaster -->|"publish() recorded"| Assertion
@@ -97,6 +97,11 @@ restart at 1 (e.g. to keep expected titles stable across independent
 tests).
 
 ### Test a Guard-protected route as an authenticated user
+
+For request-mode guards, supply request credentials to `app.request()` and wire
+the application verifier callback explicitly. `actingAs` does not authenticate
+that mode. Cover nullish results and service errors as well as success; see
+[request authentication](./auth.md#authenticate-each-request-without-a-session).
 
 `actingAs` writes the identity into a fresh session via the same
 `SessionStorage` your app uses, commits it, and hands back a ready-to-use
