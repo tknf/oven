@@ -66,10 +66,21 @@ export class PgPruneExpiredRecordsJob<
 		this.maxBatches = options.maxBatches ?? DEFAULT_MAX_BATCHES;
 	}
 
-	/** Sweeps every target in `targets`, in order, deleting its expired rows in batches (see module doc). */
+	/**
+	 * Sweeps every target in order, continuing after individual failures.
+	 * Throws an AggregateError with the original errors after all targets run.
+	 */
 	async perform(_payload: Record<string, never> = {}): Promise<void> {
+		const errors: unknown[] = [];
 		for (const target of this.targets) {
-			await this.pruneTarget(target);
+			try {
+				await this.pruneTarget(target);
+			} catch (error) {
+				errors.push(error);
+			}
+		}
+		if (errors.length > 0) {
+			throw new AggregateError(errors, "Failed to prune one or more targets");
 		}
 	}
 

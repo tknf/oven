@@ -7,7 +7,8 @@
  * a `ReadableStream` passed to `put` is read fully into an `ArrayBuffer`
  * before being sent (streaming upload is not supported). The maximum number
  * of bytes read can be capped via `S3StorageConfig#maxBytes`; set this to
- * avoid OOM under a Worker's memory limit.
+ * stop consuming oversized streams. This bounds accepted bytes, not total
+ * memory: producer chunks and signing/buffering copies still take space.
  *
  * Once the (now fully-buffered) body exceeds `MULTIPART_PART_SIZE_BYTES`
  * (100 MiB, mirroring the R2 adapter's threshold convention), `put`
@@ -33,7 +34,9 @@ export type S3StorageConfig = {
 	 * previous behavior). Because aws4fetch's signing requirement forces
 	 * streams to be read fully into memory, allowing unlimited uploads under
 	 * a Worker's memory limit (128MB) can cause an OOM. When set, throws
-	 * before sending if the fully-read body exceeds this byte count.
+	 * as soon as a stream crosses this byte count and cancels further reading,
+	 * before signing or sending. This is not a hard process-memory limit;
+	 * producer chunks and buffering/signing copies also consume memory.
 	 */
 	maxBytes?: number;
 	/**
@@ -104,7 +107,8 @@ export class S3Storage extends Storage {
 		data: Blob | ReadableStream | ArrayBuffer,
 		contentType: string,
 	): Promise<void> {
-		const body = data instanceof ReadableStream ? await S3Storage.readAll(data) : data;
+		const body =
+			data instanceof ReadableStream ? await S3Storage.readAll(data, this.maxBytes) : data;
 		const size = await S3Storage.byteLength(body);
 		if (this.maxBytes !== undefined && size > this.maxBytes) {
 			throw new Error(`Upload size exceeds the limit (${this.maxBytes} bytes)`);
@@ -156,7 +160,7 @@ export class S3Storage extends Storage {
 	 * Multipart Upload API: create, then upload fixed-size parts in order,
 	 * then complete. Aborts the upload and rethrows on any failure after
 	 * creation (the abort itself is best-effort; its own failure never masks
-	 * the original error).
+	 * the original error; cleanup failures emit a warning without request details).
 	 */
 	private async putMultipart(
 		key: string,
@@ -179,7 +183,7 @@ export class S3Storage extends Storage {
 			try {
 				await this.abortMultipartUpload(key, uploadId);
 			} catch {
-				// Best-effort cleanup; the original error below always wins.
+				console.warn("S3 multipart cleanup failed; an incomplete upload may remain");
 			}
 			throw error;
 		}
@@ -259,7 +263,10 @@ export class S3Storage extends Storage {
 		url.searchParams.set("uploadId", uploadId);
 
 		const request = await this.client.sign(url, { method: "DELETE" });
-		await this.fetch(request, this.timeoutInit());
+		const response = await this.fetch(request, this.timeoutInit());
+		if (!response.ok && response.status !== 404) {
+			throw new Error(`S3 AbortMultipartUpload failed (${response.status})`);
+		}
 	}
 
 	/** Builds the `<CompleteMultipartUpload>` XML body, preserving `parts`' order (ascending `partNumber`, as required by S3). */
@@ -267,10 +274,20 @@ export class S3Storage extends Storage {
 		const items = parts
 			.map(
 				(part) =>
-					`<Part><PartNumber>${part.partNumber}</PartNumber><ETag>${part.eTag}</ETag></Part>`,
+					`<Part><PartNumber>${part.partNumber}</PartNumber><ETag>${S3Storage.escapeXml(part.eTag)}</ETag></Part>`,
 			)
 			.join("");
 		return `<?xml version="1.0" encoding="UTF-8"?><CompleteMultipartUpload>${items}</CompleteMultipartUpload>`;
+	}
+
+	/** Escapes XML text without interpreting entity-like content in an opaque ETag. */
+	private static escapeXml(value: string): string {
+		return value
+			.replaceAll("&", "&amp;")
+			.replaceAll("<", "&lt;")
+			.replaceAll(">", "&gt;")
+			.replaceAll('"', "&quot;")
+			.replaceAll("'", "&apos;");
 	}
 
 	/** Returns a `RequestInit` containing `signal` only when `timeoutMs` is set (merged into the signed `Request` via the second argument). */
@@ -284,8 +301,24 @@ export class S3Storage extends Storage {
 		return `${this.endpoint}/${this.bucket}/${encodeS3Key(key)}`;
 	}
 
-	private static async readAll(stream: ReadableStream): Promise<ArrayBuffer> {
-		return new Response(stream).arrayBuffer();
+	private static async readAll(
+		stream: ReadableStream,
+		maxBytes: number | undefined,
+	): Promise<ArrayBuffer> {
+		if (maxBytes === undefined) return new Response(stream).arrayBuffer();
+		let size = 0;
+		const bounded = stream.pipeThrough(
+			new TransformStream<Uint8Array, Uint8Array>({
+				transform: (chunk, controller) => {
+					size += chunk.byteLength;
+					if (size > maxBytes) {
+						throw new Error(`Upload size exceeds the limit (${maxBytes} bytes)`);
+					}
+					controller.enqueue(chunk);
+				},
+			}),
+		);
+		return new Response(bounded).arrayBuffer();
 	}
 
 	/** Returns the byte length of `put`'s body (`Blob | ArrayBuffer`). */

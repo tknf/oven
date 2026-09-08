@@ -3,15 +3,16 @@
  * Injects a dummy fetch and only checks method/URL/headers/404 behavior (no real S3 traffic).
  */
 import { describe, expect, test, vi } from "vite-plus/test";
-import { S3Storage } from "../../src/storage/s3_storage.js";
+import { S3Storage, type S3StorageConfig } from "../../src/storage/s3_storage.js";
 
-const buildStorage = (fetchImpl: typeof fetch) =>
+const buildStorage = (fetchImpl: typeof fetch, options: Partial<S3StorageConfig> = {}) =>
 	new S3Storage({
 		endpoint: "https://dummy-account-id.r2.cloudflarestorage.com",
 		bucket: "dummy-bucket",
 		accessKeyId: "dummy-access-key-id",
 		secretAccessKey: "dummy-secret-access-key",
 		fetch: fetchImpl,
+		...options,
 	});
 
 /**
@@ -33,7 +34,10 @@ const LARGE_BODY = new ArrayBuffer(MULTIPART_PART_SIZE_BYTES + 1024);
  * `getCompleteBody`) the test asserts against after calling `put`.
  */
 const buildMultipartFetch = (
-	overrides: { uploadPartResponse?: (partNumber: number) => Response } = {},
+	overrides: {
+		uploadPartResponse?: (partNumber: number) => Response;
+		abortResponse?: () => Response;
+	} = {},
 ) => {
 	const uploadId = "upload-123";
 	const calls: string[] = [];
@@ -61,6 +65,7 @@ const buildMultipartFetch = (
 		}
 		if (input.method === "DELETE" && url.searchParams.has("uploadId")) {
 			calls.push("abort");
+			if (overrides.abortResponse) return overrides.abortResponse();
 			return new Response(null, { status: 204 });
 		}
 		if (input.method === "POST" && url.searchParams.has("uploadId")) {
@@ -200,6 +205,54 @@ describe("S3Storage", () => {
 		expect(fetch).toHaveBeenCalledOnce();
 	});
 
+	test("maxBytes stops and cancels an oversized stream before fetching", async () => {
+		const fetch = vi.fn<typeof globalThis.fetch>();
+		const cancel = vi.fn();
+		let reads = 0;
+		const stream = new ReadableStream<Uint8Array>({
+			pull: (controller) => {
+				reads += 1;
+				controller.enqueue(new Uint8Array(3));
+				if (reads === 100) controller.close();
+			},
+			cancel,
+		});
+		await expect(
+			buildStorage(fetch, { maxBytes: 4 }).put("key", stream, "text/plain"),
+		).rejects.toThrow("Upload size exceeds the limit (4 bytes)");
+		expect(reads).toBeLessThanOrEqual(3);
+		expect(cancel).toHaveBeenCalledOnce();
+		expect(fetch).not.toHaveBeenCalled();
+	});
+
+	test.each([0, 3, 4])("maxBytes accepts a stream of %i bytes within the cap", async (size) => {
+		const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
+			if (!(input instanceof Request)) throw new Error("expected a Request");
+			expect(new Uint8Array(await input.arrayBuffer())).toEqual(new Uint8Array(size).fill(7));
+			return new Response(null, { status: 200 });
+		});
+		const stream = new ReadableStream<Uint8Array>({
+			start: (controller) => {
+				for (let i = 0; i < size; i += 1) controller.enqueue(new Uint8Array([7]));
+				controller.close();
+			},
+		});
+		await buildStorage(fetch, { maxBytes: 4 }).put("key", stream, "text/plain");
+		expect(fetch).toHaveBeenCalledOnce();
+	});
+
+	test("a stream read error propagates before fetching", async () => {
+		const fetch = vi.fn<typeof globalThis.fetch>();
+		const error = new Error("source failed");
+		const stream = new ReadableStream<Uint8Array>({
+			pull: (controller) => controller.error(error),
+		});
+		await expect(
+			buildStorage(fetch, { maxBytes: 4 }).put("key", stream, "text/plain"),
+		).rejects.toBe(error);
+		expect(fetch).not.toHaveBeenCalled();
+	});
+
 	test("when maxBytes is not set, put works as before without a size check", async () => {
 		const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response(null, { status: 200 }));
 		const storage = buildStorage(fetch);
@@ -237,7 +290,7 @@ describe("S3Storage", () => {
 		expect(calls).toEqual(["create", "upload-part-1", "upload-part-2", "complete"]);
 		expect(partSizes).toEqual([MULTIPART_PART_SIZE_BYTES, 1024]);
 		expect(getCompleteBody()).toBe(
-			'<?xml version="1.0" encoding="UTF-8"?><CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>"etag-1"</ETag></Part><Part><PartNumber>2</PartNumber><ETag>"etag-2"</ETag></Part></CompleteMultipartUpload>',
+			'<?xml version="1.0" encoding="UTF-8"?><CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>&quot;etag-1&quot;</ETag></Part><Part><PartNumber>2</PartNumber><ETag>&quot;etag-2&quot;</ETag></Part></CompleteMultipartUpload>',
 		);
 	});
 
@@ -251,6 +304,59 @@ describe("S3Storage", () => {
 			storage.put("media/big.bin", LARGE_BODY, "application/octet-stream"),
 		).rejects.toThrow(/S3 UploadPart failed/);
 		expect(calls).toEqual(["create", "upload-part-1", "abort"]);
+	});
+
+	test("completion escapes XML-special characters in opaque ETags", async () => {
+		const { fetch, getCompleteBody } = buildMultipartFetch({
+			uploadPartResponse: () =>
+				new Response(null, {
+					status: 200,
+					headers: { ETag: `"tag<&amp;>'"` },
+				}),
+		});
+		await buildStorage(fetch).put("key", LARGE_BODY, "application/octet-stream");
+		expect(getCompleteBody()).toContain("<ETag>&quot;tag&lt;&amp;amp;&gt;&apos;&quot;</ETag>");
+	});
+
+	test.each(["http", "network"])(
+		"a failed %s abort warns and preserves the upload error",
+		async (failure) => {
+			const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+			try {
+				const { fetch, calls } = buildMultipartFetch({
+					uploadPartResponse: () => new Response("original failure", { status: 500 }),
+					abortResponse: () => {
+						if (failure === "network") throw new Error("sensitive request details");
+						return new Response("sensitive response details", { status: 403 });
+					},
+				});
+				await expect(
+					buildStorage(fetch).put("private/key", LARGE_BODY, "application/octet-stream"),
+				).rejects.toThrow("S3 UploadPart failed (500): original failure");
+				expect(calls).toEqual(["create", "upload-part-1", "abort"]);
+				expect(warn).toHaveBeenCalledExactlyOnceWith(
+					"S3 multipart cleanup failed; an incomplete upload may remain",
+				);
+			} finally {
+				warn.mockRestore();
+			}
+		},
+	);
+
+	test.each([204, 404])("an abort returning %i needs no cleanup warning", async (status) => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			const { fetch } = buildMultipartFetch({
+				uploadPartResponse: () => new Response("original failure", { status: 500 }),
+				abortResponse: () => new Response(null, { status }),
+			});
+			await expect(
+				buildStorage(fetch).put("key", LARGE_BODY, "application/octet-stream"),
+			).rejects.toThrow("S3 UploadPart failed");
+			expect(warn).not.toHaveBeenCalled();
+		} finally {
+			warn.mockRestore();
+		}
 	});
 
 	test("a part response missing an ETag header aborts and throws a clear error", async () => {

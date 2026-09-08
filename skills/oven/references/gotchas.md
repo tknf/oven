@@ -348,12 +348,19 @@ code)` (verifies against the pending secret, only then sets
 - **The remote adapters below auto-switch `put` to a multi-request upload
   above 100 MiB, but the protocol and streaming story differ per backend.**
   `S3Storage` buffers a `ReadableStream` fully first (SigV4 needs the whole
-  body), then multiparts a `Blob`/`ArrayBuffer` above the threshold.
+  body); configure `maxBytes` to reject and cancel a stream as soon as its
+  running byte count crosses the cap, before signing or sending. This limits
+  accepted bytes, not producer allocations or buffering/signing copies. It then multiparts a `Blob`/`ArrayBuffer` above the threshold.
   `GoogleCloudStorage` switches a `Blob`/`ArrayBuffer` above the threshold to
   a resumable upload, but a `ReadableStream` always stays on the simple
   upload regardless of size. `R2Storage` (`@tknf/oven/cloudflare`)
   multiparts all three body types above the threshold, including a
   `ReadableStream` (chunked on the fly, no full buffering).
+- **S3 automatic multipart cleanup is best-effort.** Failed abort requests
+  (HTTP other than 404, or transport errors) warn without sensitive request
+  details, preserving the original upload error. Monitor warnings and configure
+  incomplete-upload lifecycle cleanup. Completion XML escapes ETags; UploadId
+  parsing expects the canonical unprefixed, attribute-free element.
 - **For multipart uploads across client requests, use `MultipartUploader`.**
   `R2Storage` and `InMemoryStorage` implement this optional interface from
   `@tknf/oven/storage`. Creation returns `{ key, uploadId }`; uploading a part
@@ -381,6 +388,10 @@ code)` (verifies against the pending secret, only then sets
   `{SQLite,Pg,MySql}PruneExpiredRecordsJob`, invoked directly
   (`job.perform()`) from a `Schedule` entry / `ScheduledDispatcher` (see
   `docs/jobs.md`'s "Pruning expired rows" task).
+- **Expired-record pruning isolates target failures.** Each
+  `{SQLite,Pg,MySql}PruneExpiredRecordsJob.perform()` attempts all targets and
+  then throws an `AggregateError` with original failures in target order.
+  Successful deletions remain applied; retries safely revisit the targets.
 - **`Datasource`/`RestDatasource` treat every response body as untrusted** —
   always pass a `schema`; a failed validation throws
   `DatasourceValidationError` (distinct from `DatasourceError`, which covers

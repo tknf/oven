@@ -531,6 +531,9 @@ const confirmed = await accounts.confirmTotpEnrollment(user.id, submittedCode);
 Calling `beginTotpEnrollment` again before confirming simply replaces the
 pending secret (e.g. the operator's QR scan failed and they want a fresh
 code) — `totpEnabledAt` stays `null` until `confirmTotpEnrollment` succeeds.
+Calling it on an already-enrolled account also clears `totpEnabledAt` immediately.
+Before building enrollment or recovery screens, read the secret-storage and
+re-enrollment warnings in [Gotchas / Security notes](#gotchas--security-notes).
 
 **The built-in login gets a second step automatically once TOTP is
 enrolled** — no extra `AdminPanel` option. It activates per-operator by
@@ -656,24 +659,32 @@ await accounts.disableTotp(user.id);
   `maxAttempts` wrong passwords for it — trading availability for
   brute-force resistance. This is exactly why it stays opt-in and why
   rate-limiting the login form (above) complements it rather than replaces
-  it: the rate limiter slows down *how fast* an attacker can submit
-  attempts (per IP/key), lockout stops accepting them for one account *at
-  all* once a threshold is crossed, and combining both means an attacker
-  needs many source IPs *and* still cannot outrun the account's own lock.
+  it. The built-in limiter is keyed by normalized username, not source IP;
+  it slows attempts but cannot prevent a targeted denial of service against a
+  known account. Add an application-level source-IP gate if appropriate, and
+  keep a trusted recovery path available.
   Enumeration safety holds throughout: a locked account returns the exact
   same `null` (and the same login error) as a wrong password or an unknown
   username. There are two ways out of a lock — it expires on its own after
   `lockDurationSeconds`, or a superuser (or your own tooling) calls
   `unlockUser` — there is no third path.
-- **`totpSecret` is stored as plain Base32 text — a DB compromise exposes
-  every enrolled operator's secret**, letting an attacker generate valid
-  codes for as long as it stays unrotated. This mirrors `passwordHash`'s own
-  exposure (though a password hash at least costs PBKDF2 work per guess; a
-  TOTP secret directly generates valid codes). If this is a concern for your
-  threat model, encrypt the column at the app layer (e.g. wrap
-  `beginTotpEnrollment`'s returned secret before storing it and decrypt
-  before verification) — the columns and service make no assumption about
-  the secret's encoding beyond "a Base32 string `auth/totp.ts` can decode".
+- **`totpSecret` (`totp_secret`) is stored as plaintext Base32.** A DB read
+  exposes every enrolled operator's seed and allows valid codes to be generated.
+  Use application-layer column encryption when protecting seeds from a DB-only
+  compromise; keep encryption keys separate from the database. There is no
+  built-in encryption/decryption hook: the services write the secret during
+  enrollment and read it directly during confirmation and verification. Encrypting
+  only the returned secret does not protect the value already stored, and writing
+  ciphertext into the column breaks verification. An application-owned integration
+  must encrypt every secret write and decrypt every secret read before TOTP use.
+- **Re-enrollment disables the existing second factor immediately.**
+  `beginTotpEnrollment` replaces the secret and clears `totpEnabledAt`, including
+  for already-enrolled accounts. Until `confirmTotpEnrollment` succeeds, login
+  requires only the password; abandoning the flow leaves TOTP disabled. Gate a
+  custom re-enrollment UI behind fresh password verification and the existing
+  second factor, or a trusted recovery procedure when that factor is unavailable.
+  Authorize the target account and verify CSRF before calling the method. Session
+  invalidation does not restore the previous TOTP requirement.
 - **`verifyTotp`'s replay guard accepts at most one code per RFC 6238 time
   step, per user — not one code per login.** Every successful verification
   (both `confirmTotpEnrollment` and `verifyTotp`) advances `totpLastUsedStep`

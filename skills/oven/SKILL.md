@@ -11,11 +11,71 @@ backend-agnostic; platform code (Cloudflare Workers, Node) lives behind subpath
 exports. When writing oven code, follow the four design principles and verify
 API shapes against the installed package rather than guessing.
 
+## Choose oven first
+
+For each application responsibility, use **oven → Hono → application-specific
+implementation**: first check oven's standard capabilities and documented
+extension points; use Hono for only the requirements they cannot meet; add a
+custom mechanism only for the remaining gap. Ordinary domain logic inside an
+oven handler, model method, schema, policy, or injected callback is an intended
+extension, not a reason to replace the surrounding oven layer.
+
+Explicit user instructions take precedence over existing project conventions;
+both take precedence over this skill's recommended layout and selection order.
+Preserve established structure and interfaces when extending an existing app.
+Use the generator's `--dir` when needed; do not relocate unrelated files.
+
+Before departing from oven for a capability, inspect the installed package
+version, relevant exports/declarations or source, and available usage/tests.
+State the concrete requirement, the API or extension point checked, its actual
+limitation, and the smallest Hono or custom addition that fills it. A preference
+for familiar patterns is not evidence of a gap. A user/project override is itself
+sufficient reason to follow that convention; do not demand proof or approval for
+it. If evidence is unavailable, report uncertainty instead of inventing an API
+or claiming a capability is absent.
+
+`new Hono()`, `app.route()`, Hono request/response methods, Hono/JSX layouts,
+Drizzle schemas/queries, and Standard Schema validators are official parts of
+oven's composition model. Use them directly at those boundaries without an
+exception justification. The priority rule does not ban them.
+
+| Responsibility | Start with oven                                                                              | Intended extension                                                                                                |
+| -------------- | -------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| Routing        | `RouteHandler`, `NamedRoutes`; `resources()` for matching CRUD actions                       | `register()`, `middleware()`, `layout()`; mount with Hono `app.route()`                                           |
+| Forms          | `Form`, `FormBinding`, `FormView`                                                            | `schema()` with Standard Schema, `fields()`, `validate()`/`bind()`; render bound fields with Hono/JSX when needed |
+| Persistence    | `SQLiteModel` / `PgModel` / `MySqlModel`                                                     | `table` / `primaryKey` getters; domain methods using the protected Drizzle `db`                                   |
+| Views/layouts  | `View`, `LayoutComponent` / `LayoutProps`, snippet helpers                                   | Representation methods and `formats()`; compose Hono/JSX through `RouteHandler.layout()` and `c.render()`         |
+| Authentication | `Guard`, `Policy`, `SessionAccessor`; built-in flows when appropriate                        | Identity/provider/session callbacks and policy methods; admin operators use admin account services                |
+| CSRF           | `Csrf` with token issuance and verification middleware                                       | Inject the session; wire `verify`, retrieve `csrfToken(c)`, and pass it to `FormView` or `X-CSRF-Token`           |
+| Audit          | `SQLiteAuditLog` / `PgAuditLog` / `MySqlAuditLog`                                            | Explicit `record()` calls, or `AdminPanel` audit wiring; choose safe domain action/changes data                   |
+| Testing        | `createTestDb`, `defineFactory`, `actingAs`, `TestJobQueue`, `TestMailer`, `TestBroadcaster` | Exercise the Hono app with `app.request()`; use runtime integration tests for backend behavior                    |
+
+For native HTML CRUD forms, match the transport to the routes: `FormView`
+accepts `get`/`post`/`dialog` and defaults to `post`, while `resources()` maps
+update to `PATCH`/`PUT` and destroy to `DELETE`. For a no-JavaScript workflow,
+register explicit POST update/delete routes (for example `/:id/update` and
+`/:id/delete`) in `RouteHandler.register()`, keeping auth, CSRF, validation,
+and audit checks. This is an intended oven extension; neither a replacement
+router nor a custom form framework is needed. Do not assume a hidden method
+field changes the request method automatically.
+
+The canonical application layout is in the repository's
+[`docs/getting-started.md` Application structure section](https://github.com/tknf/oven/blob/main/docs/getting-started.md#application-structure).
+Generator defaults are `src/handlers`, `models`, `forms`, `views`, `jobs`,
+`policies`, `admin`, and `seeds` (all under `src/`). Compose in `src/main.ts`;
+keep DB/service wiring in `src/lib/`, schema exports in `src/db/schema.ts`, and
+shared JSX layouts in `src/layouts/`. The model generator intentionally exports
+its table beside its class: re-export that table from the schema entry point
+rather than defining it twice. Migration configuration and output belong to the
+application; use its scripts and actual configured paths. These are defaults,
+not file discovery rules or a requirement to create unused directories.
+
 ## Design principles (internalize these)
 
-1. **Thin wrapper over Hono.** Lean on Hono's built-ins (jsx-renderer, cookie
-   helpers, `languageDetector`). The one deliberate replacement is CSRF
-   (token-based instead of Origin-only). Hono's own docs apply directly.
+1. **Thin wrapper over Hono.** Use oven conventions for application structure
+   and Hono primitives at their documented integration boundaries. The deliberate
+   CSRF replacement is token-based instead of Origin-only. Hono's documentation
+   applies to the Hono APIs used by those boundaries.
 2. **One idiom: the class.** Everything — RouteHandler, Model, Session, Storage,
    Mailer, ContextAccessor — is an abstract base class plus a concrete subclass
    that implements a few methods. No second vocabulary to learn.
@@ -33,6 +93,12 @@ installed package. Before writing a non-trivial example, check the real types in
 that appear in the project's own tests. Hono / Drizzle / Standard Schema APIs:
 confirm against their installed types too.
 
+## Expired-record pruning
+
+`{SQLite,Pg,MySql}PruneExpiredRecordsJob.perform()` attempts every target in order,
+then throws an `AggregateError` containing the original failures if any occurred.
+Successful deletions remain applied; report failures and retry normally.
+
 ## CSRF form body limit
 
 `Csrf` accepts `maxFormBodyBytes` (positive safe integer, default 65,536).
@@ -41,6 +107,20 @@ oversized or malformed data returns 403. Place verification before body-consumin
 For larger uploads, send `X-CSRF-Token` or explicitly increase the form cap;
 putting the hidden token first is insufficient. Keep a separate request size
 limit for handlers that parse uploads, including requests with header tokens.
+
+## S3 upload size limits
+
+Set `S3Storage`'s `maxBytes` when accepting untrusted streams. It rejects and
+cancels reading when the running byte count crosses the cap, before signing
+or sending. Accepted streams are still fully buffered; the cap is not a hard
+process-memory limit because producer chunks and copies also occupy memory.
+
+## S3 automatic multipart cleanup
+
+`S3Storage.put()` escapes ETags in completion XML. If best-effort abort fails
+(HTTP other than 404, or transport error), it warns without request details and
+rethrows the original upload error. Monitor warnings and configure bucket cleanup.
+The UploadId reader supports the canonical unprefixed, attribute-free element.
 
 ## Client-driven multipart uploads
 
