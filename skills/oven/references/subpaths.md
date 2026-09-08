@@ -1,5 +1,7 @@
 # Subpath API map
 
+Use this map to check oven capabilities before reaching for Hono or custom
+replacements; apply the selection order and exception rules in `../SKILL.md`.
 Import from the specific subpath. The root `@tknf/oven` re-exports everything
 except `cloudflare`, `node`, `test`, and `vite` (the last is opt-in because
 it's specific to apps that bundle client-side assets with Vite, not because
@@ -39,7 +41,10 @@ Not a subpath export: the package also ships an `oven` bin (`oven generate
 8 types — `handler`, `model`, `form`, `job`, `policy`, `view`, `seed`,
 `admin-resource` — into each type's conventional directory (`--dir`/
 `--dialect`/`--force` flags, `--dialect` only for `model`). See
-`docs/cli.md` for the full reference.
+`docs/cli.md` for the full reference and
+`docs/getting-started.md#application-structure` for schema, service wiring,
+and migration placement. The model template exports its table beside the class;
+it does not generate a separate schema file or migration.
 
 The full narrative guides live in the package repo under `docs/` (one guide per
 area, example-first). Consult them for depth.

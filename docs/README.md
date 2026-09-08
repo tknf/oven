@@ -7,7 +7,8 @@ subpath export (`@tknf/oven/<name>`).
 ## Start here
 
 - [Getting started](./getting-started.md) — install oven and write your
-  first `RouteHandler`, layout, and route.
+  first `RouteHandler`, layout, and route; follow the
+  [application structure](./getting-started.md#application-structure) and feature-selection conventions.
 - [Concepts](./concepts.md) — the design principles, the request lifecycle,
   dependency injection, and the full subpath export map.
 

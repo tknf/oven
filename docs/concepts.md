@@ -6,6 +6,12 @@ through a `RouteHandler`, and how dependency injection works without a
 provider container. If you just want to write your first route, start with
 [Getting started](./getting-started.md).
 
+For application architecture, start with oven's standard capabilities and
+extension points, then use Hono and custom code only for unmet requirements.
+This preserves Hono's documented integration boundaries. See
+[Application structure](./getting-started.md#application-structure) for the
+canonical layout, instruction precedence, and evidence needed for deviations.
+
 ## Design principles, in depth
 
 ### 1. A thin wrapper over Hono
