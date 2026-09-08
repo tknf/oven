@@ -52,7 +52,12 @@ rejected up front with the usage text, before any file is planned or written.
 ## Generator reference
 
 Each entry shows the default output path and what the generated file
-exports, given the example invocation.
+exports, given the example invocation. These paths implement the
+[canonical application structure](./getting-started.md#application-structure).
+The model template exports a table beside its class; re-export it from your
+schema entry point, or adapt it to an existing separated schema convention.
+The generator does not create the entry point, schema barrel, DB wiring,
+migration configuration, or migrations.
 
 - **`handler`** — `oven generate handler books` → `src/handlers/books_handler.ts`:
   a `BooksHandler extends RouteHandler` with an empty `register()` stub. See
