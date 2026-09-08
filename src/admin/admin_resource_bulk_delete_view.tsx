@@ -11,6 +11,7 @@
  * `<form method="post">` is submitted. There is no JS; "No, take me back" is a plain
  * link back to the resource's list.
  */
+import { adminResourcePathFor } from "./admin_routes.js";
 import type { AdminT } from "./admin_catalog.js";
 import { CSRF_FORM_FIELD_NAME } from "../security/csrf.js";
 
@@ -35,7 +36,7 @@ export const AdminResourceBulkDeleteView = ({
 	csrfToken,
 	t,
 }: AdminResourceBulkDeleteViewProps) => {
-	const listHref = `${basePath}/resources/${resourceKey}`;
+	const listHref = adminResourcePathFor(basePath, resourceKey, "index");
 
 	return (
 		<>

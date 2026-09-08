@@ -8,6 +8,7 @@
  * `pagination/`, with this screen's own `buildUsersUrl` supplying the
  * (sort/filter-free) URL shape.
  */
+import { adminPathFor } from "./admin_routes.js";
 import type { AdminT } from "./admin_catalog.js";
 import type { AdminAccountsUserRow } from "./admin_types.js";
 import { OffsetPaginationView } from "../pagination/index.js";
@@ -19,7 +20,7 @@ const buildUsersUrl = (basePath: string, query: string, page: number): string =>
 	if (page > 0) params.set("p", String(page));
 
 	const qs = params.toString();
-	const base = `${basePath}/accounts/users`;
+	const base = adminPathFor(basePath, "users");
 	return qs ? `${base}?${qs}` : base;
 };
 
@@ -46,7 +47,7 @@ export type AdminAccountsUsersListViewProps = {
 /** Search form. Carries the current query through a plain GET, always landing on page 0 on submit. */
 const SearchForm = ({ basePath, query, t }: { basePath: string; query: string; t: AdminT }) => (
 	<div id="toolbar">
-		<form role="search" method="get" action={`${basePath}/accounts/users`}>
+		<form role="search" method="get" action={adminPathFor(basePath, "users")}>
 			<label class="visually-hidden" for="admin-users-search">
 				{t("action.search")}
 			</label>
@@ -84,7 +85,7 @@ const UsersTable = ({
 				</thead>
 				<tbody>
 					{rows.map((row) => {
-						const editHref = `${basePath}/accounts/users/${encodeURIComponent(row.id)}/edit`;
+						const editHref = adminPathFor(basePath, "userEdit", { id: row.id });
 						return (
 							<tr>
 								<th scope="row">{row.username}</th>
@@ -98,7 +99,7 @@ const UsersTable = ({
 									</a>
 									<a
 										class="deletelink"
-										href={`${basePath}/accounts/users/${encodeURIComponent(row.id)}/delete`}
+										href={adminPathFor(basePath, "userDelete", { id: row.id })}
 										aria-label={t("a11y.deleteItem", { name: row.username })}
 									>
 										{t("action.delete")}
@@ -130,7 +131,7 @@ export const AdminAccountsUsersListView = ({
 			{groupsHref !== undefined && <a href={groupsHref}>{t("accounts.users.groupsLink")}</a>}
 			<a
 				class="addlink"
-				href={`${basePath}/accounts/users/new`}
+				href={adminPathFor(basePath, "userNew")}
 				aria-label={t("a11y.addItem", { label: t("accounts.users.singular") })}
 			>
 				{t("action.create")}

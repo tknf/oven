@@ -13,6 +13,7 @@
  * in each form. When not injected, it stays `null` and no hidden input is emitted,
  * as before (backward compatible).
  */
+import { adminPathFor } from "./admin_routes.js";
 import { CSRF_FORM_FIELD_NAME } from "../security/csrf.js";
 import type { AdminT } from "./admin_catalog.js";
 
@@ -50,10 +51,7 @@ const FeatureFlagsSection = ({
 				{flags.map((flag) => (
 					<li>
 						{flag.name}: {flag.enabled ? t("settings.enabled") : t("settings.disabled")}
-						<form
-							method="post"
-							action={`${basePath}/settings/flags/${encodeURIComponent(flag.name)}`}
-						>
+						<form method="post" action={adminPathFor(basePath, "flag", { name: flag.name })}>
 							<CsrfHiddenInput csrfToken={csrfToken} />
 							<input type="hidden" name="op" value={flag.enabled ? "disable" : "enable"} />
 							<button type="submit">
@@ -88,7 +86,7 @@ const MaintenanceModeSection = ({
 				{t("settings.current")}{" "}
 				{maintenance.enabled ? t("settings.maintOn") : t("settings.maintOff")}
 			</p>
-			<form method="post" action={`${basePath}/settings/maintenance`}>
+			<form method="post" action={adminPathFor(basePath, "maintenance")}>
 				<CsrfHiddenInput csrfToken={csrfToken} />
 				<input type="hidden" name="op" value={maintenance.enabled ? "disable" : "enable"} />
 				<button type="submit">

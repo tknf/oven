@@ -48,3 +48,9 @@ it does not generate a separate schema file or migration.
 
 The full narrative guides live in the package repo under `docs/` (one guide per
 area, example-first). Consult them for depth.
+
+Admin routing is a real consumer of `NamedRoutes` and `RouteHandler.resources()`.
+Its native POST update/delete forms remain explicit routes; `resources()` itself
+still registers PATCH/PUT updates and DELETE destroys. Match `AdminPanel.basePath`
+to the mount, and supply raw record IDs to route generation so they are encoded
+once, including edit form actions. See the [admin guide](https://github.com/tknf/oven/blob/main/docs/admin.md#internal-routing-conventions).

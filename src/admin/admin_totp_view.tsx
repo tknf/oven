@@ -9,6 +9,7 @@
  * Pure JSX that does not depend on Hono's `Context`, same convention as
  * `AdminLoginView` — the caller (`AdminPanel`) resolves everything up front.
  */
+import { adminPathFor } from "./admin_routes.js";
 import { raw } from "hono/html";
 import { CSRF_FORM_FIELD_NAME } from "../security/csrf.js";
 import type { AdminT } from "./admin_catalog.js";
@@ -54,7 +55,7 @@ export const AdminTotpView = ({
 			<style>{raw(ADMIN_CSS)}</style>
 		</head>
 		<body class="login">
-			<form class="login-form" method="post" action={`${basePath}/login/totp`}>
+			<form class="login-form" method="post" action={adminPathFor(basePath, "totp")}>
 				<h1>{brand}</h1>
 				<div class="login-body">
 					{error === "invalid" ? <p class="errornote">{t("auth.totpInvalid")}</p> : null}

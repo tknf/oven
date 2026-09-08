@@ -9,6 +9,7 @@
  * actual delete once its `<form method="post">` (embedding the required
  * `post=yes` field) is submitted.
  */
+import { adminPathFor } from "./admin_routes.js";
 import { CSRF_FORM_FIELD_NAME } from "../security/csrf.js";
 import type { AdminT } from "./admin_catalog.js";
 
@@ -30,8 +31,8 @@ export const AdminAccountsGroupsDeleteView = ({
 	csrfToken,
 	t,
 }: AdminAccountsGroupsDeleteViewProps) => {
-	const listHref = `${basePath}/accounts/groups`;
-	const deleteHref = `${listHref}/${encodeURIComponent(id)}/delete`;
+	const listHref = adminPathFor(basePath, "groups");
+	const deleteHref = adminPathFor(basePath, "groupDelete", { id });
 
 	return (
 		<>

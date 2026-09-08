@@ -3,6 +3,7 @@
  * with a filter form for actor/action/target. A pure JSX component that does not
  * depend on Hono's `Context` (same convention as `admin_jobs_view.tsx`).
  */
+import { adminPathFor } from "./admin_routes.js";
 import type { AdminT } from "./admin_catalog.js";
 import type { AdminAuditRow } from "./admin_types.js";
 
@@ -24,7 +25,7 @@ const AuditFilterForm = ({
 	t: AdminT;
 }) => (
 	<div id="toolbar">
-		<form role="search" method="get" action={`${basePath}/audit`}>
+		<form role="search" method="get" action={adminPathFor(basePath, "audit")}>
 			<label>
 				actor
 				<input type="text" name="actor" value={filter.actor ?? ""} />

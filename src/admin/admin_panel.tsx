@@ -53,12 +53,19 @@
  * editor, not an oversight; see `docs/admin.md`'s inline section for the
  * operator-facing note.
  */
+import {
+	ADMIN_RESOURCE_PATHS,
+	ADMIN_ROUTE_PATHS,
+	adminPathFor,
+	adminResourcePathFor,
+} from "./admin_routes.js";
 import { and, eq, getTableColumns, gte, lt } from "drizzle-orm";
 import type { Column, SQL } from "drizzle-orm";
 import type { Context, Env, MiddlewareHandler } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import type { FormInput, FormInputValue, FormResult } from "../form/form.js";
+import type { ResourceActions } from "../routing/route_handler.js";
 import { RouteHandler } from "../routing/route_handler.js";
 import type { Csrf } from "../security/csrf.js";
 import type { RateLimiter } from "../security/rate_limiter.js";
@@ -385,7 +392,7 @@ const buildExportHref = (
 	const params = new URLSearchParams(currentQuery);
 	params.delete("p");
 	const qs = params.toString();
-	const base = `${basePath}/resources/${resourceKey}/export.csv`;
+	const base = adminResourcePathFor(basePath, resourceKey, "export");
 	return qs ? `${base}?${qs}` : base;
 };
 
@@ -465,7 +472,7 @@ const buildDateHierarchyHref = (
 	if (dh.day !== undefined) params.set("dhd", String(dh.day));
 
 	const qs = params.toString();
-	const base = `${basePath}/resources/${resourceKey}`;
+	const base = adminResourcePathFor(basePath, resourceKey, "index");
 	return qs ? `${base}?${qs}` : base;
 };
 
@@ -1138,6 +1145,18 @@ export type AdminPanelOptions<E extends Env = Env> = {
 	bodyLimitBytes?: number;
 };
 
+/** The closure is available when RouteHandler calls register() from super(). */
+const createAdminResourceHandler = <E extends Env>(
+	actions: ResourceActions<E>,
+): RouteHandler<E> => {
+	class AdminResourceHandler extends RouteHandler<E> {
+		protected register(): void {
+			this.resources(actions);
+		}
+	}
+	return new AdminResourceHandler();
+};
+
 /** `RouteHandler` subclass that serves the unified admin panel, mounted explicitly by the app. */
 export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 	/**
@@ -1263,7 +1282,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 				const identity = this.currentIdentity(c);
 				if (this.effectiveAuth() && !identity) {
 					const next_ = encodeURIComponent(c.req.path);
-					return c.redirect(`${this.resolveBasePath()}/login?next=${next_}`);
+					return c.redirect(`${adminPathFor(this.resolveBasePath(), "login")}?next=${next_}`);
 				}
 
 				if (options.accounts && identity) {
@@ -1277,7 +1296,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 					if (!row || !row.isActive) {
 						this.clearIdentity(c);
 						const next_ = encodeURIComponent(c.req.path);
-						return c.redirect(`${this.resolveBasePath()}/login?next=${next_}`);
+						return c.redirect(`${adminPathFor(this.resolveBasePath(), "login")}?next=${next_}`);
 					}
 
 					/**
@@ -1303,7 +1322,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 					) {
 						this.clearIdentity(c);
 						const next_ = encodeURIComponent(c.req.path);
-						return c.redirect(`${this.resolveBasePath()}/login?next=${next_}`);
+						return c.redirect(`${adminPathFor(this.resolveBasePath(), "login")}?next=${next_}`);
 					}
 
 					/**
@@ -1376,9 +1395,9 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 	private isAuthRoute(c: Context<E>): boolean {
 		const basePath = this.resolveBasePath();
 		return (
-			c.req.path === `${basePath}/login` ||
-			c.req.path === `${basePath}/login/totp` ||
-			c.req.path === `${basePath}/logout`
+			c.req.path === adminPathFor(basePath, "login") ||
+			c.req.path === adminPathFor(basePath, "totp") ||
+			c.req.path === adminPathFor(basePath, "logout")
 		);
 	}
 
@@ -1660,7 +1679,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 	}
 
 	protected register(): void {
-		this.get("/", (c) => {
+		this.get(ADMIN_ROUTE_PATHS.dashboard, (c) => {
 			const options = this.panelOptions;
 			if (!options) return c.text("admin not configured", 500);
 
@@ -1692,14 +1711,16 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 									{resources.map((resource) => (
 										<tr>
 											<th scope="row">
-												<a href={`${basePath}/resources/${resource.key}`}>{resource.label}</a>
+												<a href={adminResourcePathFor(basePath, resource.key, "index")}>
+													{resource.label}
+												</a>
 											</th>
 											<td>
 												{resource.canWrite() &&
 												allowed(resourcePermission(resource.key, "create")) ? (
 													<a
 														class="addlink"
-														href={`${basePath}/resources/${resource.key}/new`}
+														href={adminResourcePathFor(basePath, resource.key, "new")}
 														aria-label={t("a11y.addItem", { label: resource.label })}
 													>
 														{t("action.add")}
@@ -1708,7 +1729,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 											</td>
 											<td>
 												<a
-													href={`${basePath}/resources/${resource.key}`}
+													href={adminResourcePathFor(basePath, resource.key, "index")}
 													aria-label={t("a11y.changeItem", { label: resource.label })}
 												>
 													{t("action.change")}
@@ -1732,7 +1753,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 
 	/** Builds the leading `[Home]` (or `[Home → …]`) breadcrumb segment shared by every non-dashboard screen. */
 	private homeBreadcrumb(t: AdminT): AdminBreadcrumb {
-		return { href: this.resolveBasePath(), label: t("breadcrumb.home") };
+		return { href: adminPathFor(this.resolveBasePath(), "dashboard"), label: t("breadcrumb.home") };
 	}
 
 	/** Resolves `panelOptions.basePath` (default `"/admin"`). Named this way because `basePath` is a Hono-reserved name. */
@@ -1778,7 +1799,11 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 		return {
 			greeting: identity.label ?? identity.id,
 			links: [
-				{ label: t("auth.logOut"), href: `${this.resolveBasePath()}/logout`, method: "post" },
+				{
+					label: t("auth.logOut"),
+					href: adminPathFor(this.resolveBasePath(), "logout"),
+					method: "post",
+				},
 			],
 		};
 	}
@@ -1817,11 +1842,11 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 	 */
 	private resolveSaveRedirect(body: FormInput, key: string, rowId: string): string {
 		const basePath = this.resolveBasePath();
-		if (body._addanother !== undefined) return `${basePath}/resources/${key}/new`;
+		if (body._addanother !== undefined) return adminResourcePathFor(basePath, key, "new");
 		if (body._continue !== undefined) {
-			return `${basePath}/resources/${key}/${encodeURIComponent(rowId)}/edit`;
+			return adminResourcePathFor(basePath, key, "edit", { id: rowId });
 		}
-		return `${basePath}/resources/${key}`;
+		return adminResourcePathFor(basePath, key, "index");
 	}
 
 	/**
@@ -1882,20 +1907,20 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 		const allowed = this.permissionFilter(c);
 
 		if (options.jobs && allowed("jobs.view")) {
-			nav.push({ href: `${basePath}/jobs`, label: t("nav.jobs") });
+			nav.push({ href: adminPathFor(basePath, "jobs"), label: t("nav.jobs") });
 		}
 		if (options.settings && allowed("settings.view")) {
-			nav.push({ href: `${basePath}/settings`, label: t("nav.settings") });
+			nav.push({ href: adminPathFor(basePath, "settings"), label: t("nav.settings") });
 		}
 		if (options.audit && allowed("audit.view")) {
-			nav.push({ href: `${basePath}/audit`, label: t("nav.audit") });
+			nav.push({ href: adminPathFor(basePath, "audit"), label: t("nav.audit") });
 		}
 		if (options.accounts && operator?.row.isSuperuser) {
-			nav.push({ href: `${basePath}/accounts/users`, label: t("nav.accounts") });
+			nav.push({ href: adminPathFor(basePath, "users"), label: t("nav.accounts") });
 		}
 		for (const resource of this.visibleResources(c)) {
 			nav.push({
-				href: `${basePath}/resources/${resource.key}`,
+				href: adminResourcePathFor(basePath, resource.key, "index"),
 				label: resource.label,
 				group: "resource",
 			});
@@ -1946,7 +1971,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 		body: FormInput,
 	): Promise<Response> {
 		const basePath = this.resolveBasePath();
-		const listUrl = `${basePath}/resources/${key}`;
+		const listUrl = adminResourcePathFor(basePath, key, "index");
 		const action = typeof body.action === "string" ? body.action : "";
 		const selected = selectedActionIds(body);
 
@@ -2039,7 +2064,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 	 * success path does (`setIdentity` + redirect to `next`).
 	 */
 	private wireAuth(): void {
-		this.get("/login", async (c) => {
+		this.get(ADMIN_ROUTE_PATHS.login, async (c) => {
 			const options = this.panelOptions;
 			if (!options || !this.effectiveAuth()) return c.notFound();
 
@@ -2061,7 +2086,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 			);
 		});
 
-		this.post("/login", async (c) => {
+		this.post(ADMIN_ROUTE_PATHS.login, async (c) => {
 			const options = this.panelOptions;
 			const auth = this.effectiveAuth();
 			if (!options || !auth) return c.notFound();
@@ -2167,7 +2192,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 			 */
 			if (options.accounts && row && this.totpSecondStepRequired(options.accounts.users, row)) {
 				this.setTotpPending(c, { id: row.id, next, expiresAt: Date.now() + TOTP_PENDING_TTL_MS });
-				return c.redirect(`${basePath}/login/totp`, 303);
+				return c.redirect(adminPathFor(basePath, "totp"), 303);
 			}
 
 			/**
@@ -2198,7 +2223,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 			return c.redirect(next, 303);
 		});
 
-		this.get("/login/totp", async (c) => {
+		this.get(ADMIN_ROUTE_PATHS.totp, async (c) => {
 			const options = this.panelOptions;
 			if (!options || !this.effectiveAuth()) return c.notFound();
 
@@ -2220,7 +2245,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 			const pending = this.currentTotpPending(c);
 			if (!pending || pending.expiresAt <= Date.now()) {
 				this.clearTotpPending(c);
-				return c.redirect(`${basePath}/login`, 303);
+				return c.redirect(adminPathFor(basePath, "login"), 303);
 			}
 
 			const t = bindAdminT(c);
@@ -2236,7 +2261,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 			);
 		});
 
-		this.post("/login/totp", async (c) => {
+		this.post(ADMIN_ROUTE_PATHS.totp, async (c) => {
 			const options = this.panelOptions;
 			if (!options || !this.effectiveAuth()) return c.notFound();
 
@@ -2258,7 +2283,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 			const pending = this.currentTotpPending(c);
 			if (!pending || pending.expiresAt <= Date.now()) {
 				this.clearTotpPending(c);
-				return c.redirect(`${basePath}/login`, 303);
+				return c.redirect(adminPathFor(basePath, "login"), 303);
 			}
 
 			const body = await c.req.parseBody();
@@ -2305,7 +2330,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 				!this.totpSecondStepRequired(options.accounts.users, row)
 			) {
 				this.clearTotpPending(c);
-				return c.redirect(`${basePath}/login`, 303);
+				return c.redirect(adminPathFor(basePath, "login"), 303);
 			}
 
 			/**
@@ -2345,7 +2370,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 			return c.redirect(this.sanitizeNext(pending.next), 303);
 		});
 
-		this.post("/logout", async (c) => {
+		this.post(ADMIN_ROUTE_PATHS.logout, async (c) => {
 			if (!this.effectiveAuth()) return c.notFound();
 
 			this.clearIdentity(c);
@@ -2356,13 +2381,13 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 			 * enforces (see `ADMIN_TOTP_PENDING_SESSION_KEY`'s JSDoc).
 			 */
 			this.clearTotpPending(c);
-			return c.redirect(`${this.resolveBasePath()}/login`, 303);
+			return c.redirect(adminPathFor(this.resolveBasePath(), "login"), 303);
 		});
 	}
 
 	/** Registers `GET /jobs`, `POST /jobs/:id/retry`, and `POST /jobs/:id/delete`. */
 	private wireJobs(): void {
-		this.get("/jobs", async (c) => {
+		this.get(ADMIN_ROUTE_PATHS.jobs, async (c) => {
 			const options = this.panelOptions;
 			if (!options?.jobs) return c.notFound();
 
@@ -2396,30 +2421,30 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 			);
 		});
 
-		this.post("/jobs/:id/retry", async (c) => {
+		this.post(ADMIN_ROUTE_PATHS.jobRetry, async (c) => {
 			const options = this.panelOptions;
 			if (!options?.jobs) return c.notFound();
 
 			const id = c.req.param("id");
 			const ok = await options.jobs.console.retryFailed(id);
 			await this.recordAudit(c, "job.retry", id, { ok });
-			return c.redirect(`${this.resolveBasePath()}/jobs`, 303);
+			return c.redirect(adminPathFor(this.resolveBasePath(), "jobs"), 303);
 		});
 
-		this.post("/jobs/:id/delete", async (c) => {
+		this.post(ADMIN_ROUTE_PATHS.jobDelete, async (c) => {
 			const options = this.panelOptions;
 			if (!options?.jobs) return c.notFound();
 
 			const id = c.req.param("id");
 			const ok = await options.jobs.console.deleteJob(id);
 			await this.recordAudit(c, "job.delete", id, { ok });
-			return c.redirect(`${this.resolveBasePath()}/jobs`, 303);
+			return c.redirect(adminPathFor(this.resolveBasePath(), "jobs"), 303);
 		});
 	}
 
 	/** Registers `GET /settings`, `POST /settings/flags/:name`, and `POST /settings/maintenance`. */
 	private wireSettings(): void {
-		this.get("/settings", async (c) => {
+		this.get(ADMIN_ROUTE_PATHS.settings, async (c) => {
 			const options = this.panelOptions;
 			if (!options?.settings) return c.notFound();
 
@@ -2459,7 +2484,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 			);
 		});
 
-		this.post("/settings/flags/:name", async (c) => {
+		this.post(ADMIN_ROUTE_PATHS.flag, async (c) => {
 			const featureFlags = this.panelOptions?.settings?.featureFlags;
 			if (!featureFlags) return c.notFound();
 
@@ -2470,10 +2495,10 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 			else await featureFlags.flags.disable(name);
 
 			await this.recordAudit(c, op === "enable" ? "flag.enable" : "flag.disable", name);
-			return c.redirect(`${this.resolveBasePath()}/settings`, 303);
+			return c.redirect(adminPathFor(this.resolveBasePath(), "settings"), 303);
 		});
 
-		this.post("/settings/maintenance", async (c) => {
+		this.post(ADMIN_ROUTE_PATHS.maintenance, async (c) => {
 			const maintenance = this.panelOptions?.settings?.maintenance;
 			if (!maintenance) return c.notFound();
 
@@ -2487,13 +2512,13 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 				op === "enable" ? "maintenance.enable" : "maintenance.disable",
 				"maintenance",
 			);
-			return c.redirect(`${this.resolveBasePath()}/settings`, 303);
+			return c.redirect(adminPathFor(this.resolveBasePath(), "settings"), 303);
 		});
 	}
 
 	/** Registers `GET /audit`. */
 	private wireAudit(): void {
-		this.get("/audit", async (c) => {
+		this.get(ADMIN_ROUTE_PATHS.audit, async (c) => {
 			const options = this.panelOptions;
 			if (!options?.audit) return c.notFound();
 
@@ -2550,10 +2575,10 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 	): Response | Promise<Response> {
 		const options = this.panelOptions;
 		const basePath = this.resolveBasePath();
-		const listHref = `${basePath}/accounts/users`;
+		const listHref = adminPathFor(basePath, "users");
 		const t = bindAdminT(c);
 		const action =
-			args.mode === "new" ? listHref : `${listHref}/${encodeURIComponent(args.id ?? "")}`;
+			args.mode === "new" ? listHref : adminPathFor(basePath, "user", { id: args.id ?? "" });
 
 		return c.html(
 			<AdminLayout
@@ -2609,7 +2634,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 	 * `wireAccountsGroups`, called at the end of this method.
 	 */
 	private wireAccounts(): void {
-		this.get("/accounts/users", async (c) => {
+		this.get(ADMIN_ROUTE_PATHS.users, async (c) => {
 			const options = this.panelOptions;
 			if (!options?.accounts) return c.notFound();
 
@@ -2647,7 +2672,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 						pageCount={pageCount}
 						total={total}
 						groupsHref={
-							options.accounts.groups ? `${this.resolveBasePath()}/accounts/groups` : undefined
+							options.accounts.groups ? adminPathFor(this.resolveBasePath(), "groups") : undefined
 						}
 						t={t}
 					/>
@@ -2655,7 +2680,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 			);
 		});
 
-		this.get("/accounts/users/new", async (c) => {
+		this.get(ADMIN_ROUTE_PATHS.userNew, async (c) => {
 			const options = this.panelOptions;
 			if (!options?.accounts) return c.notFound();
 
@@ -2673,7 +2698,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 			});
 		});
 
-		this.post("/accounts/users", async (c) => {
+		this.post(ADMIN_ROUTE_PATHS.users, async (c) => {
 			const options = this.panelOptions;
 			if (!options?.accounts) return c.notFound();
 			const accounts = options.accounts;
@@ -2733,10 +2758,10 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 			});
 
 			this.flashMessage(c, "success", t("message.added", { label: t("accounts.users.singular") }));
-			return c.redirect(`${this.resolveBasePath()}/accounts/users`, 303);
+			return c.redirect(adminPathFor(this.resolveBasePath(), "users"), 303);
 		});
 
-		this.get("/accounts/users/:id/edit", async (c) => {
+		this.get(ADMIN_ROUTE_PATHS.userEdit, async (c) => {
 			const options = this.panelOptions;
 			if (!options?.accounts) return c.notFound();
 
@@ -2773,7 +2798,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 			});
 		});
 
-		this.post("/accounts/users/:id", async (c) => {
+		this.post(ADMIN_ROUTE_PATHS.user, async (c) => {
 			const options = this.panelOptions;
 			if (!options?.accounts) return c.notFound();
 			const accounts = options.accounts;
@@ -2850,13 +2875,10 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 				"success",
 				t("message.changed", { label: t("accounts.users.singular") }),
 			);
-			return c.redirect(
-				`${this.resolveBasePath()}/accounts/users/${encodeURIComponent(id)}/edit`,
-				303,
-			);
+			return c.redirect(adminPathFor(this.resolveBasePath(), "userEdit", { id }), 303);
 		});
 
-		this.post("/accounts/users/:id/password", async (c) => {
+		this.post(ADMIN_ROUTE_PATHS.userPassword, async (c) => {
 			const options = this.panelOptions;
 			if (!options?.accounts) return c.notFound();
 
@@ -2911,13 +2933,10 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 				"success",
 				t("message.changed", { label: t("accounts.users.singular") }),
 			);
-			return c.redirect(
-				`${this.resolveBasePath()}/accounts/users/${encodeURIComponent(id)}/edit`,
-				303,
-			);
+			return c.redirect(adminPathFor(this.resolveBasePath(), "userEdit", { id }), 303);
 		});
 
-		this.get("/accounts/users/:id/delete", async (c) => {
+		this.get(ADMIN_ROUTE_PATHS.userDelete, async (c) => {
 			const options = this.panelOptions;
 			if (!options?.accounts) return c.notFound();
 
@@ -2927,7 +2946,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 
 			const t = bindAdminT(c);
 			const basePath = this.resolveBasePath();
-			const listHref = `${basePath}/accounts/users`;
+			const listHref = adminPathFor(basePath, "users");
 
 			return c.html(
 				<AdminLayout
@@ -2938,7 +2957,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 					breadcrumbs={[
 						this.homeBreadcrumb(t),
 						{ href: listHref, label: t("nav.accounts") },
-						{ href: `${listHref}/${encodeURIComponent(id)}/edit`, label: row.username },
+						{ href: adminPathFor(basePath, "userEdit", { id }), label: row.username },
 						{ label: t("action.delete") },
 					]}
 					messages={this.consumeMessages(c)}
@@ -2959,7 +2978,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 			);
 		});
 
-		this.post("/accounts/users/:id/delete", async (c) => {
+		this.post(ADMIN_ROUTE_PATHS.userDelete, async (c) => {
 			const options = this.panelOptions;
 			if (!options?.accounts) return c.notFound();
 
@@ -2967,7 +2986,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 			const existing = await options.accounts.users.retrieve(id);
 			if (!existing) return c.notFound();
 
-			const listUrl = `${this.resolveBasePath()}/accounts/users`;
+			const listUrl = adminPathFor(this.resolveBasePath(), "users");
 			const body = await c.req.parseBody();
 			if (body.post !== "yes") return c.redirect(listUrl, 303);
 
@@ -2983,7 +3002,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 			} catch (err) {
 				if (!(err instanceof LastActiveSuperuserError)) throw err;
 				this.flashMessage(c, "error", t("accounts.users.lastActiveSuperuserError"));
-				return c.redirect(`${listUrl}/${encodeURIComponent(id)}/edit`, 303);
+				return c.redirect(adminPathFor(this.resolveBasePath(), "userEdit", { id }), 303);
 			}
 			if (options.accounts.groups) await options.accounts.groups.setUserGroups(id, []);
 			await this.recordAudit(c, "accounts.user.delete", id);
@@ -3015,7 +3034,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 	 * every other optional section.
 	 */
 	private wireAccountsGroups(): void {
-		this.get("/accounts/groups", async (c) => {
+		this.get(ADMIN_ROUTE_PATHS.groups, async (c) => {
 			const options = this.panelOptions;
 			if (!options?.accounts?.groups) return c.notFound();
 
@@ -3031,7 +3050,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 					lang={c.get("language") ?? "en"}
 					breadcrumbs={[
 						this.homeBreadcrumb(t),
-						{ href: `${basePath}/accounts/users`, label: t("nav.accounts") },
+						{ href: adminPathFor(basePath, "users"), label: t("nav.accounts") },
 						{ label: t("accounts.groups.title") },
 					]}
 					messages={this.consumeMessages(c)}
@@ -3043,14 +3062,14 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 					<AdminAccountsGroupsListView
 						basePath={basePath}
 						rows={rows}
-						usersHref={`${basePath}/accounts/users`}
+						usersHref={adminPathFor(basePath, "users")}
 						t={t}
 					/>
 				</AdminLayout>,
 			);
 		});
 
-		this.get("/accounts/groups/new", async (c) => {
+		this.get(ADMIN_ROUTE_PATHS.groupNew, async (c) => {
 			const options = this.panelOptions;
 			if (!options?.accounts?.groups) return c.notFound();
 
@@ -3064,7 +3083,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 			});
 		});
 
-		this.post("/accounts/groups", async (c) => {
+		this.post(ADMIN_ROUTE_PATHS.groups, async (c) => {
 			const options = this.panelOptions;
 			if (!options?.accounts?.groups) return c.notFound();
 
@@ -3105,10 +3124,10 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 			});
 
 			this.flashMessage(c, "success", t("message.added", { label: t("accounts.groups.singular") }));
-			return c.redirect(`${this.resolveBasePath()}/accounts/groups`, 303);
+			return c.redirect(adminPathFor(this.resolveBasePath(), "groups"), 303);
 		});
 
-		this.get("/accounts/groups/:id/edit", async (c) => {
+		this.get(ADMIN_ROUTE_PATHS.groupEdit, async (c) => {
 			const options = this.panelOptions;
 			if (!options?.accounts?.groups) return c.notFound();
 
@@ -3132,7 +3151,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 			});
 		});
 
-		this.post("/accounts/groups/:id", async (c) => {
+		this.post(ADMIN_ROUTE_PATHS.group, async (c) => {
 			const options = this.panelOptions;
 			if (!options?.accounts?.groups) return c.notFound();
 
@@ -3183,13 +3202,10 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 				"success",
 				t("message.changed", { label: t("accounts.groups.singular") }),
 			);
-			return c.redirect(
-				`${this.resolveBasePath()}/accounts/groups/${encodeURIComponent(id)}/edit`,
-				303,
-			);
+			return c.redirect(adminPathFor(this.resolveBasePath(), "groupEdit", { id }), 303);
 		});
 
-		this.get("/accounts/groups/:id/delete", async (c) => {
+		this.get(ADMIN_ROUTE_PATHS.groupDelete, async (c) => {
 			const options = this.panelOptions;
 			if (!options?.accounts?.groups) return c.notFound();
 
@@ -3199,8 +3215,8 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 
 			const t = bindAdminT(c);
 			const basePath = this.resolveBasePath();
-			const usersHref = `${basePath}/accounts/users`;
-			const listHref = `${basePath}/accounts/groups`;
+			const usersHref = adminPathFor(basePath, "users");
+			const listHref = adminPathFor(basePath, "groups");
 
 			return c.html(
 				<AdminLayout
@@ -3212,7 +3228,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 						this.homeBreadcrumb(t),
 						{ href: usersHref, label: t("nav.accounts") },
 						{ href: listHref, label: t("accounts.groups.title") },
-						{ href: `${listHref}/${encodeURIComponent(id)}/edit`, label: row.name },
+						{ href: adminPathFor(basePath, "groupEdit", { id }), label: row.name },
 						{ label: t("action.delete") },
 					]}
 					messages={this.consumeMessages(c)}
@@ -3232,7 +3248,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 			);
 		});
 
-		this.post("/accounts/groups/:id/delete", async (c) => {
+		this.post(ADMIN_ROUTE_PATHS.groupDelete, async (c) => {
 			const options = this.panelOptions;
 			if (!options?.accounts?.groups) return c.notFound();
 
@@ -3240,7 +3256,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 			const existing = await findGroup(options.accounts.groups, id);
 			if (!existing) return c.notFound();
 
-			const listUrl = `${this.resolveBasePath()}/accounts/groups`;
+			const listUrl = adminPathFor(this.resolveBasePath(), "groups");
 			const body = await c.req.parseBody();
 			if (body.post !== "yes") return c.redirect(listUrl, 303);
 
@@ -3278,11 +3294,11 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 	): Response | Promise<Response> {
 		const options = this.panelOptions;
 		const basePath = this.resolveBasePath();
-		const usersHref = `${basePath}/accounts/users`;
-		const listHref = `${basePath}/accounts/groups`;
+		const usersHref = adminPathFor(basePath, "users");
+		const listHref = adminPathFor(basePath, "groups");
 		const t = bindAdminT(c);
 		const action =
-			args.mode === "new" ? listHref : `${listHref}/${encodeURIComponent(args.id ?? "")}`;
+			args.mode === "new" ? listHref : adminPathFor(basePath, "group", { id: args.id ?? "" });
 
 		return c.html(
 			<AdminLayout
@@ -3336,10 +3352,11 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 
 		for (const resource of resources) {
 			const key = resource.key;
+			const actions: ResourceActions<E> = {};
 			const resolve = (): AdminResource | undefined =>
 				this.panelOptions?.resources?.find((candidate) => candidate.key === key);
 
-			this.get(`/resources/${key}`, async (c) => {
+			actions.index = async (c) => {
 				const options = this.panelOptions;
 				const target = resolve();
 				if (!options || !target) return c.notFound();
@@ -3445,10 +3462,10 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 						/>
 					</AdminLayout>,
 				);
-			});
+			};
 
 			if (resource.canWrite()) {
-				this.get(`/resources/${key}/new`, async (c) => {
+				actions.new = async (c) => {
 					const options = this.panelOptions;
 					const target = resolve();
 					if (!options || !target) return c.notFound();
@@ -3466,7 +3483,10 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 							lang={c.get("language") ?? "en"}
 							breadcrumbs={[
 								this.homeBreadcrumb(t),
-								{ href: `${this.resolveBasePath()}/resources/${key}`, label: target.label },
+								{
+									href: adminResourcePathFor(this.resolveBasePath(), key, "index"),
+									label: target.label,
+								},
 								{ label: t("action.add") },
 							]}
 							messages={this.consumeMessages(c)}
@@ -3481,14 +3501,14 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 								label={target.label}
 								mode="new"
 								form={binding}
-								action={`${this.resolveBasePath()}/resources/${key}`}
+								action={adminResourcePathFor(this.resolveBasePath(), key, "index")}
 								inlineGroups={inlineGroups}
 								csrfToken={this.csrfToken(c)}
 								t={t}
 							/>
 						</AdminLayout>,
 					);
-				});
+				};
 			}
 
 			/**
@@ -3498,8 +3518,8 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 			 * `q`/filter/date-hierarchy/`o` query params as the list route above, so
 			 * the exported rows always match what's currently on screen — but fetches
 			 * up to `EXPORT_MAX_ROWS` rows in one shot rather than paginating.
-			 * Registered ahead of the `:id` show route below for the same reason `new`
-			 * is above: `export.csv` must never be matched as an `:id` value.
+			 * Registered ahead of the resource handler mount below: `export.csv` must
+			 * never be matched as an `:id` value.
 			 * Available for every resource, writable or read-only (unlike `new`),
 			 * since exporting is a read, not a write, operation; `requiredPermission`
 			 * resolves `GET /resources/<key>/export.csv` to the same
@@ -3507,7 +3527,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 			 * whose last segment isn't `"new"`), so no separate permission wiring is
 			 * needed.
 			 */
-			this.get(`/resources/${key}/export.csv`, async (c) => {
+			this.get(`${ADMIN_ROUTE_PATHS.resources}/${key}${ADMIN_RESOURCE_PATHS.export}`, async (c) => {
 				const target = resolve();
 				if (!target) return c.notFound();
 
@@ -3558,12 +3578,14 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 				).csv(c);
 			});
 
-			this.get(`/resources/${key}/:id`, async (c) => {
+			actions.show = async (c) => {
 				const options = this.panelOptions;
 				const target = resolve();
 				if (!options || !target) return c.notFound();
 
-				const row = await target.model.retrieve(c.req.param("id"));
+				const id = c.req.param("id");
+				if (id === undefined) return c.notFound();
+				const row = await target.model.retrieve(id);
 				if (!row) return c.notFound();
 
 				const t = bindAdminT(c);
@@ -3578,7 +3600,10 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 						lang={c.get("language") ?? "en"}
 						breadcrumbs={[
 							this.homeBreadcrumb(t),
-							{ href: `${this.resolveBasePath()}/resources/${key}`, label: target.label },
+							{
+								href: adminResourcePathFor(this.resolveBasePath(), key, "index"),
+								label: target.label,
+							},
 							{ label: t("resource.showTitle", { label: target.label }) },
 						]}
 						messages={this.consumeMessages(c)}
@@ -3600,7 +3625,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 						/>
 					</AdminLayout>,
 				);
-			});
+			};
 
 			if (resource.canWrite()) {
 				/**
@@ -3612,7 +3637,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 				 * is required so repeated `_selected_action` checkboxes survive as an array
 				 * (Hono's default `parseBody` keeps only the last value of a repeated field).
 				 */
-				this.post(`/resources/${key}`, async (c) => {
+				actions.create = async (c) => {
 					const options = this.panelOptions;
 					const target = resolve();
 					if (!options || !target) return c.notFound();
@@ -3647,7 +3672,10 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 								lang={c.get("language") ?? "en"}
 								breadcrumbs={[
 									this.homeBreadcrumb(t),
-									{ href: `${this.resolveBasePath()}/resources/${key}`, label: target.label },
+									{
+										href: adminResourcePathFor(this.resolveBasePath(), key, "index"),
+										label: target.label,
+									},
 									{ label: t("action.add") },
 								]}
 								userTools={this.resolveUserTools(c)}
@@ -3661,7 +3689,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 									label={target.label}
 									mode="new"
 									form={binding}
-									action={`${this.resolveBasePath()}/resources/${key}`}
+									action={adminResourcePathFor(this.resolveBasePath(), key, "index")}
 									inlineGroups={inlineGroups}
 									csrfToken={this.csrfToken(c)}
 									t={t}
@@ -3679,9 +3707,9 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 					const t = bindAdminT(c);
 					this.flashMessage(c, "success", t("message.added", { label: target.label }));
 					return c.redirect(this.resolveSaveRedirect(body, key, createdId), 303);
-				});
+				};
 
-				this.get(`/resources/${key}/:id/edit`, async (c) => {
+				actions.edit = async (c) => {
 					const options = this.panelOptions;
 					const target = resolve();
 					if (!options || !target) return c.notFound();
@@ -3689,6 +3717,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 					if (!form) return c.notFound();
 
 					const id = c.req.param("id");
+					if (id === undefined) return c.notFound();
 					const row = await target.model.retrieve(id);
 					if (!row) return c.notFound();
 
@@ -3703,7 +3732,10 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 							lang={c.get("language") ?? "en"}
 							breadcrumbs={[
 								this.homeBreadcrumb(t),
-								{ href: `${this.resolveBasePath()}/resources/${key}`, label: target.label },
+								{
+									href: adminResourcePathFor(this.resolveBasePath(), key, "index"),
+									label: target.label,
+								},
 								{ label: t("action.change") },
 							]}
 							messages={this.consumeMessages(c)}
@@ -3718,7 +3750,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 								label={target.label}
 								mode="edit"
 								form={binding}
-								action={`${this.resolveBasePath()}/resources/${key}/${id}`}
+								action={adminResourcePathFor(this.resolveBasePath(), key, "show", { id })}
 								id={id}
 								inlineGroups={inlineGroups}
 								csrfToken={this.csrfToken(c)}
@@ -3726,43 +3758,115 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 							/>
 						</AdminLayout>,
 					);
-				});
+				};
 
-				this.post(`/resources/${key}/:id`, async (c) => {
-					const options = this.panelOptions;
-					const target = resolve();
-					if (!options || !target) return c.notFound();
-					const form = target.form?.();
-					if (!form) return c.notFound();
+				this.post(
+					`${ADMIN_ROUTE_PATHS.resources}/${key}${ADMIN_RESOURCE_PATHS.show}`,
+					async (c) => {
+						const options = this.panelOptions;
+						const target = resolve();
+						if (!options || !target) return c.notFound();
+						const form = target.form?.();
+						if (!form) return c.notFound();
 
-					const id = c.req.param("id");
-					const existing = await target.model.retrieve(id);
-					if (!existing) return c.notFound();
+						const id = c.req.param("id");
+						const existing = await target.model.retrieve(id);
+						if (!existing) return c.notFound();
 
-					/**
-					 * `{ all: true }` is needed here too (not just on create), so a child
-					 * inline row's own multi-value fields (e.g. a `checkbox-group`) survive
-					 * as an array rather than collapsing to their last value.
-					 */
-					const body = await c.req.parseBody({ all: true });
+						/**
+						 * `{ all: true }` is needed here too (not just on create), so a child
+						 * inline row's own multi-value fields (e.g. a `checkbox-group`) survive
+						 * as an array rather than collapsing to their last value.
+						 */
+						const body = await c.req.parseBody({ all: true });
 
-					/**
-					 * Parent and every inline row are validated up front, before any write
-					 * (see the module JSDoc "Persisting inline child rows"): only when
-					 * `allValid` holds does the handler proceed to update the parent and
-					 * persist inline rows.
-					 */
-					const parentResult = await form.validate(body);
-					const inlinePlans = await planAllInlineRows(target, body);
-					const allValid = parentResult.ok && allInlineRowsValid(inlinePlans);
+						/**
+						 * Parent and every inline row are validated up front, before any write
+						 * (see the module JSDoc "Persisting inline child rows"): only when
+						 * `allValid` holds does the handler proceed to update the parent and
+						 * persist inline rows.
+						 */
+						const parentResult = await form.validate(body);
+						const inlinePlans = await planAllInlineRows(target, body);
+						const allValid = parentResult.ok && allInlineRowsValid(inlinePlans);
 
-					if (!allValid) {
-						const binding = form.bind({
-							errors: parentResult.ok ? [] : parentResult.errors,
-							values: parentResult.ok ? body : parentResult.values,
-						});
-						const inlineGroups = buildInlineGroupsFromBody(target, body, inlinePlans);
+						if (!allValid) {
+							const binding = form.bind({
+								errors: parentResult.ok ? [] : parentResult.errors,
+								values: parentResult.ok ? body : parentResult.values,
+							});
+							const inlineGroups = buildInlineGroupsFromBody(target, body, inlinePlans);
+							const t = bindAdminT(c);
+							return c.html(
+								<AdminLayout
+									brand={options.brand ?? "Admin"}
+									nav={this.buildNav(c, t)}
+									resourcesLabel={t("index.resources")}
+									lang={c.get("language") ?? "en"}
+									breadcrumbs={[
+										this.homeBreadcrumb(t),
+										{
+											href: adminResourcePathFor(this.resolveBasePath(), key, "index"),
+											label: target.label,
+										},
+										{ label: t("action.change") },
+									]}
+									userTools={this.resolveUserTools(c)}
+									csrfToken={this.csrfToken(c)}
+									currentPath={c.req.path}
+									t={t}
+								>
+									<AdminResourceFormView
+										basePath={this.resolveBasePath()}
+										resourceKey={key}
+										label={target.label}
+										mode="edit"
+										form={binding}
+										action={adminResourcePathFor(this.resolveBasePath(), key, "show", { id })}
+										id={id}
+										inlineGroups={inlineGroups}
+										csrfToken={this.csrfToken(c)}
+										t={t}
+									/>
+								</AdminLayout>,
+								422,
+							);
+						}
+
+						/**
+						 * The row's identity is authoritatively the `id` from the URL, so even if
+						 * the primary key column (`target.primaryKey`) ends up in the validated
+						 * value, the row's primary key value must not be overwritten; the primary
+						 * key is stripped before passing to `update`. Allowlisting non-primary-key
+						 * columns is the app's `Form#schema()`'s responsibility (the contract is
+						 * that admin does not use a schema that fails to strip unknown keys), so it
+						 * is not done here (this stripping is not applied on create, since it would
+						 * break tables where admin inputs a natural key such as `code`).
+						 */
+						await target.model.update(id, withoutKey(parentResult.value, target.primaryKey));
+						await persistInlineRows(target, inlinePlans, id);
+						await this.recordAudit(c, "resource.update", `${key}/${id}`);
+
 						const t = bindAdminT(c);
+						this.flashMessage(c, "success", t("message.changed", { label: target.label }));
+						return c.redirect(this.resolveSaveRedirect(body, key, id), 303);
+					},
+				);
+
+				this.get(
+					`${ADMIN_ROUTE_PATHS.resources}/${key}${ADMIN_RESOURCE_PATHS.delete}`,
+					async (c) => {
+						const options = this.panelOptions;
+						const target = resolve();
+						if (!options || !target) return c.notFound();
+
+						const id = c.req.param("id");
+						const row = await target.model.retrieve(id);
+						if (!row) return c.notFound();
+
+						const t = bindAdminT(c);
+						const basePath = this.resolveBasePath();
+						const listHref = adminResourcePathFor(basePath, key, "index");
 						return c.html(
 							<AdminLayout
 								brand={options.brand ?? "Admin"}
@@ -3771,93 +3875,30 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 								lang={c.get("language") ?? "en"}
 								breadcrumbs={[
 									this.homeBreadcrumb(t),
-									{ href: `${this.resolveBasePath()}/resources/${key}`, label: target.label },
-									{ label: t("action.change") },
+									{ href: listHref, label: target.label },
+									{ href: adminResourcePathFor(basePath, key, "show", { id }), label: id },
+									{ label: t("action.delete") },
 								]}
+								messages={this.consumeMessages(c)}
 								userTools={this.resolveUserTools(c)}
 								csrfToken={this.csrfToken(c)}
 								currentPath={c.req.path}
 								t={t}
 							>
-								<AdminResourceFormView
-									basePath={this.resolveBasePath()}
+								<AdminResourceDeleteView
+									basePath={basePath}
 									resourceKey={key}
 									label={target.label}
-									mode="edit"
-									form={binding}
-									action={`${this.resolveBasePath()}/resources/${key}/${id}`}
-									id={id}
-									inlineGroups={inlineGroups}
+									columns={target.columns().map((column) => column.name)}
+									row={row}
+									primaryKey={target.primaryKey}
 									csrfToken={this.csrfToken(c)}
 									t={t}
 								/>
 							</AdminLayout>,
-							422,
 						);
-					}
-
-					/**
-					 * The row's identity is authoritatively the `id` from the URL, so even if
-					 * the primary key column (`target.primaryKey`) ends up in the validated
-					 * value, the row's primary key value must not be overwritten; the primary
-					 * key is stripped before passing to `update`. Allowlisting non-primary-key
-					 * columns is the app's `Form#schema()`'s responsibility (the contract is
-					 * that admin does not use a schema that fails to strip unknown keys), so it
-					 * is not done here (this stripping is not applied on create, since it would
-					 * break tables where admin inputs a natural key such as `code`).
-					 */
-					await target.model.update(id, withoutKey(parentResult.value, target.primaryKey));
-					await persistInlineRows(target, inlinePlans, id);
-					await this.recordAudit(c, "resource.update", `${key}/${id}`);
-
-					const t = bindAdminT(c);
-					this.flashMessage(c, "success", t("message.changed", { label: target.label }));
-					return c.redirect(this.resolveSaveRedirect(body, key, id), 303);
-				});
-
-				this.get(`/resources/${key}/:id/delete`, async (c) => {
-					const options = this.panelOptions;
-					const target = resolve();
-					if (!options || !target) return c.notFound();
-
-					const id = c.req.param("id");
-					const row = await target.model.retrieve(id);
-					if (!row) return c.notFound();
-
-					const t = bindAdminT(c);
-					const basePath = this.resolveBasePath();
-					const listHref = `${basePath}/resources/${key}`;
-					return c.html(
-						<AdminLayout
-							brand={options.brand ?? "Admin"}
-							nav={this.buildNav(c, t)}
-							resourcesLabel={t("index.resources")}
-							lang={c.get("language") ?? "en"}
-							breadcrumbs={[
-								this.homeBreadcrumb(t),
-								{ href: listHref, label: target.label },
-								{ href: `${listHref}/${encodeURIComponent(id)}`, label: id },
-								{ label: t("action.delete") },
-							]}
-							messages={this.consumeMessages(c)}
-							userTools={this.resolveUserTools(c)}
-							csrfToken={this.csrfToken(c)}
-							currentPath={c.req.path}
-							t={t}
-						>
-							<AdminResourceDeleteView
-								basePath={basePath}
-								resourceKey={key}
-								label={target.label}
-								columns={target.columns().map((column) => column.name)}
-								row={row}
-								primaryKey={target.primaryKey}
-								csrfToken={this.csrfToken(c)}
-								t={t}
-							/>
-						</AdminLayout>,
-					);
-				});
+					},
+				);
 
 				/**
 				 * Requires the confirmation screen's hidden `post=yes` field (a familiar
@@ -3866,26 +3907,30 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 				 * row; it simply redirects back to the list, same as pressing "No, take me
 				 * back".
 				 */
-				this.post(`/resources/${key}/:id/delete`, async (c) => {
-					const target = resolve();
-					if (!target) return c.notFound();
+				this.post(
+					`${ADMIN_ROUTE_PATHS.resources}/${key}${ADMIN_RESOURCE_PATHS.delete}`,
+					async (c) => {
+						const target = resolve();
+						if (!target) return c.notFound();
 
-					const id = c.req.param("id");
-					const existing = await target.model.retrieve(id);
-					if (!existing) return c.notFound();
+						const id = c.req.param("id");
+						const existing = await target.model.retrieve(id);
+						if (!existing) return c.notFound();
 
-					const listUrl = `${this.resolveBasePath()}/resources/${key}`;
-					const body = await c.req.parseBody();
-					if (body.post !== "yes") return c.redirect(listUrl, 303);
+						const listUrl = adminResourcePathFor(this.resolveBasePath(), key, "index");
+						const body = await c.req.parseBody();
+						if (body.post !== "yes") return c.redirect(listUrl, 303);
 
-					await target.model.delete(id);
-					await this.recordAudit(c, "resource.delete", `${key}/${id}`);
+						await target.model.delete(id);
+						await this.recordAudit(c, "resource.delete", `${key}/${id}`);
 
-					const t = bindAdminT(c);
-					this.flashMessage(c, "success", t("message.deleted", { label: target.label }));
-					return c.redirect(listUrl, 303);
-				});
+						const t = bindAdminT(c);
+						this.flashMessage(c, "success", t("message.deleted", { label: target.label }));
+						return c.redirect(listUrl, 303);
+					},
+				);
 			}
+			this.route(adminResourcePathFor("", key, "index"), createAdminResourceHandler(actions));
 		}
 	}
 }
