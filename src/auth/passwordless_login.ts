@@ -15,14 +15,14 @@
  * changes. `EmailVerification` accepts that tradeoff because its fingerprint
  * is the email address, which `confirm` never changes, so its token stays
  * replayable until expiry (fine for idempotent email confirmation, but not
- * acceptable for granting a login). `PasswordReset` gets genuine single-use
- * "for free" because completing it changes the password hash it fingerprints.
+ * acceptable for granting a login). `PasswordReset` changes its password-hash
+ * fingerprint through a required atomic `updatePassword` callback.
  *
  * `PasswordlessLogin` reproduces `PasswordReset`'s mechanism deliberately: the
  * fingerprint is a per-user rotating nonce (`fingerprintOf`), and `login`
  * calls `rotateNonce` on success to change it, which invalidates the
  * just-used token and any other outstanding link for that user. This is the
- * one option the two sibling flows don't need — wiring it correctly (see
+ * nonce-specific counterpart of that conditional update — wiring it correctly (see
  * below) is what makes the login link single-use.
  *
  * Concurrency: `rotateNonce` is a compare-and-swap, not a blind write — it
