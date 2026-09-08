@@ -20,8 +20,14 @@
   re-append a reviving `Set-Cookie` after the `Max-Age=0` destroy cookie.
 - **`Guard`'s `except` is an exact-match public-path allowlist**, kept as a
   fallback to routing-order exclusion (mounting a public handler before
-  `require`) — `except: ["/admin/login"]` skips session/provider resolution
+  `require`) — `except: ["/admin/login"]` skips session/provider or request `authenticate`
   entirely for that path (no glob/prefix matching, so keep the list minimal).
+- **Guard authentication modes are exclusive.** Use `authenticate(c)` alone or
+  `session`/`identityKey`/`provider` with optional `remember`; omit the other mode's
+  properties entirely, even undefined ones. `authenticate` must verify the external
+  assertion before returning a subject. Null/undefined fails, service errors
+  propagate, and no subject is reused across requests. Authentication does not
+  replace CSRF: an independent session can hold only the CSRF secret.
 - **Password reset requires an atomic conditional update.**
   `PasswordReset.updatePassword(user, passwordHash, expectedFingerprint)` returns
   true only if the stored fingerprint still matches and the password changed.

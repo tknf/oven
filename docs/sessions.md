@@ -213,8 +213,8 @@ data after the destroy `Set-Cookie` has already gone out.
 
 ## See also
 
-- [Auth](./auth.md) — `Guard` reads the authenticated identity out of the
-  session established here.
+- [Auth](./auth.md) — session-mode `Guard` reads the authenticated identity
+  from this session; request-mode guards can use a separate CSRF-only session.
 - [Security](./security.md) — `Csrf` stores its per-session secret inside
   the same `Session`, downstream of `SessionAccessor`.
 - [Concepts](./concepts.md) — the `register`/`use` convention that
