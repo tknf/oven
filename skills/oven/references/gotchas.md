@@ -24,8 +24,12 @@
   entirely for that path (no glob/prefix matching, so keep the list minimal).
 - **Guard authentication modes are exclusive.** Use `authenticate(c)` alone or
   `session`/`identityKey`/`provider` with optional `remember`; omit the other mode's
-  properties entirely, even undefined ones. `authenticate` must verify the external
-  assertion before returning a subject. Null/undefined fails, service errors
+  properties entirely, even undefined ones. Both modes default to
+  `Cache-Control: no-store`. `authenticate` reads the external assertion and calls
+  an application-owned verifier that checks signature, issuer, audience, expiry,
+  and claim types before returning a subject; a decoded payload alone is not
+  proof. See the auth guide's [request example](https://github.com/tknf/oven/blob/main/docs/auth.md#authenticate-each-request-without-a-session).
+  Null/undefined fails, service errors
   propagate, and no subject is reused across requests. Authentication does not
   replace CSRF: an independent session can hold only the CSRF secret.
 - **Password reset requires an atomic conditional update.**
@@ -34,8 +38,9 @@
   Compare against the supplied verification-time fingerprint, never a fresh
   read after hashing. `reset()` returns null on a lost race; `verify()` does not
   consume. Migrate old void-returning callbacks to this required contract, with
-  no blind-write fallback. Prefer a full password-hash fingerprint and ensure
-  custom hashing changes it even for the same password. Changing an existing
+  no blind-write fallback. Keep the comparison and update in one database
+  statement. Prefer a full password-hash fingerprint and ensure custom hashing
+  uses fresh salts so it changes even for the same password. Changing an existing
   fingerprint expression invalidates outstanding links; reissue them.
 - **`secrets` must be high-entropy random ~32 bytes** (`Encrypter`, `UrlSigner`,
   `CookieSessionStorage`, ...). Weak/short secrets only emit a `console.warn`,

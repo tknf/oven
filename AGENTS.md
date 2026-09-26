@@ -65,9 +65,10 @@ or subpath export, update all affected surfaces in the same change:
 - Update the relevant guide under `docs/`, including its minimal example, common
   tasks, and gotchas. For a new subpath export, add a dedicated guide and update
   the index and coverage map in `docs/README.md`.
-- Update `skills/oven/SKILL.md` and the affected files under
-  `skills/oven/references/`. Keep its subpath map, examples, testing guidance, and
-  security defaults consistent with the implementation.
+- Update the affected files under `skills/oven/references/`: API-specific
+  caveats and security defaults belong in `gotchas.md`, exports in `subpaths.md`,
+  and test guidance in `testing.md`. Change `skills/oven/SKILL.md` only when its
+  selection table, design principles, examples, or reference routing change.
 - Update `README.md` only when supported runtimes, installation, or entry points
   change.
 - Add a concise entry under `[Unreleased]` in `CHANGELOG.md` for a consumer-visible
@@ -80,8 +81,8 @@ text for prohibited framework analogies.
 
 ## Codex ownership and agents
 
-The `gpt-6-astra` primary/root session is the task owner. Its model is selected by
-the host rather than a repository TOML. It owns investigation, planning,
+The primary/root session is the task owner. Its model is selected by the host
+rather than a repository TOML. It owns investigation, planning,
 implementation, correction, validation, integration, release preparation, user
 communication, and the final diff. Do not delegate ordinary phases merely to
 separate roles.

@@ -7,8 +7,8 @@ description: Prepare or publish an explicitly authorized Semantic Versioning rel
 
 The primary session owns this workflow. A request to prepare a release does not
 authorize creating or pushing a tag. Publishing requires explicit authorization
-for the exact version. Use a fresh `reviewer` when independent release inspection
-is warranted; do not delegate ordinary release preparation.
+for the exact version. A fresh `reviewer` inspects the staged release diff
+(Prepare step 5); do not delegate other release preparation.
 
 ## Choose the version
 
