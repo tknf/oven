@@ -135,8 +135,7 @@ export default app; // Cloudflare Workers; on Node pass app.fetch to your server
 ```
 
 - Apply a layout with `.use(jsxRenderer(Layout))` and middleware with `.use(mw)`
-  at the **start** of the chain: a path-less middleware only runs for routes
-  registered after it.
+  at the start of the chain.
 - Share a layout or guard across domains by applying it on an intermediate app
   and mounting the domains' routes under it.
 - Register static paths (`/new`) before parameterized ones (`/:id`).

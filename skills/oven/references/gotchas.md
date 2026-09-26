@@ -3,9 +3,6 @@
 - **Route types survive only through the method chain.** A route registered as a
   separate statement (`app.get(...);`) still serves requests but is missing from
   `hc` and `testClient`. Write route modules and `app.route()` mounting as chains.
-- **A path-less `.use()` runs only for routes registered after it.** Put
-  `.use(jsxRenderer(Layout))` and guards at the start of the chain; a route placed
-  before them skips them.
 - **`app.route("/", subApp)` leaks the sub-app's path-less middleware to the
   whole app.** A path-less `.use(...)` registers under Hono's internal `"*"`;
   mounting merges that to `"<path>/*"` via `mergePath`, which for

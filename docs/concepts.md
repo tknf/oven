@@ -98,10 +98,8 @@ A few consequences fall out of this order:
 - Middleware registered on `main.ts`'s app (session, CSRF, database
   accessors) runs before every domain's routes, so handlers can call
   `useDatabase(c)` or `sessionAccessor.use(c)` directly.
-- A sub-app's `.use(jsxRenderer(layout))` makes `c.render` available to
-  the routes registered after it on that sub-app, so put `.use()` calls at
-  the start of the chain. A route registered before a middleware never
-  passes through it.
+- A sub-app's `.use(jsxRenderer(layout))` at the start of its chain makes
+  `c.render` available to that sub-app's routes.
 - Sharing a layout or guard across several domains means applying it on an
   intermediate app and mounting those domains under it; there is no separate
   grouping API.

@@ -92,9 +92,7 @@ client sends those methods.
 
 ### Sharing a layout and middleware across routes
 
-Apply `jsxRenderer` and middleware with `.use()` at the start of a chain. A
-path-less `.use()` applies only to the routes registered after it, so a route
-placed before it never passes through it:
+Apply `jsxRenderer` and middleware with `.use()` at the start of a chain:
 
 ```tsx
 // src/domains/books/routes.tsx
