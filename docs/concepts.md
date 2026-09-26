@@ -19,18 +19,18 @@ canonical layout, instruction precedence, and evidence needed for deviations.
 oven does not reimplement routing, middleware composition, or the request/
 response model — it leans on Hono's own primitives (`jsx-renderer`, cookie
 helpers, `languageDetector`, etc.) wherever they already do the job. The one
-deliberate replacement is CSRF protection: Hono's built-in CSRF middleware
-checks the `Origin` header, which doesn't cover same-origin-but-cross-page
-attacks or non-browser clients consistently; oven's `Csrf` (in
-`@tknf/oven/security`) uses token-based verification instead. Every other
+deliberate replacement is CSRF protection: Hono's `csrf` middleware decides
+from the browser-supplied `Origin`/`Sec-Fetch-Site` headers, which some
+environments omit; oven's `Csrf` (in `@tknf/oven/security`) verifies a
+session-bound token on every unsafe method instead. Every other
 surface — routing, rendering, middleware — is Hono, unmodified. This keeps
 the framework's surface area small and means Hono's own documentation and
 ecosystem apply directly to an oven app.
 
 ### 2. Classes for behavior, plain Hono apps for routes
 
-Every stateful concept in oven — `Model`, `Session`, `Storage`, `Mailer`,
-`ContextAccessor` — is expressed the same way: an abstract base class that
+Every stateful concept in oven — `Model`, `SessionStorage`, `Storage`,
+`Mailer`, `ContextAccessor` — is expressed the same way: an abstract base class that
 wires up shared behavior in its constructor or shared methods, plus a
 concrete subclass that only implements the few methods specific to it.
 
@@ -39,10 +39,8 @@ written as one method chain. Hono carries each route's path, parameters,
 validator input, and response type through the value each chained call
 returns; a subclass that registers routes as statements inside a method
 loses that type, and with it the typed `hc` client and `testClient`. A plain
-chain also has none of the constraints a `Hono` subclass imposes (reserved
-member names, hooks that run before subclass fields are initialized), and it
-is the form Hono's own documentation uses, so it reads the same to anyone
-who knows Hono. oven's own mountable sub-apps (`AdminPanel`,
+chain is also the form Hono's own documentation uses, so it reads the same to
+anyone who knows Hono. oven's own mountable sub-apps (`AdminPanel`,
 `MailPreviewHandler`) remain classes because their routes are not part of an
 application's typed API.
 
@@ -62,21 +60,18 @@ server without rewriting application code — only the adapter wiring changes.
 
 ### 4. No magic
 
-oven deliberately has no file-based routing, no `defineHandler()` + glob
-auto-discovery, no two-phase named-slot templating, no
-provider/DI container, and no lifecycle-hook system (`onMount`,
-`beforeRender`, etc.). Every route, every middleware, and every wired-up
-service is an explicit line of code: a chained route, an
-`app.route()` call, an `app.use(someAccessor.register)` call. This is a
-direct consequence of principle 2 — once classes and constructors are the
-one idiom, "magic" wiring mechanisms are actively redundant, and their
-absence means `grep`-ing for a symbol always finds every place it's used.
+oven deliberately has no file-based routing, no glob auto-discovery, no app
+registry, no provider/DI container, and no lifecycle-hook system. Every
+route, every middleware, and every wired-up service is an explicit line of
+code: a chained route, an `app.route()` call, an
+`app.use(someAccessor.register)` call. Once wiring is expressed as explicit
+classes and chained routes, "magic" wiring mechanisms are redundant, and
+their absence means `grep`-ing for a symbol always finds every place it's
+used.
 
 ## Request lifecycle
 
-An application is assembled in `src/main.ts` from explicit calls. Hono runs
-path-less middleware registered on an app, in registration order, before the
-routes it matches, and a parent app's middleware before a mounted sub-app's:
+An application is assembled in `src/main.ts` from explicit calls:
 
 ```mermaid
 sequenceDiagram
@@ -93,11 +88,9 @@ sequenceDiagram
     Route-->>Client: c.render(...) / c.json(...) / c.redirect(...)
 ```
 
-A few consequences fall out of this order:
-
-- Middleware registered on `main.ts`'s app (session, CSRF, database
-  accessors) runs before every domain's routes, so handlers can call
-  `useDatabase(c)` or `sessionAccessor.use(c)` directly.
+- Register app-wide middleware (session, CSRF, database accessors) with
+  `app.use()` before the `app.route()` calls in `main.ts`, so handlers can
+  call `useDatabase(c)` or `sessionAccessor.use(c)` directly.
 - A sub-app's `.use(jsxRenderer(layout))` at the start of its chain makes
   `c.render` available to that sub-app's routes.
 - Sharing a layout or guard across several domains means applying it on an
@@ -133,19 +126,25 @@ anything derived from per-request state such as bindings or credentials
 handed to each invocation; `scope: "app"` memoizes the first result for the
 process's lifetime, right for values that are safe and expensive to build
 once, such as a connection pool). The convention is for the app's own
-wiring module (e.g. `src/db/client.ts`) to construct one `ScopedValueAccessor`
-instance privately and export only the `register`/`use` pair:
+wiring module to construct one accessor instance privately and export only
+the `register`/`use` pair. For the database connection that module is
+`src/db/client.ts`, and the accessor is `DatabaseAccessor`
+(`@tknf/oven/database`), a `ScopedValueAccessor` with the same options and a
+database-specific error message:
 
 ```ts
 // src/db/client.ts
-import { ScopedValueAccessor } from "@tknf/oven/routing";
+import { DatabaseAccessor } from "@tknf/oven/database";
 import { drizzle } from "drizzle-orm/libsql";
+import * as schema from "./schema.js";
+
+const createDb = (url: string) => drizzle(url, { schema });
 
 type AppBindings = { DATABASE_URL: string };
-type AppEnv = { Bindings: AppBindings; Variables: { db?: ReturnType<typeof drizzle> } };
+type AppEnv = { Bindings: AppBindings; Variables: { db?: ReturnType<typeof createDb> } };
 
-const accessor = new ScopedValueAccessor<AppEnv, "db">("db", {
-  create: (c) => drizzle(c.env.DATABASE_URL),
+const accessor = new DatabaseAccessor<AppEnv, "db">("db", {
+  create: (c) => createDb(c.env.DATABASE_URL),
 });
 
 export const registerDatabase = accessor.register;
@@ -153,8 +152,8 @@ export const useDatabase = accessor.use;
 ```
 
 ```ts
-// main.ts
-app.use(registerDatabase);
+// src/main.ts
+const app = new Hono<AppEnv>().use(registerDatabase).route("/books", booksRoutes);
 ```
 
 ```ts
@@ -201,7 +200,7 @@ deliberately excluded from it and must be imported from their own subpath.
 | `@tknf/oven/session` | `Session`, `SessionStorage`, `CookieSessionStorage`, `KeyValueSessionStorage`, and backend adapters |
 | `@tknf/oven/storage` | `Storage` abstraction, `S3Storage`, `GoogleCloudStorage`, `InMemoryStorage`, `S3UrlSigner` |
 | `@tknf/oven/support` | `IdGenerator` variants, `CookieAccessor` |
-| `@tknf/oven/view` | `LayoutComponent`, `LayoutProps`, and other layout/rendering types |
+| `@tknf/oven/view` | `View`, `renderSnippet`/`renderSnippetStream`, `ViewHelpers`, `cacheFragment`, `LayoutComponent`/`LayoutProps` |
 | `@tknf/oven/vite` | Vite build/dev integration |
 | `@tknf/oven/cloudflare` | Cloudflare Workers-specific adapters (KV, R2, Cache, Queues, Cron Triggers) |
 | `@tknf/oven/node` | Node-specific adapters (`FileKeyValueStore`, `FileStorage`) |
@@ -209,16 +208,11 @@ deliberately excluded from it and must be imported from their own subpath.
 
 ## Class-based idiom
 
-A couple of constraints fall directly out of building the register/use
-pattern on class fields. They're worth knowing before you hit them:
+One constraint falls directly out of building the register/use pattern on
+class fields:
 
-- **Accessor hooks must be methods, not class fields.**
-  `ContextAccessor#handle()` is invoked through `register`, which the base
-  class builds while its constructor runs. Write overrides as ordinary
-  methods (`protected async handle(c, next) { ... }`) instead of class
-  fields.
-- **`register`/`use` are the deliberate exception.** Unlike `handle()`,
-  `ContextAccessor#register` and `#use` *are* class fields (arrow
+- **`register`/`use` are class fields.** `ContextAccessor#register` and
+  `#use` are class fields (arrow
   functions) — because they're meant to be detached from their instance and
   passed by reference (`app.use(accessor.register)`). A prototype method
   extracted the same way (`const fn = accessor.register`) would lose its

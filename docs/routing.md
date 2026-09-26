@@ -71,8 +71,7 @@ chain; their routes are untyped, but the routes around them keep their types.
 
 ### Registering CRUD routes
 
-Write each action as its own route. Register static paths such as `/new`
-before parameterized paths such as `/:id`, which would otherwise match them:
+Write each action as its own route, with `/new` before `/:id`:
 
 ```ts
 export const booksRoutes = new Hono<AppEnv>()
@@ -105,8 +104,7 @@ export const booksRoutes = new Hono<AppEnv>()
 ```
 
 To share a layout and middleware across several domains, apply them on an
-intermediate app and mount the domains' routes under it. Middleware added to
-a domain's own chain runs after the shared middleware:
+intermediate app and mount the domains' routes under it:
 
 ```ts
 // src/main.ts
@@ -127,36 +125,40 @@ memoization on top of `ValueAccessor`'s plain "compute once per request" —
 anything derived from per-request state such as bindings or credentials
 handed to each invocation; `"app"` memoizes the first result for the
 process's lifetime, right for values that are safe and expensive to build
-once, such as a connection pool:
+once, such as an API client:
 
 ```ts
-// src/db/client.ts
+// src/lib/search.ts
 import { ScopedValueAccessor } from "@tknf/oven/routing";
-import { drizzle } from "drizzle-orm/libsql";
+import { SearchClient } from "./search_client.js";
 
-type AppBindings = { DATABASE_URL: string };
-type AppEnv = { Bindings: AppBindings; Variables: { db?: ReturnType<typeof drizzle> } };
+type AppBindings = { SEARCH_API_KEY: string };
+type AppEnv = { Bindings: AppBindings; Variables: { search?: SearchClient } };
 
-const accessor = new ScopedValueAccessor<AppEnv, "db">("db", {
-  create: (c) => drizzle(c.env.DATABASE_URL),
+const accessor = new ScopedValueAccessor<AppEnv, "search">("search", {
+  create: (c) => new SearchClient(c.env.SEARCH_API_KEY),
 });
 
-export const registerDatabase = accessor.register;
-export const useDatabase = accessor.use;
+export const registerSearch = accessor.register;
+export const useSearch = accessor.use;
 ```
 
 ```ts
-// main.ts
-app.use(registerDatabase);
+// src/main.ts
+const app = new Hono<AppEnv>().use(registerSearch).route("/books", booksRoutes);
 ```
 
 ```ts
 // src/domains/books/routes.ts
 export const booksRoutes = new Hono<AppEnv>().get("/", (c) => {
-  const db = useDatabase(c);
+  const search = useSearch(c);
   // ...
 });
 ```
+
+The database connection uses `DatabaseAccessor` (`@tknf/oven/database`), the
+same accessor with a database-specific error message — see
+[Database](./database.md).
 
 ### Reverse-generating URLs with `NamedRoutes`
 
@@ -189,9 +191,10 @@ pathFor("books.index"); // "/books"
 import { ErrorPages, healthCheck } from "@tknf/oven/routing";
 
 const errors = new ErrorPages({ logger: (c) => useLogger(c) });
+
+const app = new Hono<AppEnv>().get("/up", healthCheck).route("/books", booksRoutes);
 app.onError(errors.onError);
 app.notFound(errors.notFound);
-app.get("/up", healthCheck);
 ```
 
 The 404/500 copy defaults to English (`@tknf/oven/i18n`'s bundled
@@ -203,44 +206,16 @@ supported language. Pass `options.t` (a `Translator<C>`'s `t`, see
 
 ## Gotchas / Security notes
 
-- **Route types survive only through the chain.** A route registered as a
-  separate statement still works at runtime but is missing from `hc` and
-  `testClient`. The same applies to `app.route()` in `src/main.ts`.
-- **Mounting at the app root (`app.route("/", subApp)`) leaks the sub-app's
-  path-less middleware onto the whole parent app.** A path-less `.use(...)`
-  registers under Hono's internal `"*"` path; `app.route(path, subApp)` lifts
-  that registration onto the parent via `mergePath(path, "*")`. For any other
-  `path` this merges to a scoped `"<path>/*"`, but for `path === "/"` it merges
-  to `"/*"` — every route on the parent, not just the sub-app's own:
-
-  ```ts
-  // Leaks: every route on `app`, not just the sub-app's own, now runs
-  // through AdminLayout and requireAdminAuth.
-  const system = new Hono()
-    .use(jsxRenderer(AdminLayout))
-    .use(requireAdminAuth)
-    .get("/up", (c) => c.text("ok"));
-  app.route("/", system);
-  ```
-
-  ```ts
-  // Scoped: mount on a dedicated base path instead of "/".
-  app.route("/system", system);
-
-  // Or, if it must stay at the root, apply the middleware per route.
-  const system = new Hono().get("/up", requireAdminAuth, jsxRenderer(AdminLayout), (c) =>
-    c.text("ok"),
-  );
-  app.route("/", system);
-  ```
 - `ContextAccessor#use(c)` throws (naming the missing key) rather than
   returning `undefined` when `register` was never applied to that route —
   treat that error as "you forgot `app.use(x.register)`" rather than an
   application bug to work around.
-- `ErrorPages` unifies "not found" and "forbidden" into the same 404
-  response, to avoid letting a third party infer whether a resource exists
-  from the status code alone; a JSON API sub-app is expected to override
-  `onError` itself rather than reuse `ErrorPages`.
+- `ErrorPages` renders the 404 and 500 pages and passes any other
+  `HTTPException` status through unchanged. oven's convention is to answer
+  "forbidden" with the same 404 as "not found" (`Policy`'s default
+  `denyStatus` is 404) so a third party cannot infer whether a resource
+  exists. A JSON API sub-app is expected to set its own `onError` rather than
+  reuse `ErrorPages`.
 
 ## See also
 

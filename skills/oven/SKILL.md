@@ -51,11 +51,10 @@ exception justification. The priority rule does not ban them.
 | Testing        | `createTestDb`, `defineFactory`, `actingAs`, `TestJobQueue`, `TestMailer`, `TestBroadcaster` | Call routes through Hono's `testClient` or `app.request()`; use runtime integration tests for backend behavior               |
 
 For native HTML CRUD forms, match the transport to the routes: `FormView`
-accepts `get`/`post`/`dialog` and defaults to `post`, and a browser form can
-only send `GET` or `POST`. For a no-JavaScript workflow, register explicit POST
-update/delete routes (for example `/:id/update` and `/:id/delete`), keeping
-auth, CSRF, validation, and audit checks. Do not assume a hidden method field
-changes the request method automatically.
+accepts `get`/`post`/`dialog` and defaults to `post`, and oven has no method
+override. For a no-JavaScript workflow, register explicit POST update/delete
+routes (for example `/:id/update` and `/:id/delete`), keeping auth, CSRF,
+validation, and audit checks.
 
 ## Application layout
 
@@ -90,8 +89,8 @@ each other's models and schemas; there is no app registry or discovery, so
    and Hono primitives at their documented integration boundaries. The deliberate
    CSRF replacement is token-based instead of Origin-only. Hono's documentation
    applies to the Hono APIs used by those boundaries.
-2. **Classes for behavior, plain Hono for routes.** Model, Session, Storage,
-   Mailer, ContextAccessor, and the rest are an abstract base class plus a
+2. **Classes for behavior, plain Hono for routes.** Model, SessionStorage,
+   Storage, Mailer, ContextAccessor, and the rest are an abstract base class plus a
    concrete subclass that implements a few methods. Routes are plain Hono apps
    written as one method chain, so their types reach `hc` and `testClient`.
 3. **Backend-agnostic.** The core depends on abstractions (`KeyValueStore`,
@@ -138,7 +137,6 @@ export default app; // Cloudflare Workers; on Node pass app.fetch to your server
   at the start of the chain.
 - Share a layout or guard across domains by applying it on an intermediate app
   and mounting the domains' routes under it.
-- Register static paths (`/new`) before parameterized ones (`/:id`).
 
 For layouts, the app declares the `ContextRenderer` augmentation once (typically
 `src/env.ts`) so `c.render(page, props)` is typed with `LayoutProps`
@@ -161,13 +159,24 @@ module and exports only the pair:
 
 ```ts
 // src/db/client.ts
-import { ScopedValueAccessor } from "@tknf/oven/routing";
+import { DatabaseAccessor } from "@tknf/oven/database";
 import { drizzle } from "drizzle-orm/libsql";
+import * as schema from "./schema.js";
 
-const accessor = new ScopedValueAccessor("db", { create: (c) => drizzle(c.env.DATABASE_URL) });
+const createDb = (url: string) => drizzle(url, { schema });
+type AppEnv = {
+	Bindings: { DATABASE_URL: string };
+	Variables: { db?: ReturnType<typeof createDb> };
+};
+
+const accessor = new DatabaseAccessor<AppEnv, "db">("db", {
+	create: (c) => createDb(c.env.DATABASE_URL),
+});
 export const registerDatabase = accessor.register; // app.use(registerDatabase)
 export const useDatabase = accessor.use; // const db = useDatabase(c)
 ```
+
+Other services use `ScopedValueAccessor` (`@tknf/oven/routing`) the same way.
 
 `use(c)` throws (naming the key) if `register` was never applied — a missing
 `app.use(...)` fails loudly, not silently. `scope: "request"` (default) rebuilds

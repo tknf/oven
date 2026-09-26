@@ -3,7 +3,7 @@
 ## What / Why
 
 Cursor-based pagination is a data-layer concern (`Model#paginate`, see
-[Models § Cursor pagination with `paginate`](./models.md)) and a
+[Models § Cursor pagination](./models.md#cursor-pagination)) and a
 request-layer concern at the same time: the data layer returns
 `{ rows, nextCursor, hasMore }`, but something still has to turn an incoming
 `?cursor=...&limit=...` query string into arguments `paginate` accepts, keep
@@ -12,11 +12,11 @@ link. `@tknf/oven/pagination` covers exactly that request-side slice, split
 into independent pieces:
 
 - **`parsePaginationQuery`** — extracts and validates `cursor`/`limit` from a
-  Hono `Context`'s query parameters, in a shape ready to hand straight to
-  `model.paginate(...)`.
-- **`encodeCursor`/`decodeCursor`** — an opaque, unsigned encoding for the raw
-  primary-key value `paginate` returns as `nextCursor`, so the ID format
-  (e.g. a Snowflake id's embedded timestamp) never leaks into a URL.
+  Hono `Context`'s query parameters for `model.paginate(...)`.
+- **`encodeCursor`/`decodeCursor`** — an unsigned Base64URL encoding for the
+  raw primary-key value `paginate` returns as `nextCursor`, so the raw ID
+  doesn't appear verbatim in a URL (anyone can decode it; it is not a
+  secret).
 - **`PaginationView`** — a pure JSX component that renders a "next" link from
   a `paginate` result, with no dependency on Hono's `Context`.
 - **`OffsetPaginationView`** — a pure JSX component that renders numbered page
@@ -33,16 +33,20 @@ None of this replaces `Model#paginate`; it exists to sit on either side of it.
 // src/domains/items/routes.ts
 import { Hono } from "hono";
 import { decodeCursor, encodeCursor, parsePaginationQuery } from "@tknf/oven/pagination";
-import { items } from "./model.js"; // an instance of your Model subclass
+import type { AppEnv } from "../../env.js";
+import { useDatabase } from "../../db/client.js";
+import { ItemModel } from "./model.js";
 
-export const itemsRoutes = new Hono().get("/", async (c) => {
+export const itemsRoutes = new Hono<AppEnv>().get("/", async (c) => {
   const { cursor, limit } = parsePaginationQuery(c, {
     defaultLimit: 20,
     maxLimit: 100,
     decodeCursor,
   });
 
-  const page = await items.paginate({ cursor, limit });
+  const items = new ItemModel(useDatabase(c));
+  // Narrow the cursor to the primary key's type (a text primary key here).
+  const page = await items.paginate({ cursor: typeof cursor === "string" ? cursor : undefined, limit });
 
   return c.json({
     rows: page.rows,
@@ -69,12 +73,13 @@ const { cursor, limit } = parsePaginationQuery(c, {
 
 `limit` is truncated to an integer (`Math.trunc`); a missing, non-numeric, or
 non-positive value falls back to `defaultLimit`, and any value above
-`maxLimit` is clamped to it — `parsePaginationQuery` always returns a value in
-`(0, maxLimit]`, so a request can never force an unbounded read. `cursor` is
-`undefined` when the parameter is missing; when `decodeCursor` is supplied,
-its return value is used and a `null` result (a malformed cursor) is also
-converted to `undefined`, so the caller doesn't have to special-case it
-before passing `cursor` on to `paginate`.
+`maxLimit` is clamped to it — so, provided `defaultLimit` is within
+`1..maxLimit`, `limit` is always in `(0, maxLimit]` and a request can never
+force an unbounded read. `cursor` is `undefined` when the parameter is
+missing; when `decodeCursor` is supplied, its return value is used and a
+`null` result (a malformed cursor) is also converted to `undefined`. `cursor`
+is typed `string | number | undefined`, so narrow it to your primary key's
+type before passing it to `paginate`.
 
 ### Round-tripping an opaque cursor through a URL
 
@@ -101,7 +106,7 @@ never throws on malformed input — it returns `null`, which
 
 ```tsx
 import { PaginationView } from "@tknf/oven/pagination";
-import { pathFor } from "./routes.js"; // NamedRoutes#pathFor, see routing.md
+import { pathFor } from "../../lib/paths.js"; // the app's NamedRoutes#pathFor, see routing.md
 
 <PaginationView
   nextCursor={page.nextCursor}
@@ -129,12 +134,14 @@ returns a bare row array, so `page`/`pageCount`/`total` are built by the
 caller from a separate `count()` call:
 
 ```ts
+import { items as itemsTable } from "./schema.js";
+
 const PAGE_SIZE = 20;
-const page = Number(c.req.query("p") ?? "0") || 0;
+const page = Math.max(0, Math.trunc(Number(c.req.query("p")) || 0));
 
 const [rows, total] = await Promise.all([
   items.listPage({
-    orderBy: [{ column: items.name, direction: "asc" }],
+    orderBy: [{ column: itemsTable.name, direction: "asc" }],
     limit: PAGE_SIZE,
     offset: page * PAGE_SIZE,
   }),
@@ -145,7 +152,7 @@ const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
 ```tsx
 import { OffsetPaginationView } from "@tknf/oven/pagination";
-import { pathFor } from "./routes.js"; // NamedRoutes#pathFor, see routing.md
+import { pathFor } from "../../lib/paths.js"; // the app's NamedRoutes#pathFor, see routing.md
 
 <OffsetPaginationView
   page={page}
@@ -158,7 +165,7 @@ import { pathFor } from "./routes.js"; // NamedRoutes#pathFor, see routing.md
 
 `OffsetPaginationView` renders `null` when there is nothing to show (a single
 page and no `summary`). Otherwise it renders a page-number list — eliding long
-runs down to the first 2, the last 2, and a window of 3 pages around the
+runs down to the first 2, the last 2, and 3 pages on either side of the
 current one — plus the optional `summary` text. `buildUrl` receives a 0-based
 page index; page numbers are displayed 1-based, and the current page renders
 as a `<span aria-current="page">` rather than a link. `AdminPanel`'s resource
@@ -167,12 +174,8 @@ pagination.
 
 ## Gotchas / Security notes
 
-- **`maxLimit` is a real security boundary, not a formatting nicety.**
-  Letting `?limit=1000000` through unclamped would allow an unbounded number
-  of rows to be read in a single request — this directly affects Turso's
-  rows-read billing and D1's response size limit, so always pass a
-  `maxLimit` you're comfortable with rather than relying on the default
-  behavior of your database driver.
+- **`maxLimit` is the per-request row bound.** It is a required option;
+  choose it deliberately, since it caps how many rows one request can read.
 - **The cursor encoding is intentionally unsigned, not a security token.**
   Tampering with an encoded cursor only shifts the starting point of the
   `WHERE primaryKey > cursor` / `< cursor` condition; the set of rows a user

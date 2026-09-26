@@ -15,8 +15,9 @@ Because Drizzle's type system is mutually incompatible across SQL dialects,
 there is no single shared generic base: `SQLiteModel`, `PgModel`, and
 `MySqlModel` are three parallel implementations of the same method
 vocabulary, one per dialect. This page uses `SQLiteModel`; `PgModel` and
-`MySqlModel` follow the same contract (MySQL's implementation has one
-notable difference — see Gotchas).
+`MySqlModel` follow the same contract, with a few dialect differences listed
+under Gotchas (MySQL has no `RETURNING` and no conflict `target`, and
+`PgModel`/`MySqlModel` add `retrieveForUpdate`).
 
 Deliberately not provided: lifecycle hooks (before/after callbacks) and
 validation. Validation is the [Form](./forms.md) layer's job; the model
@@ -35,6 +36,8 @@ export const items = sqliteTable("items", {
   createdAt: integer("created_at").notNull(),
   updatedAt: integer("updated_at").notNull(),
   deletedAt: integer("deleted_at"),
+  status: text("status").notNull().default("draft"),
+  authorId: text("author_id"),
 });
 ```
 
@@ -70,8 +73,11 @@ const created = await model.create({ name: "First book" });
 
 The three type parameters are the Drizzle table (`typeof items`), its
 primary key column (`typeof items.id`), and the Drizzle schema object
-(`typeof schema`, used to type `db`) — all three are required for a
-subclass to compile against `this.db`.
+(`typeof schema`, used to type `db`). The schema parameter defaults to
+`Record<string, never>`, which only matches a `db` created without `schema`;
+pass `typeof schema` when `db` is created with `drizzle(..., { schema })`, as
+`src/db/client.ts` does. A `db` built from the app's full schema is accepted by
+a model typed with its own domain's schema.
 
 ## Common tasks
 
@@ -222,10 +228,10 @@ export class TenantItemModel extends SQLiteModel<typeof items, typeof items.id, 
   constructor(
     db: BaseSQLiteDatabase<"async", unknown, typeof schema>,
     private readonly tenantId: string,
-    idGenerator?: IdGenerator,
-    maxInValues?: number,
+    private readonly idGen?: IdGenerator,
+    private readonly maxIn?: number,
   ) {
-    super(db, idGenerator, maxInValues);
+    super(db, idGen, maxIn);
   }
 
   protected get table() {
@@ -321,9 +327,10 @@ createMany(inputs: ScopedItemInput[]) {
 ```
 
 **`with(tx)` needs its own override too.** The base implementation
-reconstructs `this.constructor` assuming the unchanged `(db, idGenerator?,
-maxInValues?)` signature; once the subclass's constructor takes `tenantId` as
-well, the base's `with` would drop it silently. Re-declare it with the wider
+calls `new this.constructor(tx, idGenerator, maxInValues)`; with the tenant
+constructor, that passes the `IdGenerator` into the `tenantId` position. The
+base keeps `idGenerator`/`maxInValues` private, so the subclass keeps its own
+copies (`idGen`/`maxIn` above) and re-declares `with` with the wider
 constructor shape:
 
 ```ts
@@ -331,8 +338,10 @@ with(tx: BaseSQLiteDatabase<"async", unknown, typeof schema>): this {
   const Ctor = this.constructor as new (
     db: BaseSQLiteDatabase<"async", unknown, typeof schema>,
     tenantId: string,
+    idGenerator?: IdGenerator,
+    maxInValues?: number,
   ) => this;
-  return new Ctor(tx, this.tenantId);
+  return new Ctor(tx, this.tenantId, this.idGen, this.maxIn);
 }
 ```
 
@@ -396,9 +405,8 @@ test("SQLiteModel's public surface hasn't grown past what TenantItemModel scopes
   gone" and "the version doesn't match" produce the same zero-row UPDATE,
   and `StaleRecordError` can't distinguish them — if your app needs to tell
   them apart, catch the error and `retrieve(pk)` again.
-- **Soft delete has no implicit scope.** Unlike frameworks with a global
-  "exclude deleted rows" default, oven's `softDelete`/`restore` only touch
-  `deletedAt`; every read call site is responsible for filtering it out
+- **Soft delete has no implicit scope.** `softDelete`/`restore` only touch
+  `deletedAt`, and no read method filters soft-deleted rows; every read call site is responsible for filtering it out
   when that's the desired behavior (a deliberate consequence of the
   "no magic" design principle).
 - **No built-in tenant/row-level scope, either.** A shared-database
@@ -420,6 +428,16 @@ test("SQLiteModel's public surface hasn't grown past what TenantItemModel scopes
   than the value actually written; running inside `with(tx)` mitigates this
   within that transaction's isolation level but doesn't fully close the gap.
   SQLite and Postgres don't have this caveat (both support `RETURNING`).
+- **`MySqlUpsertConflict` has no `target`.** `upsert` uses MySQL's
+  `ON DUPLICATE KEY UPDATE`, which applies to a conflict on any UNIQUE
+  constraint, including the primary key.
+- **On MySQL, `updateWhere` counts changed rows, not matched rows.** With
+  mysql2's default connection flags, a patch that leaves a matching row
+  unchanged counts as 0. Enable `CLIENT_FOUND_ROWS` on the connection when
+  `updateWhere` is used as an optimistic lock. `updateLocked` always changes
+  `lockVersion`, so it is unaffected.
+- **`retrieveForUpdate` exists only on `PgModel`/`MySqlModel`.** It issues
+  `SELECT ... FOR UPDATE` and is meaningful only inside `with(tx)`.
 - **`rowsAffectedFrom` only understands the mysql2 driver by default.**
   `updateWhere`/`updateLocked`/`delete`/`deleteWhere` read the affected-row
   count from `update()`/`delete()`'s execution result through the protected

@@ -18,15 +18,12 @@ context, such as the `requestId` `hono/request-id` issues, without
 threading it through every call site by hand.
 
 **Access logs vs. application logs.** oven does not reimplement
-per-request access logging — that's already Hono's
-[`hono/logger`](https://hono.dev/docs/middleware/builtin/logger), which
-prints a `<-- METHOD /path` line on the way in and a
-`--> METHOD /path STATUS TIME` line on the way out. `Logger` covers a
-different concern: structured events your own application code emits
-(`logger.info("item created", { itemId })`), not the request/response
-line itself. The two are meant to run side by side, with `hono/logger`'s
-output routed through the same `Logger` instance so both end up in one
-place — see "Bridging `hono/logger` into `Logger`" below.
+per-request access logging; use Hono's
+[`hono/logger`](https://hono.dev/docs/middleware/builtin/logger). `Logger`
+covers structured events your own application code emits
+(`logger.info("item created", { itemId })`). Route `hono/logger`'s output
+through the same `Logger` so both end up in one place — see "Bridging
+`hono/logger` into `Logger`" below.
 
 ## Minimal example
 
@@ -36,7 +33,7 @@ import { ConsoleLogger } from "@tknf/oven/logging";
 const logger = new ConsoleLogger({ service: "checkout" });
 
 logger.info("item created", { itemId: "123" });
-// console.info({ level: "info", message: "item created", service: "checkout", itemId: "123" })
+// console.info({ service: "checkout", itemId: "123", level: "info", message: "item created" })
 ```
 
 ## Common tasks
@@ -50,11 +47,8 @@ const requestLogger = logger.child({ requestId: c.get("requestId") });
 requestLogger.warn("rate limit close to exhausted", { remaining: 3 });
 ```
 
-**Bridging `hono/logger` into `Logger`.** `hono/logger`'s middleware
-factory takes a `PrintFunc` (`(str: string, ...rest: string[]) => void`,
-called once per line) — pass an arrow function that forwards `str` to a
-`Logger` instead of the default `console.log`, so the access log and your
-own structured logs share one output path:
+**Bridging `hono/logger` into `Logger`.** Pass `hono/logger` a function that
+forwards each line to your `Logger`:
 
 ```ts
 import { Hono } from "hono";
@@ -63,17 +57,11 @@ import { ConsoleLogger } from "@tknf/oven/logging";
 
 const appLogger = new ConsoleLogger({ service: "checkout" });
 
-const app = new Hono();
-app.use(honoLogger((message) => appLogger.info(message)));
+const app = new Hono().use(honoLogger((message) => appLogger.info(message)));
 ```
 
-`PrintFunc` only receives the formatted line, with no `Context` to read a
-`requestId` off of, so this bridge alone cannot tag the access-log line
-with `requestId`. Add `hono/request-id` upstream of `honoLogger` anyway —
-it also sends the id back as a response header — and use `child` (see the
-next task) to attach that same id to every *application* log line for the
-request; the two logs still correlate by timing even though only the
-application log line carries the id explicitly:
+To tag application logs with a request id, add `hono/request-id` and bind
+the id with `child` (see the next task):
 
 ```ts
 import { requestId } from "hono/request-id";
@@ -130,7 +118,8 @@ emitted unmodified — it's the caller's job not to pass secrets. Opt into
 masking with `LoggerOptions.redact`: `true` masks a built-in list of
 sensitive-looking keys (substring match, case-insensitive: `password`,
 `token`, `authorization`, `cookie`, `secret`, `apikey`); a string array
-masks only those key names instead. Masking is shallow — it inspects
+masks keys containing those substrings instead (same case-insensitive
+matching). Masking is shallow — it inspects
 top-level field keys only, not nested objects:
 
 ```ts

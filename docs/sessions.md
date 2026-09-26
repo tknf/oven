@@ -25,31 +25,43 @@ during the request, that always wins over a pending dirty commit — see
 ## Minimal example
 
 ```ts
-// src/lib/session.ts
-import { InMemorySessionStorage, SessionAccessor } from "@tknf/oven/session";
+// src/env.ts
 import type { Session } from "@tknf/oven/session";
 
 export type AppEnv = { Variables: { session: Session } };
-
-const storage = new InMemorySessionStorage();
-export const sessionAccessor = new SessionAccessor<AppEnv, "session">("session", storage);
 ```
 
 ```ts
-// src/main.ts
+// src/lib/session.ts
+import { InMemorySessionStorage, SessionAccessor } from "@tknf/oven/session";
+import type { AppEnv } from "../env.js";
+
+export const sessionStorage = new InMemorySessionStorage();
+export const sessionAccessor = new SessionAccessor<AppEnv, "session">("session", sessionStorage);
+```
+
+```ts
+// src/domains/visits/routes.ts
 import { Hono } from "hono";
-import { sessionAccessor } from "./lib/session.js";
-import type { AppEnv } from "./lib/session.js";
+import type { AppEnv } from "../../env.js";
+import { sessionAccessor } from "../../lib/session.js";
 
-const app = new Hono<AppEnv>();
-app.use(sessionAccessor.register);
-
-app.get("/", (c) => {
+export const visitsRoutes = new Hono<AppEnv>().get("/", (c) => {
   const session = sessionAccessor.use(c);
   const visits = Number(session.get("visits") ?? 0);
   session.set("visits", visits + 1);
   return c.text(`visit #${visits + 1}`);
 });
+```
+
+```ts
+// src/main.ts
+import { Hono } from "hono";
+import type { AppEnv } from "./env.js";
+import { visitsRoutes } from "./domains/visits/routes.js";
+import { sessionAccessor } from "./lib/session.js";
+
+const app = new Hono<AppEnv>().use(sessionAccessor.register).route("/", visitsRoutes);
 
 export default app;
 ```
@@ -90,27 +102,30 @@ consumers).
 ```ts
 // src/lib/session.ts (production, DB-backed via a shared KeyValueStore — the default choice)
 import { KeyValueSessionStorage, SessionAccessor } from "@tknf/oven/session";
-import { SQLiteDatabaseKeyValueStore, sqliteKeyValueTable } from "@tknf/oven/kv";
-import { db } from "./db.js";
+import { SQLiteDatabaseKeyValueStore } from "@tknf/oven/kv";
+import type { AppEnv } from "../env.js";
+import { db } from "../db/client.js"; // a Drizzle db built once for the process
+import { keyValues } from "../domains/sessions/schema.js"; // export const keyValues = sqliteKeyValueTable();
 
-const store = new SQLiteDatabaseKeyValueStore(db, sqliteKeyValueTable());
-const storage = new KeyValueSessionStorage(store, {
+const store = new SQLiteDatabaseKeyValueStore(db, keyValues);
+export const sessionStorage = new KeyValueSessionStorage(store, {
   secure: true, // see Gotchas — not on by default
 });
 
-export const sessionAccessor = new SessionAccessor<AppEnv, "session">("session", storage);
+export const sessionAccessor = new SessionAccessor<AppEnv, "session">("session", sessionStorage);
 ```
 
 ```ts
 // src/lib/session.ts (production, cookie-backed — no server-side storage at all)
 import { CookieSessionStorage, SessionAccessor } from "@tknf/oven/session";
+import type { AppEnv } from "../env.js";
 
-const storage = new CookieSessionStorage({
-  secrets: [process.env.SESSION_SECRET as string],
+export const sessionStorage = new CookieSessionStorage({
+  secrets: [process.env.SESSION_SECRET ?? ""],
   secure: true, // see Gotchas — not on by default
 });
 
-export const sessionAccessor = new SessionAccessor<AppEnv, "session">("session", storage);
+export const sessionAccessor = new SessionAccessor<AppEnv, "session">("session", sessionStorage);
 ```
 
 **Using a dedicated `sessions` table instead** (once the decision table
@@ -118,37 +133,40 @@ above points you there):
 
 ```ts
 // src/lib/session.ts (production, a dedicated sessions table)
-import { SQLiteDatabaseSessionStorage, sqliteSessionsTable } from "@tknf/oven/session";
-import { db } from "./db.js";
+import { SessionAccessor, SQLiteDatabaseSessionStorage } from "@tknf/oven/session";
+import type { AppEnv } from "../env.js";
+import { db } from "../db/client.js"; // a Drizzle db built once for the process
+import { sessions } from "../domains/sessions/schema.js"; // export const sessions = sqliteSessionsTable();
 
-const storage = new SQLiteDatabaseSessionStorage(db, sqliteSessionsTable(), {
+export const sessionStorage = new SQLiteDatabaseSessionStorage(db, sessions, {
   secure: true, // see Gotchas — not on by default
 });
 
-export const sessionAccessor = new SessionAccessor<AppEnv, "session">("session", storage);
+export const sessionAccessor = new SessionAccessor<AppEnv, "session">("session", sessionStorage);
 ```
 
 **Flash messages** (e.g. a "saved successfully" banner shown once after a
 redirect):
 
-```ts
-app.post("/books", (c) => {
-  sessionAccessor.use(c).flash("notice", "Book created");
-  return c.redirect("/books");
-});
-
-app.get("/books", (c) => {
-  const notice = sessionAccessor.use(c).get("notice"); // undefined on the next request
-  return c.render(<BooksIndex notice={notice} />, { title: "Books" });
-});
+```tsx
+// src/domains/books/routes.tsx
+export const booksRoutes = new Hono<AppEnv>()
+  .post("/", (c) => {
+    sessionAccessor.use(c).flash("notice", "Book created");
+    return c.redirect("/books");
+  })
+  .get("/", (c) => {
+    const notice = sessionAccessor.use(c).get("notice"); // undefined on the next request
+    return c.render(<BooksListPage notice={notice} />, { title: "Books" });
+  });
 ```
 
 **Regenerating the session id on login** (defense against session
-fixation — call this right after establishing a new authenticated identity,
-typically from inside `Guard`'s `provider` flow or your login handler):
+fixation — call this in your login handler, right after establishing a new
+authenticated identity):
 
 ```ts
-app.post("/login", (c) => {
+export const accountsRoutes = new Hono<AppEnv>().post("/login", (c) => {
   const session = sessionAccessor.use(c);
   session.set("accountId", account.id);
   session.regenerate(); // reissues the id on the next commit; data is kept
@@ -159,9 +177,9 @@ app.post("/login", (c) => {
 **Logging out** (destroy the session and clear the cookie):
 
 ```ts
-app.post("/logout", async (c) => {
+export const accountsRoutes = new Hono<AppEnv>().post("/logout", async (c) => {
   const session = sessionAccessor.use(c);
-  const cookie = await storage.destroy(session);
+  const cookie = await sessionStorage.destroy(session);
   c.header("Set-Cookie", cookie, { append: true });
   return c.redirect("/login");
 });
@@ -172,7 +190,7 @@ app.post("/logout", async (c) => {
 a destroyed session even if it is also dirty. This means it's safe to flash a
 message before destroying in the same request — for example
 `sessionAccessor.use(c).flash("notice", "Logged out")` followed by
-`storage.destroy(session)` — without the auto-commit reviving the session
+`sessionStorage.destroy(session)` — without the auto-commit reviving the session
 data after the destroy `Set-Cookie` has already gone out.
 
 ## Gotchas / Security notes
@@ -191,6 +209,10 @@ data after the destroy `Set-Cookie` has already gone out.
   plaintext. Keep only non-secret data there; if you need to store
   something sensitive, use a KV/DB-backed storage and keep just the id in
   the cookie.
+- **`CookieSessionStorage` sessions cannot be revoked server-side.** The
+  signed payload carries no expiry, and `destroy` only returns a cookie that
+  clears the browser's copy; a copied cookie stays valid until the secret is
+  rotated. Use a KV/DB-backed storage when logout must invalidate the session.
 - **Auto-commit is incompatible with `stream: true` rendering** (see
   `SessionAccessor`'s JSDoc). If you stream a response, call
   `storage.commit()` explicitly before you start streaming — headers must
@@ -204,9 +226,8 @@ data after the destroy `Set-Cookie` has already gone out.
   flash message or other session change made just before an error must
   survive that error response, call `storage.commit()` yourself before
   throwing.
-- **`{Pg,SQLite,MySql}DatabaseSessionStorage` never actively GCs expired
-  rows** — a row is only deleted incidentally, the next time `get` happens
-  to read it past its `expiresAt`. Schedule
+- **`{Pg,SQLite,MySql}DatabaseSessionStorage` never deletes expired rows**
+  — `get` just treats them as empty. Schedule
   `{Pg,SQLite,MySql}PruneExpiredRecordsJob` (`@tknf/oven/jobs`) if you use a
   dedicated `sessions` table and want expired rows actually removed; see
   [Jobs](./jobs.md#common-tasks).

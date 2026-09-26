@@ -5,22 +5,22 @@ For the design rationale behind the APIs used here, see [Concepts](./concepts.md
 
 ## Prerequisites
 
-- **ESM only.** `@tknf/oven`'s `package.json` `exports` map declares only the
-  `default` condition, so it cannot be loaded via CommonJS `require()`. Your
-  app must be an ESM project (`"type": "module"` or a bundler that resolves
-  the `default`/`types` conditions).
+- **ESM only.** `@tknf/oven` ships ES modules, and its `package.json`
+  `exports` map declares only the `default` condition. Use it from an ESM
+  project (`"type": "module"` or a bundler that resolves the
+  `default`/`types` conditions).
 - **A JavaScript runtime that supports Web-standard `Request`/`Response`**,
   such as Node.js or Cloudflare Workers. oven's core (`@tknf/oven`) is
   runtime-agnostic; platform-specific adapters live behind the
   `@tknf/oven/node` and `@tknf/oven/cloudflare` subpath exports.
-- **Peer dependencies.** oven is built on top of [Hono](https://hono.dev) and,
-  for the `model`/`database` modules, [Drizzle ORM](https://orm.drizzle.team).
+- **Peer dependencies.** oven is built on top of [Hono](https://hono.dev) and
+  [Drizzle ORM](https://orm.drizzle.team).
   At the time of writing the supported versions are:
 
   | Package | Version | Required? |
   | --- | --- | --- |
   | `hono` | `^4.12.27` | always |
-  | `drizzle-orm` | `^0.45.2` | if you use `@tknf/oven/model` or `@tknf/oven/database` |
+  | `drizzle-orm` | `^0.45.2` | always |
   | `@libsql/client` | `^0.17.4` | optional (SQLite/libSQL adapters) |
   | `@cloudflare/workers-types` | `^5.0.0` | optional (only for Cloudflare Workers projects) |
 
@@ -158,9 +158,8 @@ export * from "../domains/users/schema.js";
 Pass that same module to drizzle-kit, to `drizzle(client, { schema })`, and to
 `createTestDb`, so a table that is missing from it is missing everywhere rather
 than only at runtime. Keep the drizzle-kit configuration in `db/config.ts` and
-point every drizzle-kit script at it with `--config`. drizzle-kit resolves
-`schema` and `out` from the current working directory, not from the
-configuration file's location:
+point every drizzle-kit script at it with `--config`. Write `schema` and `out`
+relative to the project root, where the scripts run:
 
 ```ts
 // db/config.ts

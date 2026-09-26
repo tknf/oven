@@ -64,7 +64,7 @@ oven targets Web-standard `Request`/`Response` and runs anywhere Hono does, incl
 ## Design principles
 
 1. **Stay a thin wrapper over Hono** — lean on Hono's built-ins (jsx-renderer, cookie helpers, languageDetector, etc.) as much as possible. The one intentional replacement is CSRF (Origin checking → token-based).
-2. **Classes for behavior, plain Hono for routes** — Session / Storage / Mailer / Model and the wiring layer (`ContextAccessor` and friends) share the vocabulary of an abstract base class plus inheritance; routes stay plain Hono method chains so their types reach `hc` and `testClient`.
+2. **Classes for behavior, plain Hono for routes** — SessionStorage / Storage / Mailer / Model and the wiring layer (`ContextAccessor` and friends) share the vocabulary of an abstract base class plus inheritance; routes stay plain Hono method chains so their types reach `hc` and `testClient`.
 3. **Backend-agnostic** — the core depends only on abstractions such as `KeyValueStore` and `Storage`. Cloudflare KV / R2 are just one adapter.
 4. **No magic** — no file-based routing, no lifecycle hooks, no auto-discovery or app registry. Explicit declaration only.
 
@@ -90,11 +90,11 @@ vp test           # two projects: node (L1/L2) + workerd (L3)
 - The `secure` attribute on the session cookie and remember token is **not** set by default (an intentional choice that keeps local HTTP development frictionless). **In production you must set `secure: true` explicitly via the cookie options.**
 - The `secrets` you pass to `CookieSessionStorage`, `UrlSigner`, `Encrypter`, etc. must be high-entropy random values of ~32 bytes (do not reuse a human-chosen passphrase).
 - The two points above are not enforced at runtime (nothing is thrown); oven only emits a `console.warn` so you can catch a misconfiguration (when a `secret` is short, or when `secure` is unset in a production-like environment). The default behavior itself is unchanged.
-- This package is ESM-only (`exports` declares only the `default` condition; it cannot be loaded via CJS `require`).
+- This package is ESM-only: it ships ES modules and its `exports` declares only the `default` condition. Use it from an ESM project.
 
 ## Status
 
-- Published on npm as [`@tknf/oven`](https://www.npmjs.com/package/@tknf/oven), currently on the `1.x` line. See [`CHANGELOG.md`](CHANGELOG.md) for release history.
+- Published on npm as [`@tknf/oven`](https://www.npmjs.com/package/@tknf/oven), currently on the `2.x` line. See [`CHANGELOG.md`](CHANGELOG.md) for release history.
 
 ## License
 

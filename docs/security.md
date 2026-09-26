@@ -26,38 +26,60 @@ concern and is wired in individually:
 - **`Encrypter`** — reversible AES-256-GCM encryption for values you need
   to recover later (e.g. a stored third-party API key). Never use this for
   passwords — see [Auth](./auth.md) for password hashing.
-- **`UrlSigner`** — HMAC-signed, optionally time-limited URLs for one-time
-  links (email verification, password reset).
+- **`UrlSigner`** — HMAC-signed, optionally time-limited URLs. A signed URL
+  stays valid until it expires, however many times it is used; for password
+  reset or login links use `PasswordReset`/`PasswordlessLogin` (see
+  [Auth](./auth.md)).
 - **`MaintenanceMode`** — a `KeyValueStore`-backed toggle that serves a 503
-  response to all but an allow-listed set of paths.
+  response to every path except the `allowPaths` prefixes (default `["/up"]`;
+  a plain string prefix, so `/up` also matches `/upload`).
 
 ## Minimal example
 
 ```ts
+// src/lib/security.ts
+import { Csrf } from "@tknf/oven/security";
+import type { AppEnv } from "../env.js";
+import { sessionAccessor } from "./session.js";
+
+export const csrf = new Csrf<AppEnv>({ session: sessionAccessor.use });
+```
+
+```ts
 // src/main.ts
 import { Hono } from "hono";
-import { Csrf, SecureHeaders, TrustedHost } from "@tknf/oven/security";
+import { SecureHeaders, TrustedHost } from "@tknf/oven/security";
+import type { AppEnv } from "./env.js";
+import { formsRoutes } from "./domains/forms/routes.js";
+import { csrf } from "./lib/security.js";
 import { sessionAccessor } from "./lib/session.js";
 
-const app = new Hono();
-
-app.use(new TrustedHost(["example.com", ".example.com"]).verify);
-app.use(new SecureHeaders().register);
-app.use(sessionAccessor.register);
-
-const csrf = new Csrf({ session: sessionAccessor.use });
-app.use(csrf.verify);
-
-app.get("/form", (c) => c.html(`<meta name="csrf-token" content="${csrf.csrfToken(c)}">`));
-app.post("/action", (c) => c.text("done"));
+const app = new Hono<AppEnv>()
+  .use(new TrustedHost(["example.com", ".example.com"]).verify)
+  .use(new SecureHeaders().register)
+  .use(sessionAccessor.register)
+  .use(csrf.verify)
+  .route("/", formsRoutes);
 
 export default app;
 ```
 
+```ts
+// src/domains/forms/routes.ts
+import { Hono } from "hono";
+import { csrfMetaTag } from "@tknf/oven/security";
+import type { AppEnv } from "../../env.js";
+import { csrf } from "../../lib/security.js";
+
+export const formsRoutes = new Hono<AppEnv>()
+  .get("/form", (c) => c.html(csrfMetaTag(csrf.csrfToken(c))))
+  .post("/action", (c) => c.text("done"));
+```
+
 `Csrf` must run downstream of a `SessionAccessor` (it stores its per-session
-secret in the `Session` — see [Sessions](./sessions.md)); calling
-`csrf.verify` before `sessionAccessor.register` throws with the session
-key's name embedded, the same as any other unregistered `ContextAccessor`.
+secret in the `Session` — see [Sessions](./sessions.md)); running
+`csrf.verify` before `sessionAccessor.register` throws on the first
+POST/PUT/PATCH/DELETE with the session key's name embedded, the same as any other unregistered `ContextAccessor`.
 By default, form token extraction accepts bodies up to 64 KiB (65,536 bytes).
 Larger forms receive `403 Invalid CSRF token`; header tokens do not read the body.
 
@@ -69,7 +91,7 @@ submit:**
 ```ts
 import { csrfMetaTag, CSRF_FORM_FIELD_NAME } from "@tknf/oven/security";
 
-app.get("/books/new", (c) => {
+export const booksRoutes = new Hono<AppEnv>().get("/new", (c) => {
   const token = csrf.csrfToken(c);
   return c.html(`
     ${csrfMetaTag(token)}
@@ -89,7 +111,7 @@ submission.
 **Allowing larger HTML forms:**
 
 ```ts
-const csrf = new Csrf({
+const csrf = new Csrf<AppEnv>({
   session: sessionAccessor.use,
   maxFormBodyBytes: 256 * 1024,
 });
@@ -107,7 +129,7 @@ Successful form verification preserves the body for downstream Hono parsing.
 callback), instead of disabling CSRF protection wholesale:
 
 ```ts
-const csrf = new Csrf({
+const csrf = new Csrf<AppEnv>({
   session: sessionAccessor.use,
   exceptions: [{ origin: "https://provider.example", path: "/auth/callback" }],
 });
@@ -121,7 +143,7 @@ import { InMemoryKeyValueStore } from "@tknf/oven/kv";
 
 const rateLimiter = new RateLimiter(new InMemoryKeyValueStore());
 
-app.post("/login", async (c) => {
+export const accountsRoutes = new Hono<AppEnv>().post("/login", async (c) => {
   const key = `login:${c.req.header("CF-Connecting-IP") ?? "unknown"}`;
   if (await rateLimiter.isLimited(key, 5, 60)) {
     return c.text("Too many failed attempts", 429);
@@ -143,48 +165,28 @@ verification, and does not reset or consume after success. `isLimited` accepts
 `windowSeconds` for symmetry with `consume`, but an existing active `resetAt`
 remains authoritative; a probe never starts or extends a window.
 
-**Signing and verifying a time-limited link** (e.g. email verification):
+**Signing and verifying a time-limited link** (replayable until it expires):
 
 ```ts
 import { UrlSigner } from "@tknf/oven/security";
 
-const urlSigner = new UrlSigner({ secrets: [process.env.URL_SIGNING_SECRET as string] });
+const urlSigner = new UrlSigner({ secrets: [process.env.URL_SIGNING_SECRET ?? ""] });
 
-const link = await urlSigner.sign("https://example.com/verify-email?userId=1", {
+const link = await urlSigner.sign("https://example.com/downloads/report?id=1", {
   expiresInSeconds: 60 * 60 * 24, // 24 hours
 });
 
-app.get("/verify-email", async (c) => {
+export const downloadsRoutes = new Hono<AppEnv>().get("/report", async (c) => {
   const ok = await urlSigner.verify(c.req.raw);
   if (!ok) return c.text("Link expired or invalid", 400);
-  // ... mark email verified
+  // ... serve the report
+  return c.body(null, 204);
 });
 ```
 
-**Restricting access by client IP.** oven has no IP allow/deny list of its
-own — `TrustedHost` validates the `Host` header (which domain the request
-claims to be for), not the connecting address, and `RateLimiter` throttles
-by whatever `key` you give it, not by network address specifically. For an
-actual IP allow/deny list, use Hono's own `hono/ip-restriction`, paired
-with the `getConnInfo` helper for your runtime (`hono/cloudflare-workers`,
-`@hono/node-server/conninfo`, ...):
-
-```ts
-import { ipRestriction } from "hono/ip-restriction";
-import { getConnInfo } from "hono/cloudflare-workers";
-
-app.use(
-  "/admin/*",
-  ipRestriction(getConnInfo, {
-    allowList: ["203.0.113.0/24"],
-  }),
-);
-```
-
-As with `RateLimiter`'s IP-derived keys, only trust an address if
-`getConnInfo` (or an upstream proxy header you've explicitly validated) is
-actually the client's real address for your deployment — a client-supplied
-header like `X-Forwarded-For` taken at face value can be spoofed.
+**Restricting access by client IP.** oven has no IP allow list; use Hono's
+`hono/ip-restriction`. `TrustedHost` validates the `Host` header, not the
+connecting address.
 
 **Limiting request body size.** `Csrf` bounds only its own form-token
 extraction. Use Hono's `hono/body-limit` to enforce an application-wide
@@ -223,8 +225,8 @@ await maintenanceMode.disable();
 
 ## Gotchas / Security notes
 
-- **`secrets` (for `Csrf`'s underlying session, `Encrypter`, `UrlSigner`,
-  and `CookieSessionStorage`) must be high-entropy random values
+- **`secrets` (for `CookieSessionStorage`, `Encrypter`, `UrlSigner`, and the
+  `DataToken`-based flows such as `PasswordReset`) must be high-entropy random values
   equivalent to ~32 bytes.** Human-chosen passphrases are vulnerable to
   brute force and are not acceptable substitutes. Weak secrets only log a
   `console.warn` at construction time — they are not rejected at runtime,
@@ -262,18 +264,20 @@ await maintenanceMode.disable();
   wider race window before the failed verification is counted. If `key` is
   derived from a client IP, only use the IP attached by a trusted proxy layer,
   not a client-spoofable header like `X-Forwarded-For` taken at face value.
-- **If a `key` you pass to any `KeyValueStore`-backed class (including
-  `RateLimiter`/`MaintenanceMode`) is derived from user input, sanitize it
-  on the application side** so it can't contain `..` or path separators —
-  the same caution as `Storage` keys.
+- **Keep user input from forging another key prefix.** If a `key` you pass
+  to a `KeyValueStore`-backed class (including `RateLimiter`) is derived from
+  user input, build it so the input cannot produce a key in another namespace
+  (e.g. one starting with `login:`).
 - **`UrlSigner` excludes the origin (scheme/host/port) from what gets
   signed** — only the path and query are covered. This is intentional (a
   reverse proxy's internal hostname often differs from the public one),
   but it also means the signature does not protect against the link being
   served from an unexpected host; combine it with `TrustedHost` if that
   matters for your deployment.
-- **`Encrypter`/`UrlSigner` derive their key from a single SHA-256 pass
-  over `secrets`, with no stretching** (unlike `hashPassword`'s PBKDF2).
+- **None of the secret-based classes stretches the secret** (unlike
+  `hashPassword`'s PBKDF2). `Encrypter` derives its AES key with one SHA-256
+  pass; `UrlSigner`, `DataToken`, and `CookieSessionStorage` use the secret
+  directly as the HMAC-SHA256 key.
   This is fine given a genuinely high-entropy secret, but it means these
   classes are not a substitute for password hashing — see
   [Auth](./auth.md).
@@ -286,5 +290,6 @@ await maintenanceMode.disable();
 - [Auth](./auth.md) — password hashing, token issuance, and `Guard`, which
   typically sit alongside these primitives on the same routes.
 - [Concepts](./concepts.md) — why `Csrf` replaces Hono's own CSRF
-  middleware, and the `register`/`use` convention `Csrf`/`SecureHeaders`/
-  `TrustedHost`/`MaintenanceMode` all follow for their middleware fields.
+  middleware, and why middleware fields such as `csrf.verify`,
+  `secureHeaders.register`, `trustedHost.verify`, and `maintenanceMode.use`
+  are arrow-function fields that can be passed by reference.

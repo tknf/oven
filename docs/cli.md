@@ -109,6 +109,10 @@ migrations, or seed scripts.
   layer (its `AdminModel` contract is dialect-agnostic by design).
 - **The view template is a `.tsx` file.** It returns JSX, so the app's
   `tsconfig.json` needs `"jsx": "react-jsx"` and `"jsxImportSource": "hono/jsx"`.
+- **The form template imports `@standard-schema/spec`.** Its
+  `StandardSchemaV1` type comes from that package, which oven depends on but
+  does not re-export; add `@standard-schema/spec` to the app's dependencies
+  if the package manager does not hoist it.
 - **Generated files are meant to be edited, not run as-is.** Every template
   leaves `TODO` comments (an unimplemented `schema()` throws, a bare `"TODO"`
   response body, etc.) — they exist to type-check standalone, not to be

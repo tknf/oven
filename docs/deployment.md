@@ -24,10 +24,9 @@ platform.
 ```ts
 // src/main.ts — platform-agnostic app code
 import { Hono } from "hono";
-import { BooksHandler } from "./handlers/books_handler.js";
+import { booksRoutes } from "./domains/books/routes.js";
 
-const app = new Hono();
-app.route("/books", new BooksHandler());
+const app = new Hono().route("/books", booksRoutes);
 
 export default app;
 ```
@@ -109,7 +108,7 @@ binding as a `JobQueue` for enqueuing; `QueueConsumer` wraps the same
 // src/lib/jobs.ts
 import { CloudflareJobQueue, QueueConsumer } from "@tknf/oven/cloudflare";
 import { JobRegistry } from "@tknf/oven/jobs";
-import { GreetJob } from "../jobs/greet_job.js";
+import { GreetJob } from "../domains/greetings/jobs/greet.js";
 
 export const jobRegistry = new JobRegistry();
 jobRegistry.register(new GreetJob());
@@ -123,15 +122,16 @@ export const queueConsumer = new QueueConsumer(jobRegistry, {
 
 ```ts
 // src/worker.ts
+import type { JobMessage } from "@tknf/oven/cloudflare";
 import app from "./main.js";
-import { makeJobQueue, queueConsumer } from "./lib/jobs.js";
+import { queueConsumer } from "./lib/jobs.js";
 
 export default {
   fetch: app.fetch,
-  queue: async (batch, env, ctx) => {
+  queue: async (batch) => {
     await queueConsumer.handle(batch);
   },
-} satisfies ExportedHandler<CloudflareBindings>;
+} satisfies ExportedHandler<CloudflareBindings, JobMessage>;
 ```
 
 **Cron Triggers** are dispatched by cron expression through
@@ -159,7 +159,7 @@ export default {
   fetch: app.fetch,
   queue: async (batch) => queueConsumer.handle(batch),
   scheduled: async (controller) => scheduledDispatcher.dispatch(controller),
-} satisfies ExportedHandler<CloudflareBindings>;
+} satisfies ExportedHandler<CloudflareBindings, JobMessage>;
 ```
 
 The same `ScheduledDispatcher` entry can drive a database-backed job worker's
@@ -197,7 +197,8 @@ export default {
 // src/lib/broadcaster.ts
 import { DurableObjectBroadcaster } from "@tknf/oven/cloudflare";
 
-export const broadcaster = new DurableObjectBroadcaster(env.BROADCASTER);
+export const makeBroadcaster = (namespace: DurableObjectNamespace) =>
+  new DurableObjectBroadcaster(namespace);
 ```
 
 ### Email Sending
@@ -266,12 +267,13 @@ every instance needs to see the same state:
 // src/lib/storage.ts
 import { S3Storage } from "@tknf/oven/storage";
 import { SQLiteDatabaseKeyValueStore, sqliteKeyValueTable } from "@tknf/oven/kv";
+import { db } from "../db/client.js"; // a Drizzle db built once for the process
 
 export const storage = new S3Storage({
   endpoint: "https://s3.us-east-1.amazonaws.com",
   bucket: "uploads",
-  accessKeyId: env.S3_ACCESS_KEY_ID,
-  secretAccessKey: env.S3_SECRET_ACCESS_KEY,
+  accessKeyId: process.env.S3_ACCESS_KEY_ID ?? "",
+  secretAccessKey: process.env.S3_SECRET_ACCESS_KEY ?? "",
   maxBytes: 10 * 1024 * 1024,
   timeoutMs: 10_000,
 });
@@ -363,19 +365,15 @@ responsibility, not oven's.
 
 ## Gotchas / Security notes
 
-- **Cloudflare Workers have no persistent process-level state.** Each `fetch`
-  invocation may run on a fresh isolate; don't cache a `KVNamespace`/`R2Bucket`
-  read in a module-level variable expecting it to survive across requests.
-  Use `ScopedValueAccessor` with `scope: "request"` for anything that must be
-  recreated per request, and reserve `scope: "app"` for values that are truly
-  safe to share (e.g. a `ScheduledDispatcher`/`QueueConsumer` instance built
-  once at module load, since it holds no per-request state itself) — see
+- **Wrap per-request bindings with `scope: "request"`.** Build adapters that
+  take a binding from `c.env` through `ScopedValueAccessor`'s default
+  `scope: "request"`; use `scope: "app"` only for values that hold no
+  per-request binding — see
   [Concepts § Dependency injection](./concepts.md#dependency-injection).
-- **Cloudflare Queues delivery is at-least-once.** `QueueConsumer` retries any
-  message whose job throws (`message.retry()`) and acks-and-discards unknown
-  job names rather than retrying them forever — see
-  [Jobs § Gotchas](./jobs.md#gotchas--security-notes) for why `perform` must be
-  idempotent regardless of which queue adapter is in front of it.
+- **`QueueConsumer` retries a job that throws.** It calls `message.retry()`
+  when `perform` throws and acks unknown job names instead of retrying them,
+  so `perform` must be idempotent — see
+  [Jobs § Gotchas](./jobs.md#gotchas--security-notes).
 - **`CloudflareCacheStore` is per-data-center, not globally replicated** —
   unlike `CloudflareKVStore`, a value cached in one colo can miss in another.
   Only use it for speculative caching, never for sessions or rate limiting

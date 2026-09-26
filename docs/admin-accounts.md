@@ -24,10 +24,12 @@ authenticate through the `@tknf/oven/auth` primitives (`Guard`,
 `hashPassword`/`verifyPassword`, tokens) as described in
 [Authentication](./auth.md).
 
-The stored permission set is data, not enforcement: `AdminPanel` does
-not check these permissions itself. Granting is `setUserPermissions`,
-reading is `userPermissions`, and checking is your own code — see
-[Grant and check permissions](#grant-and-check-permissions). A parallel
+The services only store permissions: granting is `setUserPermissions` and
+reading is `userPermissions`. Pass the services to `AdminPanel`'s `accounts`
+option to have the panel enforce them (see
+[Let the panel enforce permissions](#let-the-panel-enforce-permissions));
+otherwise check them yourself in `authorize` (see
+[Grant and check permissions](#grant-and-check-permissions)). A parallel
 trio of group services — `SQLiteAdminGroups`, `PgAdminGroups`, and
 `MySqlAdminGroups` — adds named permission groups over two more tables;
 see [Group your operators](#group-your-operators).
@@ -39,7 +41,7 @@ schema definition — generate and apply the actual migration with your
 app's own drizzle-kit setup (oven never generates migrations for you):
 
 ```ts
-// src/db/schema.ts
+// src/domains/admin/schema.ts (re-exported from src/db/schema.ts)
 import { sqliteAdminUsersTable } from "@tknf/oven/admin";
 
 export const adminUsers = sqliteAdminUsersTable(); // default table name: "admin_users"
@@ -51,7 +53,7 @@ Construct the service from your Drizzle `db` and the table:
 // src/lib/admin_accounts.ts
 import { SQLiteAdminAccounts } from "@tknf/oven/admin";
 import { adminUsers } from "../db/schema.js";
-import { db } from "./db.js";
+import { db } from "../db/client.js"; // a Drizzle db built once for the process
 
 export const accounts = new SQLiteAdminAccounts(db, adminUsers);
 ```
@@ -63,7 +65,7 @@ specific username, so the seed is idempotent (safe to run on every boot) and
 keeps working even after that first account is renamed or replaced:
 
 ```ts
-// scripts/seed_admin.ts
+// db/seed.ts
 import { accounts } from "../src/lib/admin_accounts.js";
 
 const username = process.env.OVEN_ADMIN_USERNAME;
@@ -86,7 +88,7 @@ Then back the panel's built-in login screens
 `accounts.authenticate`:
 
 ```ts
-new AdminPanel({
+new AdminPanel<AppEnv>({
   authorize: () => true, // every logged-in operator is allowed; see "Grant and check permissions"
   session: sessionAccessor.use,
   csrf,
@@ -168,14 +170,14 @@ await accounts.setUserPermissions(user.id, [
 const granted = await accounts.userPermissions(user.id); // string[]
 ```
 
-`setUserPermissions` replaces the whole set in a single UPDATE. The
-panel does not enforce these permissions itself — check them in your
-own `authorize` callback. Store the operator id under your own session
+`setUserPermissions` replaces the whole set in a single UPDATE. Without the
+`accounts` option, the panel does not enforce these permissions — check them
+in your own `authorize` callback. Store the operator id under your own session
 key during `authenticate` (the session survives the login-time id
 reissue) and read it back in `authorize`:
 
 ```ts
-new AdminPanel({
+new AdminPanel<AppEnv>({
   auth: {
     authenticate: async (c, credentials) => {
       const user = await accounts.authenticate(credentials);
@@ -211,7 +213,7 @@ import {
   sqliteAdminUserGroupsTable,
 } from "@tknf/oven/admin";
 
-// src/db/schema.ts
+// src/domains/admin/schema.ts
 export const adminGroups = sqliteAdminGroupsTable(); // default table name: "admin_groups"
 export const adminUserGroups = sqliteAdminUserGroupsTable(); // default table name: "admin_user_groups"
 
@@ -234,7 +236,7 @@ await groups.setUserGroups(user.id, [editors.id]);
 ```
 
 `permissionsForUser` resolves the union of every group's permission set
-for one user. As with user permissions, nothing is enforced for you —
+for one user. Without the `accounts` option, nothing is enforced for you —
 union it with the user's own set inside your `authorize` callback (the
 superuser bypass stays your code too, as in
 [Grant and check permissions](#grant-and-check-permissions)):
@@ -269,11 +271,11 @@ pass the services straight to `AdminPanel`'s `accounts` option and let the
 panel derive the login screens and enforce permissions itself:
 
 ```ts
-new AdminPanel({
+new AdminPanel<AppEnv>({
   session: sessionAccessor.use,
   csrf,
   accounts: { users: accounts, groups }, // `groups` is optional
-  resources: [new PublisherResource()],
+  resources: [new PublisherResource(publisherModel)],
   jobs: { console: jobsConsole },
   settings: { featureFlags: { flags: featureFlags, names: ["beta"] } },
   audit: { log: auditLog },
@@ -294,11 +296,11 @@ The route-to-permission mapping:
 | Route | Permission required |
 | --- | --- |
 | `GET /` (dashboard) | none — any active operator |
-| `GET /resources/:key`, `GET /resources/:key/:id` | `resource.<key>.view` |
+| `GET /resources/:key`, `GET /resources/:key/:id`, `GET /resources/:key/export.csv` | `resource.<key>.view` |
 | `GET /resources/:key/new` | `resource.<key>.create` |
 | `GET /resources/:key/:id/edit`, `POST /resources/:key/:id` | `resource.<key>.update` |
 | `GET`/`POST /resources/:key/:id/delete` | `resource.<key>.delete` |
-| `POST /resources/:key` | `resource.<key>.create`, or `.delete` when the submitted `action` is `"delete"` (the list screen's bulk-delete form posts here too) |
+| `POST /resources/:key` | `resource.<key>.create`; with an `action` field, `.delete` when it is `"delete"` (the list screen's bulk-delete form), otherwise none (a no-op redirect) |
 | `GET /jobs` | `jobs.view` |
 | `POST /jobs/:id/retry`, `POST /jobs/:id/delete` | `jobs.manage` |
 | `GET /settings` | `settings.view` |
@@ -314,8 +316,8 @@ Accounts nav link only ever renders for a superuser.
 A permission check that fails responds with `denyStatus` (default `403`).
 Passing an explicit `authorize` alongside `accounts` still runs it, in
 addition to this gate (both must allow); passing `auth` alongside
-`accounts` overrides the derived login (an escape hatch for e.g. wrapping
-the credential check in rate limiting), but its `authenticate` must then
+`accounts` overrides the derived login (an escape hatch for e.g. a custom
+rate-limit budget), but its `authenticate` must then
 resolve to an identity whose `id` is one of `accounts.users`'s own user
 ids, since re-validation on every request looks the row up by that id.
 `session` and `csrf` are both required once `accounts` is injected — the
@@ -403,8 +405,7 @@ try {
 ```
 
 Omit the options argument (or pass `protectLastActiveSuperuser: false`)
-to get the unguarded behavior — the call always applies, exactly as
-before.
+to get the unguarded behavior — the call always applies.
 
 ### Use Postgres or MySQL
 
@@ -424,13 +425,10 @@ export const adminUsers = mysqlAdminUsersTable();
 export const accounts = new MySqlAdminAccounts(db, adminUsers);
 ```
 
-MySQL specifics you will see in the generated migration: `username` is
-`varchar(255)` rather than TEXT (MySQL cannot put a UNIQUE index on a
-TEXT column without a key-length prefix), and the `permissions` TEXT
-column has no DEFAULT clause (MySQL TEXT columns cannot have one). The
-service always writes `permissions` explicitly, so this only matters if
-you insert rows outside the service — supply `permissions` yourself
-then.
+MySQL specifics you will see in the generated migration: `id` and
+`username` are `varchar(255)`, and `permissions` has no DEFAULT clause. The
+service always writes `permissions` explicitly, so supply it yourself only
+if you insert rows outside the service.
 
 ### Lock accounts after repeated failures
 
@@ -467,9 +465,10 @@ set on a table that doesn't have both lockout columns. Once configured,
 for `lockDurationSeconds` once the count reaches `maxAttempts`; while
 locked, `authenticate` returns the same `null` a wrong password gets — see
 [the enumeration-safety gotcha](#gotchas--security-notes) below. A
-successful login resets the counter, and so does the lock's own expiry: the
-account is usable again once `lockDurationSeconds` has elapsed, no action
-needed. To unlock an account before it expires (e.g. from a superuser
+successful login resets the counter. An expired lock stops blocking but does
+not reset `failedAttempts`, so the next wrong password locks the account again
+for `lockDurationSeconds`; only a successful login or `unlockUser` resets it.
+To unlock an account before it expires (e.g. from a superuser
 tool), call `unlockUser`:
 
 ```ts
@@ -538,12 +537,12 @@ re-enrollment warnings in [Gotchas / Security notes](#gotchas--security-notes).
 **The built-in login gets a second step automatically once TOTP is
 enrolled** — no extra `AdminPanel` option. It activates per-operator by
 shape: `accounts.users` exposing `verifyTotp` AND the authenticated row's
-`totpEnabledAt` being non-null. A non-enrolled operator logs in exactly as
-before (one step); an enrolled operator's password success redirects to
+`totpEnabledAt` being non-null. A non-enrolled operator logs in with the password
+alone (one step); an enrolled operator's password success redirects to
 `/login/totp` instead of setting the session identity, and only a correct
 code there completes login. See
-[Admin panel](./admin.md#wiring-built-in-loginlogout) for what the screen
-looks like; there is nothing to wire beyond passing `accounts` as usual
+[Admin panel](./admin.md#wiring-built-in-loginlogout) for the login routes;
+there is nothing to wire beyond passing `accounts` as usual
 (see [Let the panel enforce permissions](#let-the-panel-enforce-permissions)).
 
 **Disable TOTP** (e.g. from a superuser tool, or the operator's own account
@@ -585,24 +584,21 @@ await accounts.disableTotp(user.id);
   including a locked account given the *correct* password, which is the
   whole point: nothing distinguishes "wrong password" from "locked out"
   from "no such user".
-- **Do not raise the `iterations` option if the app runs on Cloudflare
-  Workers.** workerd's `crypto.subtle` rejects PBKDF2 above 100,000
-  iterations, and `verifyPassword` maps that error to `false` — so a
-  hash stored with a higher count makes every login fail silently, as
-  if the password were wrong. Same constraint as `hashPassword`'s
-  default in [Authentication](./auth.md); raise it only when running
-  exclusively on a runtime like Node.
+- **`iterations` is forwarded to `hashPassword`.** See
+  [Authentication](./auth.md#gotchas--security-notes) for runtime limits; a
+  hash the runtime cannot verify makes `verifyPassword` return `false`, so
+  every login fails.
 - **Never register the admin users table as a regular `AdminResource`.**
   The list/show/form screens render the columns you give them —
   including `passwordHash` — and form-based writes would bypass the
   service's normalization and validation.
 - **Rate-limit the built-in login.** The service bounds cost per attempt
-  but does not count attempts — pass `rateLimiter` (a `RateLimiter` from
+  but, without `lockout`, does not count attempts — pass `rateLimiter` (a `RateLimiter` from
   `@tknf/oven/security`) straight to `AdminPanel` instead of wrapping
   `authenticate` by hand. It is applied to `POST /login` **before**
   `auth.authenticate` runs, keyed by the submitted username normalized the
   same way the accounts services look it up (trim + lowercase, see
-  [the username-normalization gotcha](#gotchas--security-notes) below) — so
+  [the username-normalization gotcha](#gotchas--security-notes) above) — so
   `Admin`/`ADMIN`/` admin ` share one budget rather than each getting their
   own — as `` `admin-login:${normalizedUsername}` ``, so a request over the
   limit never reaches the credential check at all:
@@ -610,7 +606,7 @@ await accounts.disableTotp(user.id);
   ```ts
   import { RateLimiter } from "@tknf/oven/security";
 
-  new AdminPanel({
+  new AdminPanel<AppEnv>({
     // ...
     auth: {
       authenticate: async (_c, credentials) => {
@@ -665,9 +661,9 @@ await accounts.disableTotp(user.id);
   keep a trusted recovery path available.
   Enumeration safety holds throughout: a locked account returns the exact
   same `null` (and the same login error) as a wrong password or an unknown
-  username. There are two ways out of a lock — it expires on its own after
-  `lockDurationSeconds`, or a superuser (or your own tooling) calls
-  `unlockUser` — there is no third path.
+  username. A lock ends when `lockDurationSeconds` elapses, or when a
+  superuser (or your own tooling) calls `unlockUser`. An expired lock does not
+  reset `failedAttempts`, so one more wrong password locks the account again.
 - **`totpSecret` (`totp_secret`) is stored as plaintext Base32.** A DB read
   exposes every enrolled operator's seed and allows valid codes to be generated.
   Use application-layer column encryption when protecting seeds from a DB-only
@@ -686,22 +682,21 @@ await accounts.disableTotp(user.id);
   Authorize the target account and verify CSRF before calling the method. Session
   invalidation does not restore the previous TOTP requirement.
 - **`verifyTotp`'s replay guard accepts at most one code per RFC 6238 time
-  step, per user — not one code per login.** Every successful verification
-  (both `confirmTotpEnrollment` and `verifyTotp`) advances `totpLastUsedStep`
-  to the step it matched; a later call, even from a different login attempt
-  or a different session, is rejected if its step is not strictly greater
-  than the stored one. This is enforced as a single atomic conditional
-  UPDATE (`... WHERE totp_enabled_at IS NOT NULL AND (totp_last_used_step IS
-  NULL OR totp_last_used_step < :step)`), not a separate read-then-write, so
+  step, per user — not one code per login.** `verifyTotp` accepts a code only
+  when its step is strictly greater than `totpLastUsedStep`, and advances it
+  in a single atomic conditional UPDATE (`... WHERE totp_enabled_at IS NOT
+  NULL AND (totp_last_used_step IS NULL OR totp_last_used_step < :step)`), so
   a code cannot be replayed even under concurrent requests.
+  `confirmTotpEnrollment` sets `totpLastUsedStep` unconditionally, so its code
+  cannot later be replayed through `verifyTotp`.
 - **The drift window (`verifyTotpCode`'s `driftSteps`, default 1) is a
   clock-skew tolerance, not a security boundary** — see
   [Authentication](./auth.md#gotchas--security-notes) for the trade-off of
-  widening it. The admin accounts services always use the default; there is
-  no option to change it short of calling `auth/totp.ts`'s primitives
-  yourself instead of `verifyTotp`.
+  widening it. The admin accounts services always use the default; to change
+  it, call `verifyTotpCode` from `@tknf/oven/auth` yourself instead of
+  `verifyTotp`.
 - **Pair TOTP with [rate-limiting the built-in login](#gotchas--security-notes)
-  below, the same way as account lockout.** `rateLimiter`, when wired,
+  above, the same way as account lockout.** `rateLimiter`, when wired,
   protects the TOTP step too: `POST /login/totp` is checked against the same
   budget and window (`` `admin-totp:${pendingUserId}` ``, distinct from the
   password step's `` `admin-login:${normalizedUsername}` `` key so the two
@@ -730,11 +725,8 @@ await accounts.disableTotp(user.id);
   that made the change. This closes a gap that would otherwise let a
   session established *before* an account enrolled TOTP keep bypassing the
   second login step indefinitely, since nothing else about that session
-  changes when TOTP is turned on. **A session with no stamp at all (issued
-  by an app that hasn't upgraded to this behavior yet) is treated the same
-  as a mismatch and rejected**, so upgrading asks every currently-logged-in
-  operator to log back in once; after that they stay logged in as usual
-  until they change their password or their TOTP enrollment state again.
+  changes when TOTP is turned on. **A session with no stamp at all is
+  treated the same as a mismatch and rejected.**
 - **This protection is scoped to the `accounts` option.** Wiring your own
   `authorize`/`auth` instead — the [minimal example](#minimal-example)
   above, or checking `userPermissions` by hand inside `authorize` — gets

@@ -25,11 +25,18 @@ on its own, outside the admin panel.
 ## Minimal example
 
 ```ts
-// src/lib/audit.ts
-import { SQLiteAuditLog, sqliteAuditsTable } from "@tknf/oven/audit";
-import { db } from "./db.js";
+// src/domains/audit/schema.ts
+import { sqliteAuditsTable } from "@tknf/oven/audit";
 
 export const audits = sqliteAuditsTable(); // default table name: "audits"
+```
+
+```ts
+// src/lib/audit.ts
+import { SQLiteAuditLog } from "@tknf/oven/audit";
+import { db } from "../db/client.js"; // a Drizzle db built once for the process
+import { audits } from "../domains/audit/schema.js";
+
 export const auditLog = new SQLiteAuditLog(db, audits);
 ```
 
@@ -82,7 +89,8 @@ const rows = await auditLog.list({ actor: "user-1", action: "user.update", limit
 ## Gotchas / Security notes
 
 - **Migrations are your app's responsibility.** The `*AuditsTable`
-  factories only return a schema definition — generate the actual
+  factories only return a schema definition — export the table from a
+  schema module that `src/db/schema.ts` re-exports, then generate the
   migration with your app's own drizzle-kit setup (oven never generates
   migrations for you).
 - **Resolving `actor` is up to the caller.** `record()` takes `actor` as
@@ -99,8 +107,9 @@ const rows = await auditLog.list({ actor: "user-1", action: "user.update", limit
   matching your database and construct it directly.
 - **`changes` is stored as an opaque JSON string**, not queryable
   structured data. Don't rely on filtering `list()` by contents of
-  `changes` — only `actor`/`action`/`target` are indexed query
-  parameters.
+  `changes` — only `actor`/`action`/`target` are filter parameters. The
+  default table indexes only `created_at`; add your own indexes if you
+  filter a large table.
 - **Never put secrets or PII in `changes`.** The log is append-only (see
   above — there's no update/delete API), so a value written into `changes`
   cannot be redacted after the fact; filter what you pass to `record()`

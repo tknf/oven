@@ -30,11 +30,11 @@ const redeemCodeSchema = z.object({
   code: z.string().min(1, "Please enter a code."),
 });
 
-export class RedeemCodeForm extends Form<typeof redeemCodeSchema, "code"> {
+export class RedeemCodeForm extends Form<typeof redeemCodeSchema> {
   protected schema() {
     return redeemCodeSchema;
   }
-  protected fields(): Record<"code", FieldDef> {
+  protected fields(): Record<string, FieldDef> {
     return {
       code: { label: "Serial code", hint: "Enter the code printed in your book." },
     };
@@ -42,15 +42,23 @@ export class RedeemCodeForm extends Form<typeof redeemCodeSchema, "code"> {
 }
 ```
 
-```ts
+```tsx
 // src/domains/redeem/routes.tsx
+import { Hono } from "hono";
+import type { AppEnv } from "../../env.js";
+import { csrf } from "../../lib/security.js";
+import { RedeemCodeForm } from "./form.js";
+import { RedeemCodePage } from "./views/redeem.js";
+
 export const redeemRoutes = new Hono<AppEnv>().post("/", async (c) => {
   const form = new RedeemCodeForm();
   const result = await form.validate(await c.req.parseBody());
 
   if (!result.ok) {
     const binding = form.bind(result);
-    return c.render(<RedeemCodePage binding={binding} />, { title: "Redeem" });
+    return c.render(<RedeemCodePage binding={binding} csrfToken={csrf.csrfToken(c)} />, {
+      title: "Redeem",
+    });
   }
 
   // result.value is the schema's validated/transformed output.
@@ -101,6 +109,7 @@ const binding = form.bind(flashed ?? undefined);
 
 ```ts
 const item = await items.retrieve(id);
+if (!item) return c.notFound();
 const binding = form.bind({ values: form.toInput(item) });
 ```
 
@@ -111,10 +120,11 @@ const binding = form.bind({ values: form.toInput(item) });
 — from a `FormBinding` alone, without hand-wiring each `<input>`:
 
 ```tsx
+// src/domains/redeem/views/redeem.tsx
 import { FormView } from "@tknf/oven/form";
 import type { FormBinding } from "@tknf/oven/form";
 
-const RedeemCodePage = ({ binding, csrfToken }: { binding: FormBinding<"code">; csrfToken: string }) => (
+export const RedeemCodePage = ({ binding, csrfToken }: { binding: FormBinding<string>; csrfToken: string }) => (
   <FormView form={binding} action="/redeem" csrfToken={csrfToken}>
     <button type="submit">Redeem</button>
   </FormView>
@@ -136,14 +146,11 @@ protected fields(): Record<"cover", FieldDef> {
 }
 ```
 
-The older spelling — `widget: "input"` (or `widget` omitted) with
-`type: "file"` — still works and renders identically; it predates the
-dedicated variant and exists for backward compatibility with code (and
-`fieldsFromTable` overrides) written before it. New code should prefer
-`widget: "file"`. Either way, the rendered `BoundField` never carries a
-`value`: browsers refuse to pre-populate `input[type=file]`'s selection from a
-`value` attribute, so `Form#toInput` never sets a key for a `widget: "file"`
-field either.
+A `widget: "file"` field's `BoundField` never carries a `value`, and
+`Form#toInput` never sets a key for it. The spelling `widget: "input"` (or
+`widget` omitted) with `type: "file"` is still accepted, but it renders through
+the generic input path with a `value` attribute and the text-input
+attributes; use `widget: "file"`.
 
 ### Validating an uploaded file's size and MIME type
 
@@ -178,8 +185,10 @@ vocabulary, addressed to the field's name (a multi-file input is one HTML
 ```ts
 import { validateUploadedFiles, toUploadedFileFormErrors } from "@tknf/oven/form";
 
-const body = await c.req.parseBody({ all: true }); // { all: true } so a single file also comes back as an array
-const files = Array.isArray(body.attachments) ? body.attachments.filter((v): v is File => v instanceof File) : [];
+const body = await c.req.parseBody({ all: true });
+const raw = body.attachments; // a single file stays a single value
+const values = raw === undefined ? [] : Array.isArray(raw) ? raw : [raw];
+const files = values.filter((v): v is File => v instanceof File);
 
 const result = validateUploadedFiles(files, {
   maxSizeBytes: 5 * 1024 * 1024,
@@ -208,14 +217,15 @@ even if the hidden token field comes first (see [Security](./security.md)):
 ```ts
 import { bodyLimit } from "hono/body-limit";
 
-app.post(
-  "/upload",
+export const uploadsRoutes = new Hono<AppEnv>().post(
+  "/",
   bodyLimit({ maxSize: 5 * 1024 * 1024 }), // must run before parseBody / csrf.verify
   csrf.verify,
   async (c) => {
     const body = await c.req.parseBody();
     const validation = validateUploadedFile(body.cover, { maxSizeBytes: 5 * 1024 * 1024 });
     // ...
+    return c.redirect("/uploads", 303);
   },
 );
 ```
@@ -255,7 +265,7 @@ need to be hand-wired for the panel's own upload fields.
 
 ## See also
 
-- [Concepts](./concepts.md) — how `Form` fits the same "abstract base class
-  + subclass implements the specific bits" idiom used throughout oven.
+- [Getting started](./getting-started.md#application-structure) — where a
+  domain's `form.ts` and its views live.
 - [Models](./models.md) — where validated form output typically ends up
   (models trust already-normalized input; they don't validate it themselves).
