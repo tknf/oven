@@ -1,16 +1,5 @@
 # Gotchas and security defaults
 
-- **Hooks are methods, not class fields.** `layout = MyLayout` is `undefined` at
-  construction time — write `protected layout() { return MyLayout; }`.
-- **Reserved names.** A `RouteHandler` subclass must not reuse names Hono holds
-  (`get`, `post`, `use`, `route`, `routes`, `fetch`, `onError`, ...). Shadowing
-  `routes` breaks the instance.
-- **`app.route("/", handler)` leaks `layout()`/`middleware()` to the whole
-  app.** Both compile to a path-less `this.use(...)`, registered under Hono's
-  internal `"*"`; mounting merges that to `"<path>/*"` via `mergePath`, which
-  for `path === "/"` is `"/*"` — every route on the parent app. Mount on a
-  dedicated base path instead, or, if the handler must sit at the root, leave
-  `layout()`/`middleware()` unset and apply them per route inside `register()`.
 - **`secure` cookie attribute is OFF by default** (session cookie, remember
   token). Set `secure: true` explicitly in production via the cookie options.
 - **`storage.destroy(session)` always wins over `SessionAccessor`'s auto-commit.**
@@ -18,9 +7,8 @@
   `set`/`flash` made on that same instance earlier or later in the request (e.g.
   a "logged out" flash before destroying) does not get auto-committed and
   re-append a reviving `Set-Cookie` after the `Max-Age=0` destroy cookie.
-- **`Guard`'s `except` is an exact-match public-path allowlist**, kept as a
-  fallback to routing-order exclusion (mounting a public handler before
-  `require`) — `except: ["/admin/login"]` skips session/provider or request `authenticate`
+- **`Guard`'s `except` is an exact-match public-path allowlist** —
+  `except: ["/admin/login"]` skips session/provider or request `authenticate`
   entirely for that path (no glob/prefix matching, so keep the list minimal).
 - **Guard authentication modes are exclusive.** Use `authenticate(c)` alone or
   `session`/`identityKey`/`provider` with optional `remember`; omit the other mode's
@@ -37,8 +25,7 @@
   true only if the stored fingerprint still matches and the password changed.
   Compare against the supplied verification-time fingerprint, never a fresh
   read after hashing. `reset()` returns null on a lost race; `verify()` does not
-  consume. Migrate old void-returning callbacks to this required contract, with
-  no blind-write fallback. Keep the comparison and update in one database
+  consume. Keep the comparison and update in one database
   statement. Prefer a full password-hash fingerprint and ensure custom hashing
   uses fresh salts so it changes even for the same password. Changing an existing
   fingerprint expression invalidates outstanding links; reissue them.
@@ -46,7 +33,7 @@
   `CookieSessionStorage`, ...). Weak/short secrets only emit a `console.warn`,
   never throw — do not rely on the runtime to catch it.
 - **`Model#paginate` is keyset (cursor) pagination**, not offset — options are
-  `{ limit, cursor?, direction? }`; there is no `page` number. For an
+  `{ limit, cursor?, direction?, where? }`; there is no `page` number. For an
   arbitrary-column-order, numbered-page listing (e.g. admin), use
   `Model#listPage({ where?, orderBy?, limit, offset? })` instead — offset-based,
   so prefer `paginate` for large-scale public listings. `PaginationView`
@@ -57,8 +44,9 @@
   `isNull(table.deletedAt)` to your own `where` when you want to exclude deleted
   rows. Concurrency uses `updateLocked` + a `lockVersion` column (`StaleRecordError`).
 - **`Model` has no built-in tenant/row-level scope either.** `where` is always
-  composed by the caller, and PK-only methods (`retrieve`/`update`/`delete`/
-  `touch`/`increment`/`decrement`/`updateLocked`) bypass `where` entirely — a
+  composed by the caller, and PK-addressed methods (`retrieve`/
+  `retrieveMany`/`update`/`delete`/`softDelete`/`restore`/`touch`/`increment`/
+  `decrement`/`updateLocked`) bypass `where` entirely — a
   forgotten tenant condition silently reads/writes across every tenant. Write
   the scope as an explicit subclass (bind the tenant id, override every
   method that can leak); see the "Tenant-scoped models" recipe in
@@ -83,11 +71,14 @@
   `toUploadedFileFormErrors(result, field)` into `FormError[]`;
   `localizeUploadedFileError` accepts each batch entry directly.
 - **CSRF is not automatic on `AdminPanel`** — inject a `Csrf` instance so write
-  routes are verified.
+  routes are verified. Without it, a one-time `console.warn` fires on the first
+  unsafe request; the `accounts` option requires `csrf` (the constructor
+  throws).
 - **`AdminPanel`'s header user-tools block is opt-in** — inject
   `userTools: (c) => ({ greeting?, links? })` to render a greeting plus links
-  (e.g. "View site" / "Log out") in the header; omit it and nothing renders
-  (authentication is outside admin's scope). A link with `method: "post"`
+  (e.g. "View site" / "Log out") in the header. Omit it and nothing renders
+  unless `auth`/`accounts` login is wired, in which case a logged-in operator
+  gets a default greeting and a POST "Log out" link. A link with `method: "post"`
   renders as a `<form>` + submit button (needed for logout) and picks up the
   CSRF hidden input automatically when `csrf` is also injected; other links
   render as plain `<a>`.
@@ -103,8 +94,8 @@ username, password }) => Promise<AdminIdentity | null>` (verify however
   defense), and — unless you also inject `userTools` — defaults the header
   greeting/logout link from the logged-in identity. `authorize` still runs
   on every logged-in request; `auth` only answers "who is this", not "are
-  they allowed in here". Omit `auth` and nothing changes (no login routes,
-  no redirect gate — `authorize` alone gates access, as before).
+  they allowed in here". Without `auth` (or `accounts`) there are no login
+  routes and no redirect gate; `authorize` alone gates access.
 - **`AdminPanel`'s built-in `/login` is not rate-limited unless you inject
   `rateLimiter`** — a `RateLimiter` (`@tknf/oven/security`), applied to
   `POST /login` before `auth.authenticate` runs (5 attempts per submitted
@@ -127,8 +118,8 @@ username, password }) => Promise<AdminIdentity | null>` (verify however
   an every-attempt `consume`/success `reset` flow.
 - **`AdminPanel` has no request body size limit unless you inject
   `bodyLimitBytes`** — wires `hono/body-limit` (`bodyLimit({ maxSize:
-bodyLimitBytes })`) as the panel's very first middleware, ahead of CSRF
-  verification and any of the panel's own `parseBody` calls, so an oversized
+bodyLimitBytes })`) ahead of every request-processing middleware, including
+  CSRF verification and any of the panel's own `parseBody` calls, so an oversized
   request (e.g. against an `AdminResource` form with a `File` field) is
   rejected before it's buffered rather than after. Omitting it keeps the
   absence of an overall request limit and emits no one-time warning. An injected
@@ -164,8 +155,9 @@ bodyLimitBytes })`) as the panel's very first middleware, ahead of CSRF
   fail silently), and never expose the users table as an `AdminResource`
   (the screens would render `passwordHash`). Permissions are plain strings
   (`resourcePermission(key, action)`, built-ins like `"audit.view"`) stored
-  per user (`setUserPermissions`/`userPermissions`) — the panel does not
-  enforce them; check them in your own `authorize`. Opt-in per-account
+  per user (`setUserPermissions`/`userPermissions`) — without the `accounts`
+  option the panel does not enforce them (check them in your own
+  `authorize`); with it, the panel enforces them (see below). Opt-in per-account
   lockout: spread `sqliteAdminUserLockoutColumns()` (`failedAttempts`/
   `lockedUntil`) alongside `sqliteAdminUserColumns()` and pass
   `lockout: { maxAttempts, lockDurationSeconds }` to the constructor (both
@@ -223,8 +215,7 @@ code)` (verifies against the pending secret, only then sets
   guarantees a mismatch after either kind of change (so a session
   established before an account enrolled TOTP can't keep bypassing the
   second login step once enrollment completes). A session with no stamp at
-  all (issued before this existed) is rejected the same way, so upgrading
-  asks every logged-in operator to log back in once. This applies only to
+  all is rejected the same way. This applies only to
   the `accounts` option — a hand-rolled `authorize`/`auth` gets neither
   behavior (see `docs/admin-accounts.md`'s Gotchas section). A pending TOTP
   second-step is also kept from ever coexisting with a logged-in session:
@@ -266,8 +257,9 @@ code)` (verifies against the pending secret, only then sets
   then INSERT — not transactional, deliberately fail-closed: a mid-way
   failure leaves fewer groups, never stale extras; re-run on error), and
   group permissions resolve via `permissionsForUser(userId)` (the union of
-  every group's set) — combine it with the user's own `userPermissions` in
-  your `authorize`. Group names are only trimmed, never lowercased (unlike
+  every group's set). The `accounts` gate unions it with the user's own
+  `userPermissions` itself; without `accounts`, combine them in your
+  `authorize`. Group names are only trimmed, never lowercased (unlike
   usernames).
 - **`AdminResource#filters()` is a closed allowlist** — declare each filter's
   `options` explicitly; a query value outside that list is silently ignored
@@ -350,7 +342,7 @@ code)` (verifies against the pending secret, only then sets
   the parent's id. The parent write and the child writes are separate
   sequential calls, not one transaction. The child `Form#fields()` should
   omit the foreign key column.
-- **`AdminPanel`'s markup targets WCAG 2.1 AAA** — a skip link to `#content`,
+- **`AdminPanel` uses AAA-contrast (7:1) text colors** plus a skip link to `#content`,
   a `<nav>`/`<ol>` breadcrumb trail, sortable/labeled table headers
   (`scope`, `aria-sort`, per-link `aria-label`), no inert "select all"
   checkbox, and `aria-current="page"` on both the active sidebar item and
@@ -431,4 +423,4 @@ code)` (verifies against the pending secret, only then sets
   declare a schema for the envelope and return `this.request(path, { schema:
 envelopeSchema })` directly; `toArray` only fits a list that's a bare array
   or a thin `{ data: [...] }` wrapper, since it discards everything else.
-- **ESM-only.** The package cannot be `require()`d.
+- **ESM-only.** The package ships only ES modules; use it from an ESM project.

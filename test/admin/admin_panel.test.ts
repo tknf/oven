@@ -1,7 +1,7 @@
 /**
  * Tests for `AdminPanel`. Covers the skeleton (mount base + authorization + dashboard)
  * as well as the job console / settings / audit log screen wiring (#7). Follows the
- * `RouteHandler` testing convention (`app.route()` + `app.request()`), matching
+ * sub-app testing convention (`app.route()` + `app.request()`), matching
  * `test/mailer/mail_preview_handler.test.ts`.
  *
  * Since the job console / settings / audit log dependencies are all received through
@@ -11,6 +11,7 @@
 import type { Env } from "hono";
 import { eq } from "drizzle-orm";
 import { Hono } from "hono";
+import { testClient } from "hono/testing";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vite-plus/test";
 import { AdminPanel } from "../../src/admin/admin_panel.js";
 import type { AdminAuditRow, AdminJobRow } from "../../src/admin/admin_types.js";
@@ -218,6 +219,19 @@ const buildFakeAuditLog = (rows: AdminAuditRow[] = [buildAuditRow()]) => {
 };
 
 describe("AdminPanel", () => {
+	test("keeps the typed client for sibling routes when mounted inside a method chain", async () => {
+		const books = new Hono().get("/:id", (c) => c.json({ id: c.req.param("id") }));
+		const app = new Hono()
+			.route("/admin", new AdminPanel({ authorize: () => true }))
+			.route("/books", books);
+
+		const res = await testClient(app).books[":id"].$get({ param: { id: "42" } });
+		const body: { id: string } = await res.json();
+
+		expect(body).toEqual({ id: "42" });
+		expect((await app.request("/admin")).status).toBe(200);
+	});
+
 	test("returns 403 when authorize returns false", async () => {
 		const app = new Hono();
 		app.route("/admin", new AdminPanel({ authorize: () => false }));

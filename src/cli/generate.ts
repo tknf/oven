@@ -6,22 +6,29 @@ import { join } from "node:path";
 
 /** Kinds of templates accepted by `oven generate`. */
 export type GenerateType =
-	| "handler"
+	| "routes"
+	| "schema"
 	| "model"
 	| "form"
-	| "job"
 	| "policy"
 	| "view"
-	| "seed"
-	| "admin-resource";
+	| "job"
+	| "admin";
 
-/** Drizzle dialect targeted by the `model` template. */
+/** Drizzle dialect targeted by the `schema` and `model` templates. */
 export type ModelDialect = "sqlite" | "pg" | "mysql";
 
 /** Input to `planGeneration`. */
 export type GenerateOptions = {
 	type: GenerateType;
-	name: string;
+	/** Domain directory name under `src/domains/` (normalized to snake_case). */
+	domain: string;
+	/**
+	 * Entity name for class/table names (defaults to `domain`); required for `view`
+	 * and `job`, where it also becomes the file name.
+	 */
+	name?: string;
+	/** Overrides the output directory. */
 	dir?: string;
 	dialect?: ModelDialect;
 };
@@ -34,39 +41,37 @@ export type GenerationPlan = {
 
 /** List of types accepted by `oven generate` (keep in sync with `GenerateType`). */
 export const GENERATE_TYPES: readonly GenerateType[] = [
-	"handler",
+	"routes",
+	"schema",
 	"model",
 	"form",
-	"job",
 	"policy",
 	"view",
-	"seed",
-	"admin-resource",
+	"job",
+	"admin",
 ];
 
-/** Default output directory per type. */
-const DEFAULT_DIRS: Record<GenerateType, string> = {
-	handler: "src/handlers",
-	model: "src/models",
-	form: "src/forms",
-	job: "src/jobs",
-	policy: "src/policies",
-	view: "src/views",
-	seed: "src/seeds",
-	"admin-resource": "src/admin",
-};
+/** Types whose template depends on the Drizzle dialect. */
+const DIALECT_TYPES: readonly GenerateType[] = ["schema", "model"];
 
-/** Class name suffix per type. */
-const TYPE_SUFFIXES: Record<GenerateType, string> = {
-	handler: "Handler",
+/** Types that emit one file per name inside a domain subdirectory. */
+const NAMED_FILE_DIRS = {
+	view: "views",
+	job: "jobs",
+} as const satisfies Partial<Record<GenerateType, string>>;
+
+/** Class name suffix per class-producing type. */
+const TYPE_SUFFIXES = {
 	model: "Model",
 	form: "Form",
-	job: "Job",
 	policy: "Policy",
 	view: "View",
-	seed: "Seed",
-	"admin-resource": "Resource",
-};
+	job: "Job",
+	admin: "Resource",
+} as const satisfies Partial<Record<GenerateType, string>>;
+
+/** A type that produces a class and therefore has a class name suffix. */
+export type ClassGenerateType = keyof typeof TYPE_SUFFIXES;
 
 /** Splits `input` into a sequence of words (on `-`/`_`/whitespace delimiters and camelCase/PascalCase boundaries). */
 const splitWords = (input: string): string[] => {
@@ -90,16 +95,16 @@ export const snakeCase = (input: string): string =>
 
 /**
  * Returns the PascalCase class name with the `type` suffix appended. If `name` already
- * ends with the suffix, it is not appended twice (e.g. `BooksHandler` stays `BooksHandler`).
+ * ends with the suffix, it is not appended twice (e.g. `BookModel` stays `BookModel`).
  */
-export const classNameFor = (type: GenerateType, name: string): string => {
+export const classNameFor = (type: ClassGenerateType, name: string): string => {
 	const base = pascalCase(name);
 	const suffix = TYPE_SUFFIXES[type];
 	return base.endsWith(suffix) ? base : `${base}${suffix}`;
 };
 
 /** Strips the suffix from `className` to get the base name (used for table variable names, job names, etc.). */
-const stripSuffix = (type: GenerateType, className: string): string => {
+const stripSuffix = (type: ClassGenerateType, className: string): string => {
 	const suffix = TYPE_SUFFIXES[type];
 	return className.endsWith(suffix) ? className.slice(0, -suffix.length) : className;
 };
@@ -108,34 +113,30 @@ const stripSuffix = (type: GenerateType, className: string): string => {
 const toCamelCase = (word: string): string =>
 	word.length === 0 ? word : word.charAt(0).toLowerCase() + word.slice(1);
 
-/** Builds the handler template content. Extends `RouteHandler` and implements `register()`. */
-const handlerTemplate = (
-	className: string,
-): string => `import { RouteHandler } from "@tknf/oven/routing";
+/**
+ * Builds the routes template content: a Hono sub-app built as a method chain, so the
+ * route types it declares reach `hc` and `testClient` once the app mounts it.
+ */
+const routesTemplate = (variable: string, domain: string): string => `import { Hono } from "hono";
 
 /**
- * TODO: Describe ${className}.
+ * TODO: Describe the ${domain} routes.
+ * Mount it from src/main.ts with \`app.route("/${domain}", ${variable})\`. Keep adding
+ * routes to this method chain so their types stay part of the app's schema.
  */
-export class ${className} extends RouteHandler {
-	/** Registers routes. */
-	protected register(): void {
-		this.get("/", (c) => {
-			// TODO: implement
-			return c.text("TODO");
-		});
-	}
-}
+export const ${variable} = new Hono().get("/", (c) => {
+	// TODO: implement
+	return c.text("TODO");
+});
 `;
 
-/** Builds the model template content (imports, table definition, and base class differ per dialect). */
-const modelTemplate = (className: string, base: string, dialect: ModelDialect): string => {
+/** Builds the schema template content: only the Drizzle table definition for the dialect. */
+const schemaTemplate = (base: string, dialect: ModelDialect): string => {
 	const tableVar = toCamelCase(base);
 	const tableName = snakeCase(base);
 
 	if (dialect === "pg") {
 		return `import { bigint, pgTable, text } from "drizzle-orm/pg-core";
-import type { PostgresJsQueryResultHKT } from "drizzle-orm/postgres-js";
-import { PgModel } from "@tknf/oven/model";
 
 /** TODO: Adjust the table definition to match the actual columns. */
 export const ${tableVar} = pgTable("${tableName}", {
@@ -143,6 +144,44 @@ export const ${tableVar} = pgTable("${tableName}", {
 	createdAt: bigint("created_at", { mode: "number" }).notNull(),
 	updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
 });
+`;
+	}
+
+	if (dialect === "mysql") {
+		return `import { bigint, mysqlTable, varchar } from "drizzle-orm/mysql-core";
+
+/** TODO: Adjust the table definition to match the actual columns. */
+export const ${tableVar} = mysqlTable("${tableName}", {
+	id: varchar("id", { length: 255 }).primaryKey(),
+	createdAt: bigint("created_at", { mode: "number" }).notNull(),
+	updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
+});
+`;
+	}
+
+	return `import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+
+/** TODO: Adjust the table definition to match the actual columns. */
+export const ${tableVar} = sqliteTable("${tableName}", {
+	id: text("id").primaryKey(),
+	createdAt: integer("created_at").notNull(),
+	updatedAt: integer("updated_at").notNull(),
+});
+`;
+};
+
+/**
+ * Builds the model template content. The table comes from the domain's `schema.ts`
+ * (generate it first with the `schema` template); the base class differs per dialect.
+ */
+const modelTemplate = (className: string, base: string, dialect: ModelDialect): string => {
+	const tableVar = toCamelCase(base);
+
+	if (dialect === "pg") {
+		return `import type { PostgresJsQueryResultHKT } from "drizzle-orm/postgres-js";
+import { PgModel } from "@tknf/oven/model";
+import { ${tableVar} } from "./schema.js";
+import type * as schema from "./schema.js";
 
 /**
  * TODO: Describe ${className}.
@@ -152,7 +191,8 @@ export const ${tableVar} = pgTable("${tableName}", {
 export class ${className} extends PgModel<
 	typeof ${tableVar},
 	typeof ${tableVar}.id,
-	PostgresJsQueryResultHKT
+	PostgresJsQueryResultHKT,
+	typeof schema
 > {
 	protected get table() {
 		return ${tableVar};
@@ -165,16 +205,10 @@ export class ${className} extends PgModel<
 	}
 
 	if (dialect === "mysql") {
-		return `import { bigint, mysqlTable, varchar } from "drizzle-orm/mysql-core";
-import type { MySql2PreparedQueryHKT, MySql2QueryResultHKT } from "drizzle-orm/mysql2";
+		return `import type { MySql2PreparedQueryHKT, MySql2QueryResultHKT } from "drizzle-orm/mysql2";
 import { MySqlModel } from "@tknf/oven/model";
-
-/** TODO: Adjust the table definition to match the actual columns. */
-export const ${tableVar} = mysqlTable("${tableName}", {
-	id: varchar("id", { length: 255 }).primaryKey(),
-	createdAt: bigint("created_at", { mode: "number" }).notNull(),
-	updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
-});
+import { ${tableVar} } from "./schema.js";
+import type * as schema from "./schema.js";
 
 /**
  * TODO: Describe ${className}.
@@ -185,7 +219,8 @@ export class ${className} extends MySqlModel<
 	typeof ${tableVar},
 	typeof ${tableVar}.id,
 	MySql2QueryResultHKT,
-	MySql2PreparedQueryHKT
+	MySql2PreparedQueryHKT,
+	typeof schema
 > {
 	protected get table() {
 		return ${tableVar};
@@ -197,20 +232,18 @@ export class ${className} extends MySqlModel<
 `;
 	}
 
-	return `import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
-import { SQLiteModel } from "@tknf/oven/model";
-
-/** TODO: Adjust the table definition to match the actual columns. */
-export const ${tableVar} = sqliteTable("${tableName}", {
-	id: text("id").primaryKey(),
-	createdAt: integer("created_at").notNull(),
-	updatedAt: integer("updated_at").notNull(),
-});
+	return `import { SQLiteModel } from "@tknf/oven/model";
+import { ${tableVar} } from "./schema.js";
+import type * as schema from "./schema.js";
 
 /**
  * TODO: Describe ${className}.
  */
-export class ${className} extends SQLiteModel<typeof ${tableVar}, typeof ${tableVar}.id> {
+export class ${className} extends SQLiteModel<
+	typeof ${tableVar},
+	typeof ${tableVar}.id,
+	typeof schema
+> {
 	protected get table() {
 		return ${tableVar};
 	}
@@ -287,7 +320,7 @@ export class ${className} extends Policy {
 }
 `;
 
-/** Builds the view template content. Extends `View` and overrides `html()`. */
+/** Builds the view template content (a `.tsx` file). Extends `View` and overrides `html()`. */
 const viewTemplate = (className: string): string => `import type { Context } from "hono";
 import { View } from "@tknf/oven/view";
 
@@ -298,34 +331,13 @@ export class ${className} extends View {
 	/** Builds the HTML representation. */
 	html(c: Context) {
 		// TODO: implement
-		return c.text("TODO");
+		return c.html(<p>TODO</p>);
 	}
 }
 `;
 
 /**
- * Builds the seed template content. Since oven itself has no seed execution runtime, it only
- * exports a function and leaves execution to the app.
- */
-const seedTemplate = (base: string): string => `/**
- * TODO: Describe run${base}Seed.
- *
- * Execution is the app's responsibility (oven has no seed execution runtime). For example,
- * add a script to package.json's scripts that runs
- * \`vp exec tsx src/seeds/${snakeCase(base)}_seed.ts\`, or import and call it directly from
- * test setup.
- */
-export const run${base}Seed = async (): Promise<void> => {
-	// TODO: create a DB client and insert data
-	// Example:
-	// const client = createClient({ url: process.env.DATABASE_URL });
-	// const db = drizzle(client);
-	// await db.insert(books).values([...]);
-};
-`;
-
-/**
- * Builds the admin-resource template content. Extends `AdminResource` and takes the
+ * Builds the admin template content. Extends `AdminResource` and takes the
  * corresponding Model and Drizzle table via constructor injection (the same pattern used
  * throughout `docs/admin.md` and the admin test fixtures), so the generated class type-checks
  * on its own without depending on a real model/table existing at a guessed import path. Since
@@ -340,9 +352,9 @@ const adminResourceTemplate = (className: string, base: string): string => {
 import type { AdminModel } from "@tknf/oven/admin";
 import { AdminResource } from "@tknf/oven/admin";
 
-// TODO: import the corresponding table and Model instance, e.g.:
-// import { ${tableVar} } from "../models/${snakeCase(base)}_model.js";
-// import { ${modelVar} } from "../lib/models.js";
+// TODO: import the corresponding table and build the Model instance where the app wires it, e.g.:
+// import { ${tableVar} } from "./schema.js";
+// import { ${base}Model } from "./model.js";
 
 /**
  * TODO: Describe ${className}.
@@ -388,45 +400,90 @@ export class ${className} extends AdminResource {
 `;
 };
 
+/** Returns the class name for a class-producing type, prefixing a view with its domain. */
+const classNameForPlan = (type: ClassGenerateType, domain: string, entity: string): string =>
+	type === "view" ? classNameFor(type, `${domain}_${entity}`) : classNameFor(type, entity);
+
 /**
  * Builds the destination path and content of a template (no side effects). Throws if `type`
- * is unknown.
+ * is unknown, if `dialect` is given for a type that does not use it, or if `name` is missing
+ * for `view`/`job`.
  */
 export const planGeneration = (options: GenerateOptions): GenerationPlan => {
-	const { type, name, dialect } = options;
+	const { type, dialect } = options;
 	if (!GENERATE_TYPES.includes(type)) {
 		throw new Error(`Unknown type: ${type}`);
 	}
-	if (dialect !== undefined && type !== "model") {
-		throw new Error(`--dialect only applies to the model template, not "${type}"`);
+	if (dialect !== undefined && !DIALECT_TYPES.includes(type)) {
+		throw new Error(`--dialect only applies to the schema and model templates, not "${type}"`);
+	}
+	if ((type === "view" || type === "job") && options.name === undefined) {
+		throw new Error(`The ${type} template requires a name (e.g. oven generate ${type} books list)`);
 	}
 
-	const className = classNameFor(type, name);
-	const base = stripSuffix(type, className);
-	const fileName = `${snakeCase(className)}.ts`;
-	const dir = options.dir ?? DEFAULT_DIRS[type];
-	const filePath = join(dir, fileName);
+	const domain = snakeCase(options.domain);
+	const entity = options.name ?? options.domain;
+	const domainDir = `src/domains/${domain}`;
 
-	const content = ((): string => {
+	const target = ((): { dir: string; fileName: string; content: string } => {
 		switch (type) {
-			case "handler":
-				return handlerTemplate(className);
-			case "model":
-				return modelTemplate(className, base, dialect ?? "sqlite");
+			case "routes":
+				return {
+					dir: domainDir,
+					fileName: "routes.ts",
+					content: routesTemplate(`${toCamelCase(pascalCase(entity))}Routes`, domain),
+				};
+			case "schema":
+				return {
+					dir: domainDir,
+					fileName: "schema.ts",
+					content: schemaTemplate(pascalCase(entity), dialect ?? "sqlite"),
+				};
+			case "model": {
+				const className = classNameFor(type, entity);
+				const base = stripSuffix(type, className);
+				return {
+					dir: domainDir,
+					fileName: "model.ts",
+					content: modelTemplate(className, base, dialect ?? "sqlite"),
+				};
+			}
 			case "form":
-				return formTemplate(className);
-			case "job":
-				return jobTemplate(className, base);
+				return {
+					dir: domainDir,
+					fileName: "form.ts",
+					content: formTemplate(classNameFor(type, entity)),
+				};
 			case "policy":
-				return policyTemplate(className);
+				return {
+					dir: domainDir,
+					fileName: "policy.ts",
+					content: policyTemplate(classNameFor(type, entity)),
+				};
 			case "view":
-				return viewTemplate(className);
-			case "seed":
-				return seedTemplate(base);
-			case "admin-resource":
-				return adminResourceTemplate(className, base);
+				return {
+					dir: join(domainDir, NAMED_FILE_DIRS.view),
+					fileName: `${snakeCase(entity)}.tsx`,
+					content: viewTemplate(classNameForPlan(type, domain, entity)),
+				};
+			case "job": {
+				const className = classNameFor(type, entity);
+				return {
+					dir: join(domainDir, NAMED_FILE_DIRS.job),
+					fileName: `${snakeCase(stripSuffix(type, className))}.ts`,
+					content: jobTemplate(className, stripSuffix(type, className)),
+				};
+			}
+			case "admin": {
+				const className = classNameFor(type, entity);
+				return {
+					dir: domainDir,
+					fileName: "admin.ts",
+					content: adminResourceTemplate(className, stripSuffix(type, className)),
+				};
+			}
 		}
 	})();
 
-	return { filePath, content };
+	return { filePath: join(options.dir ?? target.dir, target.fileName), content: target.content };
 };

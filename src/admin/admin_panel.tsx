@@ -1,8 +1,10 @@
 /**
  * Mount base for a unified admin panel, in oven's
  * explicit-registration style. Like `MailPreviewHandler`
- * (`src/mailer/mail_preview_handler.ts`), this is a `RouteHandler` subclass with
+ * (`src/mailer/mail_preview_handler.ts`), this is a `Hono` subclass with
  * screens that an app explicitly mounts via `app.route("/admin", new AdminPanel({...}))`.
+ * The panel's own routes are not part of the parent app's RPC schema; mounting it
+ * inside a method chain keeps the schema of the app's other routes intact.
  * Whether to mount in production and SecureHeaders are the app's responsibility, but
  * the panel itself hard-codes an access gate as mandatory: `authorize`, or the
  * DB-backed permission gate derived from `accounts` (the constructor throws when
@@ -24,18 +26,14 @@
  * in `admin_styles.ts`), so this panel itself has no asset-serving route (keeps
  * runtime code fs-independent).
  *
- * Per `RouteHandler`'s constraint 2 (`src/routing/route_handler.ts`), `middleware()`/
- * `register()` are called during the base constructor (`super()`), so overrides must
- * be written as prototype methods. `register()` registers only the dashboard
- * (`GET "/"`); the job/settings/audit routes are registered additionally from
- * `wireSections()`, called after `super()` completes (after `panelOptions` is
- * assigned). Hono applies all middleware registered on an instance
- * (`this.use` via `middleware()`) to every matching route regardless of registration
- * order, so the authorization middleware also applies to section routes added later
- * (verified in `admin_panel.test.ts`). `panelOptions` itself is assigned once in the
- * constructor and immutable thereafter, but each handler follows the
- * `MailPreviewHandler` precedent and consistently references `this.panelOptions` at
- * request time (inside a closure).
+ * The constructor assigns `panelOptions`, validates it, and then wires the panel in
+ * a fixed order: the `middleware()` chain, the dashboard from `register()`, and the
+ * job/settings/audit/accounts/resource routes from `wireSections()`. Hono runs a
+ * path-less middleware (`this.use`) only for routes registered after it, so the
+ * middleware chain is registered before every route and the authorization
+ * middleware applies to all of them (verified in `admin_panel.test.ts`). `panelOptions` is assigned
+ * once in the constructor and immutable thereafter; each handler reads
+ * `this.panelOptions` at request time (inside a closure).
  *
  * ## Persisting inline child rows
  * When a resource declares `inlines()` (`AdminInline` in `admin_resource.ts`), the
@@ -63,12 +61,11 @@ import {
 } from "./admin_routes.js";
 import { and, eq, getTableColumns, gte, lt } from "drizzle-orm";
 import type { Column, SQL } from "drizzle-orm";
-import type { Context, Env, MiddlewareHandler } from "hono";
+import type { Context, Env, Handler, MiddlewareHandler } from "hono";
+import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import type { FormInput, FormInputValue, FormResult } from "../form/form.js";
-import type { ResourceActions } from "../routing/route_handler.js";
-import { RouteHandler } from "../routing/route_handler.js";
 import type { Csrf } from "../security/csrf.js";
 import type { RateLimiter } from "../security/rate_limiter.js";
 import type { Session } from "../session/session.js";
@@ -343,7 +340,7 @@ const EXPORT_MAX_ROWS = 10_000;
 
 /**
  * Parses the list screen's `?o=` sort query into a display column index +
- * direction, matching a familiar admin-console convention (`?o=<i>` ascending,
+ * direction (`?o=<i>` ascending,
  * `?o=-<i>` descending; `i` indexes `AdminResource#columns()`, the same order
  * the list table's headers render in). Returns `null` for a missing,
  * non-numeric, or out-of-range value, so the caller falls back to its own
@@ -1173,24 +1170,38 @@ export type AdminPanelOptions<E extends Env = Env> = {
 	bodyLimitBytes?: number;
 };
 
-/** The closure is available when RouteHandler calls register() from super(). */
-const createAdminResourceHandler = <E extends Env>(
-	actions: ResourceActions<E>,
-): RouteHandler<E> => {
-	class AdminResourceHandler extends RouteHandler<E> {
-		protected register(): void {
-			this.resources(actions);
-		}
-	}
-	return new AdminResourceHandler();
+/** CRUD handlers for one admin resource; only the supplied actions get a route. */
+type AdminResourceActions<E extends Env> = {
+	index?: Handler<E>;
+	new?: Handler<E>;
+	create?: Handler<E>;
+	show?: Handler<E>;
+	edit?: Handler<E>;
+	update?: Handler<E>;
+	destroy?: Handler<E>;
 };
 
-/** `RouteHandler` subclass that serves the unified admin panel, mounted explicitly by the app. */
-export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
+/**
+ * Builds the sub-app for one admin resource. The static `/new` path is
+ * registered before `/:id` so `show` does not swallow it.
+ */
+const createAdminResourceApp = <E extends Env>(actions: AdminResourceActions<E>): Hono<E> => {
+	const app = new Hono<E>();
+	if (actions.index) app.get("/", actions.index);
+	if (actions.new) app.get("/new", actions.new);
+	if (actions.create) app.post("/", actions.create);
+	if (actions.show) app.get("/:id", actions.show);
+	if (actions.edit) app.get("/:id/edit", actions.edit);
+	if (actions.update) app.on(["PATCH", "PUT"], "/:id", actions.update);
+	if (actions.destroy) app.delete("/:id", actions.destroy);
+	return app;
+};
+
+/** `Hono` subclass that serves the unified admin panel, mounted explicitly by the app. */
+export class AdminPanel<E extends Env = Env> extends Hono<E> {
 	/**
-	 * `options` collides with Hono's reserved instance member name (used for HTTP
-	 * OPTIONS method registration; see `route_handler.ts` constraint 1), so the field
-	 * is named `panelOptions` instead.
+	 * `options` collides with Hono's own instance member (used for HTTP OPTIONS
+	 * method registration), so the field is named `panelOptions` instead.
 	 */
 	private panelOptions: AdminPanelOptions<E> | undefined;
 
@@ -1250,6 +1261,8 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 			);
 		}
 		this.warnRateLimiterMissingOnce();
+		for (const mw of this.middleware()) this.use(mw);
+		this.register();
 		this.wireSections();
 	}
 
@@ -1277,13 +1290,9 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 			 * Runs first among the request-processing middleware below (ahead of
 			 * `csrf.verify` and the accounts permission gate's own `parseBody` peek),
 			 * so an oversized request is rejected before any middleware or handler
-			 * buffers it. `bodyLimitBytes` is read here rather than once at
-			 * construction: `middleware()` itself runs inside the base
-			 * `RouteHandler` constructor (`super()`), before this
-			 * subclass's own constructor body has assigned `panelOptions` (same reason
-			 * every other option below is read from `this.panelOptions` inside its
-			 * closure, not hoisted out of it). A no-op passthrough when not injected
-			 * (existing unlimited-body behavior).
+			 * buffers it. `bodyLimitBytes` is read from `this.panelOptions` at
+			 * request time, like every other option below. A no-op passthrough when
+			 * not injected (existing unlimited-body behavior).
 			 */
 			(c, next) => {
 				const bodyLimitBytes = this.panelOptions?.bodyLimitBytes;
@@ -2053,8 +2062,8 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 	}
 
 	/**
-	 * Called after `super()` completes (after `panelOptions` is assigned), and
-	 * additionally registers routes only for injected sections. Since `register()`
+	 * Called from the constructor after `register()`, and additionally registers
+	 * routes only for injected sections. Since `register()`
 	 * registers only the dashboard, this is the single branch point that keeps
 	 * uninjected sections from getting routes.
 	 */
@@ -3380,7 +3389,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 
 		for (const resource of resources) {
 			const key = resource.key;
-			const actions: ResourceActions<E> = {};
+			const actions: AdminResourceActions<E> = {};
 			const resolve = (): AdminResource | undefined =>
 				this.panelOptions?.resources?.find((candidate) => candidate.key === key);
 
@@ -3963,7 +3972,7 @@ export class AdminPanel<E extends Env = Env> extends RouteHandler<E> {
 					},
 				);
 			}
-			this.route(adminResourcePathFor("", key, "index"), createAdminResourceHandler(actions));
+			this.route(adminResourcePathFor("", key, "index"), createAdminResourceApp(actions));
 		}
 	}
 }

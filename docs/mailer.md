@@ -6,18 +6,19 @@
 composition-over-configuration policy as `Storage`: it knows nothing about
 a backend's request/response shape, and domain code (templates, jobs)
 receives a `Mailer` instance through the constructor rather than reaching
-for a global. oven ships exactly one concrete implementation,
-`ConsoleMailer` — a development fallback that logs instead of sending. Any
-real send backend (Postmark, Resend, SES, your own SMTP relay, etc.) is
-built by extending `FetchMailer`, an abstract base for `fetch`-based
-backends that only requires implementing `buildRequest`.
+for a global. `@tknf/oven/mailer` ships one concrete implementation,
+`ConsoleMailer` — a development fallback that logs instead of sending — and
+`@tknf/oven/cloudflare` ships `CloudflareEmailMailer` for the Cloudflare
+Email Sending binding. Other send backends (Postmark, Resend, SES, your own
+SMTP relay, etc.) are built by extending `FetchMailer`, an abstract base for
+`fetch`-based backends that only requires implementing `buildRequest`.
 
 Two supporting layers sit around `Mailer`: `MailTemplate<TProps>`, a JSX
 template base that composes a subject/HTML/text body from typed `props` and
 sends through an injected `Mailer`; and `DeliverMailJob`, a ready-made `Job`
 (`@tknf/oven/jobs`) that puts a `Mailer#send` call on the job queue, so mail
 delivery doesn't block the request that triggered it. `MailPreviewHandler`
-rounds this out with a `RouteHandler` you mount in development to browse
+rounds this out with a Hono sub-app you mount in development to browse
 composed `MailMessage`s in the browser without actually sending them.
 
 ## Minimal example
@@ -29,11 +30,10 @@ import { ConsoleMailer } from "@tknf/oven/mailer";
 export const mailer = new ConsoleMailer();
 ```
 
-```ts
-// src/mailers/welcome_mailer.ts
-import { jsx } from "hono/jsx";
+```tsx
+// src/domains/accounts/welcome_mail.tsx
 import { MailTemplate } from "@tknf/oven/mailer";
-import { mailer } from "../lib/mailer.js";
+import { mailer } from "../../lib/mailer.js";
 
 type WelcomeProps = { name: string };
 
@@ -43,7 +43,7 @@ class WelcomeTemplate extends MailTemplate<WelcomeProps> {
   }
 
   protected html({ name }: WelcomeProps) {
-    return jsx("p", null, `Hi ${name}, thanks for signing up.`);
+    return <p>Hi {name}, thanks for signing up.</p>;
   }
 }
 
@@ -51,8 +51,11 @@ export const welcomeMailer = new WelcomeTemplate(mailer, "no-reply@example.com")
 ```
 
 ```ts
-// main.ts
-app.post("/signup", async (c) => {
+// src/domains/accounts/routes.ts
+import { Hono } from "hono";
+import { welcomeMailer } from "./welcome_mail.js";
+
+export const accountsRoutes = new Hono().post("/signup", async (c) => {
   // ...create the account...
   await welcomeMailer.send("new-user@example.com", { name: "Ada" });
   return c.redirect("/");
@@ -73,14 +76,18 @@ are stripped) — write `text` explicitly whenever the HTML body has content
 that wouldn't survive that derivation, such as a link URL that only appears
 inside an `<a href>`:
 
-```ts
+```tsx
 class VerifyEmailTemplate extends MailTemplate<{ verifyUrl: string }> {
   protected subject(): string {
     return "Verify your email";
   }
 
   protected html({ verifyUrl }: { verifyUrl: string }) {
-    return jsx("p", null, "Click ", jsx("a", { href: verifyUrl }, "here"), " to verify.");
+    return (
+      <p>
+        Click <a href={verifyUrl}>here</a> to verify.
+      </p>
+    );
   }
 
   protected text({ verifyUrl }: { verifyUrl: string }): string {
@@ -229,13 +236,15 @@ export const useMailer = accessor.use;
 ```
 
 ```ts
-// main.ts
-app.use(registerMailer);
+// src/main.ts
+const app = new Hono<AppEnv>().use(registerMailer);
 ```
 
-Sending mail then goes through `useMailer(c)`, `MailTemplate`, or
-`DeliverMailJob` exactly as in the earlier examples, none of which need to
-know the backend is Resend. Other providers (SES, your own SMTP-over-HTTP
+Code running in a request then takes the mailer from `useMailer(c)`, for
+example `new WelcomeTemplate(useMailer(c), "no-reply@example.com").send(...)`,
+without knowing the backend is Resend. A `DeliverMailJob` runs outside a
+request, so construct the `Mailer` it receives where the job consumer can read
+the API key. Other providers (SES, your own SMTP-over-HTTP
 relay, ...) follow the same shape: only `buildRequest`'s endpoint and field
 mapping change — `send`, the timeout, and header-injection validation are
 all inherited from `FetchMailer` unchanged.
@@ -301,7 +310,7 @@ registry.register(deliverMailJob);
 ```
 
 ```ts
-app.post("/signup", async (c) => {
+export const accountsRoutes = new Hono().post("/signup", async (c) => {
   await queue.enqueue(deliverMailJob, {
     from: "no-reply@example.com",
     to: "new-user@example.com",

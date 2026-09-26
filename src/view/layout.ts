@@ -39,8 +39,7 @@ import type { jsxRenderer } from "hono/jsx-renderer";
  * component itself. Since `jsxRenderer` makes `component` optional
  * (`component?:`), the actual type is derived from
  * `NonNullable<Parameters<typeof jsxRenderer>[0]>` (Hono itself does not
- * export a named type for this). Used as the return type of
- * `RouteHandler#layout()`.
+ * export a named type for this). Pass it to `jsxRenderer(layout)` on a Hono app.
  */
 export type LayoutComponent = NonNullable<Parameters<typeof jsxRenderer>[0]>;
 

@@ -20,7 +20,7 @@ const visitorId = new CookieAccessor({
   options: { path: "/", secure: true },
 });
 
-app.get("/set", (c) => {
+export const visitorsRoutes = new Hono().get("/", (c) => {
   visitorId.set(c, idGenerator.generate());
   return c.text("ok");
 });
@@ -44,36 +44,28 @@ All four implement the abstract `IdGenerator` class (`generate(): string`),
 so app code that only needs an id should depend on `IdGenerator`, not a
 concrete scheme.
 
-**Reading/writing a cookie that needs integrity protection** (e.g. a
-`remember_token` that must not be forgeable by the client): call Hono's own
-signed cookie API directly — `CookieAccessor` intentionally stays unsigned
+**Reading/writing a cookie that needs integrity protection** (e.g. a cart id
+the client must not be able to forge; for "remember me" use `RememberToken`,
+which can be revoked): call Hono's own signed cookie API directly — `CookieAccessor` intentionally stays unsigned
 (see the module JSDoc for why signed/unsigned are two separate shapes), so
 this is the supported way to get a signed cookie in oven:
 
 ```ts
 import { getSignedCookie, setSignedCookie } from "hono/cookie";
 
-const secret = process.env.REMEMBER_SECRET as string;
+const secret = process.env.CART_COOKIE_SECRET ?? "";
 
-await setSignedCookie(c, "remember_token", token, secret);
-const value = await getSignedCookie(c, secret, "remember_token"); // string | undefined | false (false = tampered)
+await setSignedCookie(c, "cart_id", cartId, secret);
+const value = await getSignedCookie(c, secret, "cart_id"); // string | undefined | false (false = tampered)
 ```
 
 Use the plain `CookieAccessor` instead when the value doesn't need
-integrity protection (e.g. a UI preference, as in the minimal example above).
-
-> **Legacy: `SignedCookieAccessor`/`SignedCookieDefinition`.** These used to
-> wrap the call above in a typed accessor matching `CookieAccessor`'s shape.
-> They are now `@deprecated` and scheduled for removal in the next major —
-> use `getSignedCookie`/`setSignedCookie` directly as shown above, or
-> `CookieAccessor` combined with your own explicit signing (the pattern
-> `UrlSigner`/`CookieSessionStorage` use internally) if you need to reuse the
-> signing logic across several cookies.
+integrity protection (e.g. the `visitor_id` in the minimal example above).
 
 **Validating `c.env` once at startup, then distributing a typed config**
 (via `ScopedValueAccessor` from `@tknf/oven/routing`, with `scope: "app"`
-so the validated `Promise` is memoized and every request after the first
-one reuses it):
+so a successful validation is memoized and every later request reuses it;
+a failed validation is retried on the next request):
 
 ```ts
 import { validateEnv } from "@tknf/oven/support";
@@ -111,8 +103,8 @@ const isValid = constantTimeEqual(submittedBytes, expectedBytes);
 ## Gotchas / Security notes
 
 - **A signed cookie's `secret` must be a high-entropy random value equivalent
-  to ~32 bytes** — whether signed via `getSignedCookie`/`setSignedCookie`
-  directly or the legacy `SignedCookieAccessor`. `warnWeakSecrets` (used
+  to ~32 bytes** when signed via `getSignedCookie`/`setSignedCookie`.
+  `warnWeakSecrets` (used
   internally by classes such as `Encrypter`/`UrlSigner`/`CookieSessionStorage`,
   not by Hono's own signed cookie functions) only issues a `console.warn`
   once per context at construction time — it never throws, so it must not be
@@ -135,10 +127,9 @@ const isValid = constantTimeEqual(submittedBytes, expectedBytes);
   uppercase, unpadded output; `decodeBase32` tolerates lowercase input and
   trailing `=` padding but throws `TypeError` on any other character
   outside the alphabet.
-- **`timeoutSignal` returns `undefined` when `timeoutMs` is not given** —
-  Workers' `fetch` has no default timeout, so an unbounded outbound call
-  can hang and consume execution time/concurrency; pass an explicit
-  `timeoutMs` for any subrequest to an external service.
+- **`timeoutSignal` returns `undefined` when `timeoutMs` is not given**, so
+  the request has no timeout; pass an explicit `timeoutMs` for any
+  subrequest to an external service.
 - **`registerConfig`/`useConfig` are not literal exports of this module** —
   they are the recommended naming convention for the `register`/`use` pair
   you create yourself from `ScopedValueAccessor` (`@tknf/oven/routing`), as

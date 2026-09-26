@@ -29,23 +29,29 @@ export const broadcaster = new InMemoryBroadcaster();
 ```
 
 ```ts
-// main.ts
+// src/domains/rooms/routes.ts
 import { Hono } from "hono";
 import { broadcastSse } from "@tknf/oven/realtime";
-import { broadcaster } from "./lib/broadcaster.js";
+import { broadcaster } from "../../lib/broadcaster.js";
 
-const app = new Hono();
+export const roomsRoutes = new Hono()
+  .get("/:roomId/events", (c) => {
+    const channel = `rooms/${c.req.param("roomId")}`;
+    return broadcastSse(c, broadcaster, [channel]);
+  })
+  .post("/:roomId/messages", async (c) => {
+    const roomId = c.req.param("roomId");
+    await broadcaster.publish(`rooms/${roomId}`, { data: "<li>a new message</li>", event: "message" });
+    return c.body(null, 204);
+  });
+```
 
-app.get("/sse/rooms/:roomId", (c) => {
-  const channel = `rooms/${c.req.param("roomId")}`;
-  return broadcastSse(c, broadcaster, [channel]);
-});
+```ts
+// src/main.ts
+import { Hono } from "hono";
+import { roomsRoutes } from "./domains/rooms/routes.js";
 
-app.post("/rooms/:roomId/messages", async (c) => {
-  const roomId = c.req.param("roomId");
-  await broadcaster.publish(`rooms/${roomId}`, { data: "<li>a new message</li>", event: "message" });
-  return c.body(null, 204);
-});
+const app = new Hono().route("/rooms", roomsRoutes);
 
 export default app;
 ```
@@ -69,7 +75,7 @@ unsubscribes from all of them on disconnect (detected via
 `SSEStreamingApi.onAbort`), so there's nothing to clean up manually:
 
 ```ts
-app.get("/sse/notifications", (c) =>
+export const notificationsRoutes = new Hono().get("/events", (c) =>
   broadcastSse(c, broadcaster, ["users/1/notifications"], { keepAliveSeconds: 30 }),
 );
 ```
@@ -85,7 +91,7 @@ that interval so proxies don't close an otherwise-idle connection.
 ```ts
 // src/lib/channels.ts
 import { ChannelAuthorizer } from "@tknf/oven/realtime";
-import type { AppEnv } from "./session.js";
+import type { AppEnv } from "../env.js";
 
 export const channelAuthorizer = new ChannelAuthorizer<AppEnv>({
   "rooms/:roomId": (c, { roomId }) => c.get("account").roomIds.includes(roomId),
@@ -93,11 +99,13 @@ export const channelAuthorizer = new ChannelAuthorizer<AppEnv>({
 ```
 
 ```ts
-// main.ts
+// src/domains/rooms/socket_routes.ts
+import { Hono } from "hono";
 import { upgradeWebSocket } from "hono/cloudflare-workers";
 import { BroadcastWebSocket } from "@tknf/oven/realtime";
-import { broadcaster } from "./lib/broadcaster.js";
-import { channelAuthorizer } from "./lib/channels.js";
+import type { AppEnv } from "../../env.js";
+import { broadcaster } from "../../lib/broadcaster.js";
+import { channelAuthorizer } from "../../lib/channels.js";
 
 const socket = new BroadcastWebSocket<AppEnv>({
   broadcaster,
@@ -105,7 +113,7 @@ const socket = new BroadcastWebSocket<AppEnv>({
   authorize: (c) => channelAuthorizer.authorize(c, `rooms/${c.req.query("roomId")}`),
 });
 
-app.get("/ws", socket.middleware(upgradeWebSocket));
+export const roomSocketRoutes = new Hono<AppEnv>().get("/ws", socket.middleware(upgradeWebSocket));
 ```
 
 If `authorize` returns `false`, the connection is closed with close code
@@ -116,16 +124,25 @@ If `authorize` returns `false`, the connection is closed with close code
 turn the RDB itself into pub/sub (polling a table for new rows), so
 delivery reaches every instance in a multi-process/multi-region deployment
 without adding infrastructure. Each ships a matching table factory
-(`pgBroadcastsTable`/`sqliteBroadcastsTable`/`mysqlBroadcastsTable`) — run it
-through your app's own drizzle-kit migration flow, since oven doesn't
-generate migrations for you:
+(`pgBroadcastsTable`/`sqliteBroadcastsTable`/`mysqlBroadcastsTable`). Export
+the table from a schema module that `src/db/schema.ts` re-exports, so
+drizzle-kit generates its migration through your app's own scripts (oven
+doesn't generate migrations for you):
 
 ```ts
-import { PgDatabaseBroadcaster, pgBroadcastsTable } from "@tknf/oven/realtime";
-import { db } from "./lib/db.js";
+// src/domains/realtime/schema.ts
+import { pgBroadcastsTable } from "@tknf/oven/realtime";
 
-const broadcastsTable = pgBroadcastsTable();
-export const broadcaster = new PgDatabaseBroadcaster(db, broadcastsTable);
+export const broadcasts = pgBroadcastsTable();
+```
+
+```ts
+// src/lib/broadcaster.ts
+import { PgDatabaseBroadcaster } from "@tknf/oven/realtime";
+import { db } from "../db/client.js"; // a Drizzle db built once for the process
+import { broadcasts } from "../domains/realtime/schema.js";
+
+export const broadcaster = new PgDatabaseBroadcaster(db, broadcasts);
 ```
 
 The `Broadcaster` contract (`publish`/`subscribe`) is identical across all
@@ -179,8 +196,8 @@ from scratch.
 erroring, an infrastructure hiccup, etc.), this adapter automatically retries
 the connection with exponential backoff (`reconnectInitialDelayMs`, doubling
 up to `reconnectMaxDelayMs`) until it succeeds or you call the `subscribe`
-return value to unsubscribe — set `reconnect: false` to opt back into the
-old behavior of leaving the subscription dead once its socket closes.
+return value to unsubscribe — set `reconnect: false` to leave the
+subscription closed once its socket closes.
 Reconnecting only restores the subscription's liveness, not what was missed:
 a `publish` that lands while the socket is down (or reconnecting) is never
 redelivered, same as any other gap covered by the `Broadcaster` base
@@ -190,15 +207,12 @@ beyond that, since the adapter already retries on its own.
 
 ## Gotchas / Security notes
 
-- **`BroadcastWebSocket` connections are not subject to the Same-Origin
-  Policy, and cookies are sent automatically on connection establishment.**
-  If `channels` derives its subscription list from the session (e.g. a
-  user id), a page on a different origin can open a WebSocket to your
-  server and subscribe to that user's channels — Cross-Site WebSocket
-  Hijacking. Always perform Origin validation and connection authorization
-  in the `authorize` hook, or inside the `channels` callback itself, before
-  trusting any session-derived value (this matches the guidance in
-  `SECURITY.md`).
+- **`BroadcastWebSocket` performs no Origin check itself.** If `channels`
+  derives its subscription list from the session (e.g. a user id), perform
+  Origin validation and connection authorization in the `authorize` hook, or
+  inside the `channels` callback itself, before trusting any session-derived
+  value, to prevent Cross-Site WebSocket Hijacking (this matches the guidance
+  in `SECURITY.md`).
 - **`InMemoryBroadcaster` only reaches `publish` calls within the same
   process.** It has no cross-instance delivery and no persistence — fine
   for development/tests/single-instance deployments, but silently loses
@@ -210,12 +224,9 @@ beyond that, since the adapter already retries on its own.
   module-level singleton, use `scope: "app"`. The default `"request"` scope
   creates a new instance per request, and `InMemoryBroadcaster#publish`
   would then never reach subscribers registered on other requests.
-- **SSE connections are held open for as long as the client stays
-  connected.** Each one consumes a request/response slot and a listener
-  registration; consider a `keepAliveSeconds` value low enough for your
-  proxy's idle timeout, and be mindful of how many concurrent SSE
-  connections your deployment target (a long-lived Node process vs. a
-  Cloudflare Worker's request-scoped execution) can sustain.
+- **Set `keepAliveSeconds` below your proxy's idle timeout.** Each open
+  `broadcastSse` connection holds one listener registration until the client
+  disconnects.
 - **`ChannelAuthorizer` fails closed.** A channel name that matches no
   registered pattern is never implicitly allowed — `authorize` returns
   `false`. Wildcards (`*`) in a pattern throw at construction time instead

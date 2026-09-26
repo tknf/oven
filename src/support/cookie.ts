@@ -10,23 +10,14 @@
  * SessionStorage's "auto-commit at the end of a request" role. This module
  * only provides a way to read/write a single named cookie.
  *
- * **Why signed and unsigned are split into separate classes**: Hono's signed
- * API (`getSignedCookie`/`setSignedCookie`) is asynchronous (it uses the Web
- * Crypto API to compute the HMAC signature), while the unsigned API is
- * synchronous. Representing both in a single class would require overriding
- * `get`/`set` with different return types, and forcing that unification
- * through inheritance would make derived classes incompatible with the base
- * signature (violating the Liskov substitution principle). So this module
- * exposes two independent classes distinguished by name:
- * `CookieAccessor` (unsigned) and `SignedCookieAccessor` (signed). This
- * convention of naming classes explicitly per use case is consistent with
- * how this framework distinguishes `Session`/`AdminSession` via inheritance.
+ * A cookie that needs integrity protection uses Hono's
+ * `getSignedCookie`/`setSignedCookie` directly.
  */
 import type { Context } from "hono";
-import { deleteCookie, getCookie, getSignedCookie, setCookie, setSignedCookie } from "hono/cookie";
+import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import type { CookieOptions } from "hono/utils/cookie";
 
-/** Cookie definition shared by `CookieAccessor`/`SignedCookieAccessor`. */
+/** Cookie definition for `CookieAccessor`. */
 export interface CookieDefinition {
 	/** Cookie name. */
 	readonly name: string;
@@ -55,58 +46,6 @@ export class CookieAccessor {
 	}
 
 	/** Deletes the cookie. Returns the value it had before deletion, if any. */
-	delete(c: Context): string | undefined {
-		return deleteCookie(c, this.definition.name, this.definition.options);
-	}
-}
-
-/**
- * Cookie definition for `SignedCookieAccessor`. `secret` is the shared key used to sign and verify.
- *
- * @deprecated Scheduled for removal in the next major. Use `CookieAccessor`
- * combined with explicit signing (the pattern `UrlSigner` and
- * `CookieSessionStorage` use), or call Hono's `getSignedCookie`/
- * `setSignedCookie` (`hono/cookie`) directly.
- */
-export interface SignedCookieDefinition extends CookieDefinition {
-	/** Secret key used for HMAC signing (same type as `hono/cookie`'s `getSignedCookie`/`setSignedCookie`). */
-	readonly secret: string | BufferSource;
-}
-
-/**
- * Typed accessor for a signed cookie. `get`/`set` both return a `Promise`
- * because Hono's signed API is always asynchronous (it signs using the Web
- * Crypto API). `get` returns `undefined` when the cookie is not present, and
- * `false` when signature verification fails (i.e., the cookie was tampered
- * with), matching `hono/cookie`'s type definitions. Callers may treat both
- * cases as "not a valid value", but can distinguish them with `=== false`
- * if needed.
- *
- * @deprecated Scheduled for removal in the next major. Use `CookieAccessor`
- * with explicit signing (see the `UrlSigner` / `CookieSessionStorage`
- * patterns), or call Hono's `getSignedCookie`/`setSignedCookie` (`hono/cookie`)
- * directly.
- */
-export class SignedCookieAccessor {
-	constructor(private readonly definition: SignedCookieDefinition) {}
-
-	/** Reads and verifies the signed cookie value. Returns `undefined` if unset, `false` if tampering is detected. */
-	get(c: Context): Promise<string | undefined | false> {
-		return getSignedCookie(c, this.definition.secret, this.definition.name);
-	}
-
-	/** Signs `value` and writes it to the cookie. */
-	async set(c: Context, value: string): Promise<void> {
-		await setSignedCookie(
-			c,
-			this.definition.name,
-			value,
-			this.definition.secret,
-			this.definition.options,
-		);
-	}
-
-	/** Deletes the cookie (no signature verification needed for deletion, so this is synchronous). Returns the previous value. */
 	delete(c: Context): string | undefined {
 		return deleteCookie(c, this.definition.name, this.definition.options);
 	}

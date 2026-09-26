@@ -25,7 +25,9 @@ export type Factory<TInput, TRow> = {
  * @example
  * ```ts
  * const books = new BookModel(db);
- * const bookFactory = defineFactory(
+ * type BookInput = Parameters<BookModel["create"]>[0];
+ * type BookRow = Awaited<ReturnType<BookModel["create"]>>;
+ * const bookFactory = defineFactory<BookInput, BookRow>(
  *   (input) => books.create(input),
  *   (seq) => ({ title: `Book ${seq}`, status: "draft" }),
  * );

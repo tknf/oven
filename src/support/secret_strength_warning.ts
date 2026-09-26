@@ -3,8 +3,9 @@
  * strings accepted by `Encrypter`, `UrlSigner`, `DataToken`, and
  * `CookieSessionStorage`) (audit finding SEC-203).
  *
- * These classes derive keys using a single round of `SHA-256` with no
- * stretching, which is an intentional design that assumes a
+ * `Encrypter` derives its AES key with a single round of `SHA-256`, and the
+ * others use the secret directly as the HMAC-SHA256 key; none of them
+ * stretches the secret, which is an intentional design that assumes a
  * high-entropy random value equivalent to 32 bytes is passed in; this
  * default behavior is not changed. To catch the misconfiguration of passing
  * a short, human-chosen passphrase, this **only** issues a `console.warn`

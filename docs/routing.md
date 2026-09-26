@@ -2,105 +2,119 @@
 
 ## What / Why
 
-oven's routing layer solves one problem: giving every handler in an app a
-single, predictable place to declare its routes, layout, and middleware —
-without inventing a second vocabulary (file conventions, decorators, a DI
-container) on top of what Hono and JavaScript classes already provide. The
-whole layer is four small, independent pieces:
+oven does not wrap Hono's router. A route module is a plain Hono app written as
+one method chain, exported from its domain's `routes.ts`, and mounted with
+`app.route(prefix, subApp)`. Keeping the chain intact preserves each route's
+path, parameters, validator input, and response type in the app's type, so
+Hono's `hc` client and `testClient` stay fully typed.
 
-- **`RouteHandler`** — a `Hono` subclass. You extend it, write `register()`
-  (and optionally `layout()`/`middleware()`), and mount the instance with
-  plain `app.route(prefix, handler)`.
+`@tknf/oven/routing` supplies the pieces Hono leaves to the application:
+
 - **`ContextAccessor`** (and its concrete `ValueAccessor`/
   `ScopedValueAccessor`) — the `register`/`use` pair that stands in for a
   dependency-injection container: middleware computes a value once per
   request, and any downstream handler reads it back with a function call
   that throws loudly if the wiring was forgotten.
 - **`NamedRoutes`** — type-safe reverse URL generation from an explicit
-  "name → path template" table, for building links without hardcoding paths.
+  "name → path template" table, for building links and redirects without
+  hardcoding paths.
 - **`ErrorPages`** / **`healthCheck`** — the shared 404/500 page and a
-  liveness endpoint, wired the same `register`/`onError`/`notFound` way Hono
-  itself expects.
+  liveness endpoint, wired the same `onError`/`notFound` way Hono itself
+  expects.
 
-For the design rationale (why classes, why no file-based routing, the full
-request lifecycle) see [Concepts](./concepts.md).
+For the design rationale and the request lifecycle, see
+[Concepts](./concepts.md).
 
 ## Minimal example
 
 ```ts
-// src/handlers/books_handler.ts
-import { RouteHandler } from "@tknf/oven/routing";
+// src/domains/books/routes.ts
+import { Hono } from "hono";
 
-export class BooksHandler extends RouteHandler {
-  protected register() {
-    this.get("/", (c) => c.text("books-index"));
-    this.get("/:id", (c) => c.text(`book-${c.req.param("id")}`));
-  }
-}
+export const booksRoutes = new Hono()
+  .get("/", (c) => c.text("books-index"))
+  .get("/:id", (c) => c.text(`book-${c.req.param("id")}`));
 ```
 
 ```ts
 // src/main.ts
 import { Hono } from "hono";
-import { BooksHandler } from "./handlers/books_handler.js";
+import { booksRoutes } from "./domains/books/routes.js";
 
-const app = new Hono();
-app.route("/books", new BooksHandler());
+const app = new Hono().route("/books", booksRoutes);
 
+export type AppType = typeof app;
 export default app;
 ```
 
-`RouteHandler` instances are ordinary Hono apps — there is no special
-mounting API, so `app.route()` is all you ever write in `main.ts`.
-
 ## Common tasks
 
-### Registering a RESTful resource in one call
+### Keeping routes typed for `hc` and `testClient`
 
-`resources()` registers only the actions you supply, in a fixed order
-(`index` → `new` → `create` → `show` → `edit` → `update` → `destroy`), with
-`/new` always registered before `/:id` so it isn't swallowed by `show`:
+Hono accumulates route types only through the value each method returns.
+Registering routes as separate statements (`app.get(...); app.get(...);`)
+still serves them, but drops them from the app's type. Write each route
+module and the mounting code as chains, and export the app's type:
 
 ```ts
-export class BooksHandler extends RouteHandler {
-  protected register() {
-    this.resources({
-      index: (c) => c.text("index"),
-      new: (c) => c.text("new"),
-      create: (c) => c.text("create"),
-      show: (c) => c.text(`show:${c.req.param("id")}`),
-      edit: (c) => c.text(`edit:${c.req.param("id")}`),
-      update: (c) => c.text(`update:${c.req.param("id")}`),
-      destroy: (c) => c.text(`destroy:${c.req.param("id")}`),
-    });
-  }
-}
+import { hc } from "hono/client";
+import type { AppType } from "./main.js";
+
+const client = hc<AppType>("https://example.com");
+const res = await client.books[":id"].$get({ param: { id: "42" } });
 ```
 
-### Sharing a layout and middleware across a namespace
+In tests, `testClient(app)` from `hono/testing` gives the same typed calls
+without a network round trip (see [Testing](./testing.md)). oven's own
+sub-apps (`AdminPanel`, `MailPreviewHandler`) can be mounted anywhere in the
+chain; their routes are untyped, but the routes around them keep their types.
 
-Because `layout()`/`middleware()` are plain (overridable) methods, an
-intermediate base class can declare them once, and a leaf handler composes
-with `super.middleware()`:
+### Registering CRUD routes
+
+Write each action as its own route, with `/new` before `/:id`:
 
 ```ts
-abstract class AdminHandler extends RouteHandler {
-  protected layout() {
-    return AdminLayout;
-  }
-  protected middleware() {
-    return [requireAdminAuth];
-  }
-}
+export const booksRoutes = new Hono<AppEnv>()
+  .get("/", listBooks)
+  .get("/new", newBook)
+  .post("/", createBook)
+  .get("/:id", showBook)
+  .get("/:id/edit", editBook)
+  .post("/:id/update", updateBook)
+  .post("/:id/delete", deleteBook);
+```
 
-export class AdminBooksHandler extends AdminHandler {
-  protected middleware() {
-    return [...super.middleware(), auditLog];
-  }
-  protected register() {
-    this.get("/", (c) => c.render(<p>admin books</p>, { title: "Books" }));
-  }
-}
+Native HTML forms can only send `GET` and `POST`, so a no-JavaScript
+workflow uses `POST` routes for update and delete as above; use
+`.on(["PATCH", "PUT"], "/:id", ...)` and `.delete("/:id", ...)` when the
+client sends those methods.
+
+### Sharing a layout and middleware across routes
+
+Apply `jsxRenderer` and middleware with `.use()` at the start of a chain:
+
+```tsx
+// src/domains/books/routes.tsx
+import { Hono } from "hono";
+import { jsxRenderer } from "hono/jsx-renderer";
+
+export const booksRoutes = new Hono<AppEnv>()
+  .use(jsxRenderer(PageLayout))
+  .get("/", (c) => c.render(<p>books</p>, { title: "Books" }));
+```
+
+To share a layout and middleware across several domains, apply them on an
+intermediate app and mount the domains' routes under it:
+
+```ts
+// src/main.ts
+const adminApp = new Hono<AppEnv>()
+  .use(jsxRenderer(AdminLayout))
+  .use(requireAdminAuth)
+  .route("/books", adminBooksRoutes)
+  .route("/authors", adminAuthorsRoutes);
+
+const app = new Hono<AppEnv>().route("/admin", adminApp);
 ```
 
 ### Injecting a shared value with `ContextAccessor`
@@ -111,36 +125,40 @@ memoization on top of `ValueAccessor`'s plain "compute once per request" —
 anything derived from per-request state such as bindings or credentials
 handed to each invocation; `"app"` memoizes the first result for the
 process's lifetime, right for values that are safe and expensive to build
-once, such as a connection pool:
+once, such as an API client:
 
 ```ts
-// src/lib/db.ts
+// src/lib/search.ts
 import { ScopedValueAccessor } from "@tknf/oven/routing";
-import { drizzle } from "drizzle-orm/libsql";
+import { SearchClient } from "./search_client.js";
 
-type AppBindings = { DATABASE_URL: string };
-type AppEnv = { Bindings: AppBindings; Variables: { db?: ReturnType<typeof drizzle> } };
+type AppBindings = { SEARCH_API_KEY: string };
+type AppEnv = { Bindings: AppBindings; Variables: { search?: SearchClient } };
 
-const accessor = new ScopedValueAccessor<AppEnv, "db">("db", {
-  create: (c) => drizzle(c.env.DATABASE_URL),
+const accessor = new ScopedValueAccessor<AppEnv, "search">("search", {
+  create: (c) => new SearchClient(c.env.SEARCH_API_KEY),
 });
 
-export const registerDatabase = accessor.register;
-export const useDatabase = accessor.use;
+export const registerSearch = accessor.register;
+export const useSearch = accessor.use;
 ```
 
 ```ts
-// main.ts
-app.use(registerDatabase);
+// src/main.ts
+const app = new Hono<AppEnv>().use(registerSearch).route("/books", booksRoutes);
 ```
 
 ```ts
-// inside a handler's register()
-this.get("/", (c) => {
-  const db = useDatabase(c);
+// src/domains/books/routes.ts
+export const booksRoutes = new Hono<AppEnv>().get("/", (c) => {
+  const search = useSearch(c);
   // ...
 });
 ```
+
+The database connection uses `DatabaseAccessor` (`@tknf/oven/database`), the
+same accessor with a database-specific error message — see
+[Database](./database.md).
 
 ### Reverse-generating URLs with `NamedRoutes`
 
@@ -173,9 +191,10 @@ pathFor("books.index"); // "/books"
 import { ErrorPages, healthCheck } from "@tknf/oven/routing";
 
 const errors = new ErrorPages({ logger: (c) => useLogger(c) });
+
+const app = new Hono<AppEnv>().get("/up", healthCheck).route("/books", booksRoutes);
 app.onError(errors.onError);
 app.notFound(errors.notFound);
-app.get("/up", healthCheck);
 ```
 
 The 404/500 copy defaults to English (`@tknf/oven/i18n`'s bundled
@@ -187,69 +206,20 @@ supported language. Pass `options.t` (a `Translator<C>`'s `t`, see
 
 ## Gotchas / Security notes
 
-- **Reserved names.** `RouteHandler` extends `Hono` directly, so any name
-  Hono itself uses (`get`, `post`, `use`, `route`, `router`, `fetch`,
-  `notFound`, `onError`, and — most commonly hit — `routes`, Hono's own
-  route registry field) cannot be reused as a subclass hook or field name.
-  Shadowing `routes` produces `this.routes is not a function` once
-  `super()` runs.
-- **Hooks must be methods, not class fields.** `layout()`, `middleware()`,
-  and `ContextAccessor#handle()` all run from code inside the *base*
-  class's constructor, before a subclass's own class-field initializers
-  have run. Writing `layout = MyLayout` as a class field is `undefined` at
-  the point the base constructor reads it — write `protected layout() { return MyLayout; }` instead.
-- **`register`/`use` are the deliberate exception** — they *are* class-field
-  arrow functions, precisely so `app.use(accessor.register)` and
-  `const { pathFor } = routes` work without losing `this`.
-- **The Hono RPC client (`hc`) type chain is not preserved** across
-  `RouteHandler` subclassing. This is an accepted tradeoff for oven's
-  server-rendered target (Hono/JSX SSR, not an RPC client workflow).
-- **Mounting at the app root (`app.route("/", handler)`) leaks `layout()`
-  and `middleware()` onto the whole parent app.** Both compile down to a
-  path-less `this.use(...)` in the constructor, which Hono registers under
-  its internal `"*"` path; `app.route(path, handler)` lifts that
-  registration onto the parent via `mergePath(path, "*")`. For any other
-  `path` this merges to a scoped `"<path>/*"`, but for `path === "/"` it
-  merges to `"/*"` — every route on the parent, not just this handler's
-  own routes:
-
-  ```ts
-  // Leaks: every route on `app`, not just SystemHandler's own, now runs
-  // through AdminLayout and requireAdminAuth.
-  class SystemHandler extends RouteHandler {
-    protected layout() { return AdminLayout; }
-    protected middleware() { return [requireAdminAuth]; }
-    protected register() { this.get("/up", (c) => c.text("ok")); }
-  }
-  app.route("/", new SystemHandler());
-  ```
-
-  ```ts
-  // Scoped: mount on a dedicated base path instead of "/".
-  app.route("/system", new SystemHandler());
-
-  // Or, if it must stay at the root, leave layout()/middleware() unset and
-  // apply them per route inside register() instead.
-  class SystemHandler extends RouteHandler {
-    protected register() {
-      this.get("/up", requireAdminAuth, jsxRenderer(AdminLayout), (c) => c.text("ok"));
-    }
-  }
-  app.route("/", new SystemHandler());
-  ```
 - `ContextAccessor#use(c)` throws (naming the missing key) rather than
   returning `undefined` when `register` was never applied to that route —
   treat that error as "you forgot `app.use(x.register)`" rather than an
   application bug to work around.
-- `ErrorPages` unifies "not found" and "forbidden" into the same 404
-  response, to avoid letting a third party infer whether a resource exists
-  from the status code alone; a JSON API sub-app is expected to override
-  `onError` itself rather than reuse `ErrorPages`.
+- `ErrorPages` renders the 404 and 500 pages and passes any other
+  `HTTPException` status through unchanged. oven's convention is to answer
+  "forbidden" with the same 404 as "not found" (`Policy`'s default
+  `denyStatus` is 404) so a third party cannot infer whether a resource
+  exists. A JSON API sub-app is expected to set its own `onError` rather than
+  reuse `ErrorPages`.
 
 ## See also
 
 - [Getting started](./getting-started.md) — installing oven and writing
   your first route end-to-end.
-- [Concepts](./concepts.md) — the class-based idiom, the fixed
-  `layout()` → `middleware()` → `register()` wiring order, and why a
-  provider container was rejected in favor of `register`/`use`.
+- [Concepts](./concepts.md) — the request lifecycle, and why a provider
+  container was rejected in favor of `register`/`use`.

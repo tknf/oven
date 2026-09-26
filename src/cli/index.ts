@@ -14,14 +14,17 @@ import type { GenerateType, ModelDialect } from "./generate.js";
 import { GENERATE_TYPES, planGeneration } from "./generate.js";
 
 const USAGE = `Usage:
-  oven generate <type> <Name> [--dir <path>] [--dialect sqlite|pg|mysql] [--force]
-  oven g <type> <Name> ...        # alias for generate
+  oven generate <type> <domain> [name] [--dir <path>] [--dialect sqlite|pg|mysql] [--force]
+  oven g <type> <domain> [name] ...   # alias for generate
 
-  <type>: ${GENERATE_TYPES.join(" | ")}
+  <type>:   ${GENERATE_TYPES.join(" | ")}
+  <domain>: directory under src/domains/ (e.g. books)
+  [name]:   entity name for class/table names (defaults to <domain>);
+            required for view and job, where it is also the file name
 
 Options:
-  --dir <path>       Output directory (defaults to the conventional directory for <type>)
-  --dialect <name>   model only (error for every other type). sqlite | pg | mysql (default: sqlite)
+  --dir <path>       Output directory (defaults to src/domains/<domain>, plus views/ or jobs/)
+  --dialect <name>   schema and model only (error for every other type). sqlite | pg | mysql (default: sqlite)
   --force            Overwrite an existing file
 
   oven --help         Show this help
@@ -72,10 +75,10 @@ const runGenerate = (args: string[]): void => {
 		const prev = args[index - 1];
 		return !(prev === "--dir" || prev === "--dialect");
 	});
-	const [type, name] = positionals;
+	const [type, domain, name] = positionals;
 
-	if (!type || !name) {
-		console.error(`Please specify a type and a Name.\n\n${USAGE}`);
+	if (!type || !domain) {
+		console.error(`Please specify a type and a domain.\n\n${USAGE}`);
 		process.exit(1);
 	}
 	if (!isGenerateType(type)) {
@@ -85,8 +88,14 @@ const runGenerate = (args: string[]): void => {
 
 	const dir = readOption(args, "--dir");
 	const dialectInput = readOption(args, "--dialect");
-	if (dialectInput !== undefined && type !== "model") {
-		console.error(`--dialect only applies to the model template, not "${type}"\n\n${USAGE}`);
+	if (dialectInput !== undefined && type !== "schema" && type !== "model") {
+		console.error(
+			`--dialect only applies to the schema and model templates, not "${type}"\n\n${USAGE}`,
+		);
+		process.exit(1);
+	}
+	if ((type === "view" || type === "job") && !name) {
+		console.error(`The ${type} template requires a name.\n\n${USAGE}`);
 		process.exit(1);
 	}
 	if (dialectInput !== undefined && !isModelDialect(dialectInput)) {
@@ -97,6 +106,7 @@ const runGenerate = (args: string[]): void => {
 
 	const plan = planGeneration({
 		type,
+		domain,
 		name,
 		dir,
 		dialect: dialectInput,

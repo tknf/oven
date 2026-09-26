@@ -39,6 +39,39 @@ flowchart LR
 
 ## Common tasks
 
+### Mirror `src/` under `test/`
+
+Application tests live under `test/`, mirroring `src/`: a domain's tests go in
+`test/domains/<domain>/` (for example `test/domains/books/routes.test.ts`), and
+tests for `src/lib/` or `src/db/` go in `test/lib/` and `test/db/`. Tests that
+exercise several domains or the assembled app from `src/main.ts` go in
+`test/integration/`, and shared setup (a `createTestDb` wrapper, factories used
+by several domains) goes in `test/support/`. Keeping every test out of `src/`
+means the build never has to exclude test files.
+
+### Call routes with typed arguments through `testClient`
+
+A route module written as a Hono method chain keeps its route types, so
+`testClient` from `hono/testing` catches a wrong path, parameter, or payload
+at type-check time:
+
+```ts
+// test/domains/books/routes.test.ts
+import { testClient } from "hono/testing";
+import { describe, expect, test } from "vite-plus/test";
+import { booksRoutes } from "../../../src/domains/books/routes.js";
+
+describe("booksRoutes", () => {
+  test("returns the requested book id", async () => {
+    const res = await testClient(booksRoutes)[":id"].$get({ param: { id: "42" } });
+    expect(await res.json()).toEqual({ id: "42" });
+  });
+});
+```
+
+`app.request()` remains the tool for raw requests, such as a form post with
+custom headers or a cookie.
+
 ### Test model code against a real (temporary) database
 
 `createTestDb` takes your full Drizzle schema module and the folder your
@@ -48,9 +81,10 @@ production behavior. Clean up the temp directory in `afterEach` via
 `client.close()`:
 
 ```ts
+// test/domains/books/model.test.ts
 import { afterEach, describe, expect, test } from "vite-plus/test";
 import { createTestDb } from "@tknf/oven/test";
-import * as schema from "./schema.js";
+import * as schema from "../../../src/db/schema.js";
 
 describe("BookModel", () => {
   let cleanup: (() => void) | undefined;
@@ -63,7 +97,7 @@ describe("BookModel", () => {
   test("insert then select round-trips", async () => {
     const { client, db } = await createTestDb({
       schema,
-      migrationsFolder: new URL("./migrations", import.meta.url).pathname,
+      migrationsFolder: new URL("../../../db/migrations", import.meta.url).pathname,
     });
     cleanup = () => client.close();
 
@@ -83,9 +117,12 @@ across calls within a test:
 ```ts
 import { defineFactory } from "@tknf/oven/test";
 
-const bookFactory = defineFactory(
+type BookInput = Parameters<BookModel["create"]>[0];
+type BookRow = Awaited<ReturnType<BookModel["create"]>>;
+
+const bookFactory = defineFactory<BookInput, BookRow>(
   (input) => books.create(input),
-  (seq) => ({ title: `Book ${seq}`, status: "draft" as const }),
+  (seq) => ({ title: `Book ${seq}`, status: "draft" }),
 );
 
 const draft = await bookFactory.create();
@@ -144,10 +181,11 @@ broadcaster.publishedTo("room:1"); // => [{ data: "hello" }]
 broadcaster.published;             // => [{ channel: "room:1", message: { data: "hello" } }]
 ```
 
-`TestJobQueue` and `TestMailer` still run the real validation logic of
-their base class (`enqueue`'s option validation, for example), so a test
-with an invalid `delaySeconds`/`priority` fails the same way it would
-against the real queue. `TestBroadcaster` additionally delivers messages to
+`TestJobQueue` applies the same `enqueue` option validation as the real
+queues, so a test with an invalid `delaySeconds`/`priority` fails the same
+way it would against a real queue. `TestMailer` performs no validation (not
+even the header-injection check `FetchMailer` does), so cover that with a
+test against the real mailer. `TestBroadcaster` delivers messages to
 any `subscribe`d listeners, mirroring `InMemoryBroadcaster`'s semantics, so
 code under test that reacts to its own broadcasts keeps working against the
 fake. Call `clear()` between tests to reset the recorded history — for
@@ -172,32 +210,17 @@ const kv = stubBinding<KVNamespace>();
 - **`@tknf/oven/test` is test-only — never import it from production
   code.** It's a separate subpath precisely so a stray import doesn't drag
   test doubles or `@libsql/client`'s Node driver into a shipped bundle.
-- **Tests live in `.test.ts` files only, no JSX literals.** This project's
-  test runner only picks up `test/**/*.test.ts` — `.tsx` isn't part of the
-  test surface, so anything exercising JSX-rendering code builds trees
-  with `hono/jsx`'s `jsx()` function call form instead of JSX syntax (see
-  `test/view/*.test.ts` for the pattern).
-- **`createTestDb` uses a file-based database, not `:memory:`.** libSQL's
-  Node driver hands the original connection exclusively to a transaction
-  once one starts, and lazily opens a new connection for later queries —
-  with `:memory:` that new connection would see a fresh, empty database.
-  A temp file avoids this; `client.close()` both closes the connection and
-  removes the temp directory, so it must be called (e.g. in `afterEach`)
-  or the temp files leak.
-- **`TestJobQueue`/`TestMailer` don't relax validation.** `TestJobQueue`
-  still calls the same `enqueue` option validation the real `JobQueue`
-  does — an invalid `delaySeconds` or `priority` still rejects and is
-  never recorded in `enqueued`.
+- **`createTestDb` creates a temporary database file.** `client.close()`
+  closes the connection and removes the temp directory, so it must be
+  called (e.g. in `afterEach`) or the temp files leak.
+- **`TestJobQueue` doesn't relax validation.** An invalid `delaySeconds` or
+  `priority` still rejects and is never recorded in `enqueued`. `TestMailer`
+  does no validation at all.
 - **`TestBroadcaster` is single-process, like `InMemoryBroadcaster`.** It
   only delivers to listeners registered via its own `subscribe` in the same
   test — it does not reach a real `InMemoryBroadcaster`/DB-backed
   broadcaster instance elsewhere, and `published` only records calls made
   through that same `TestBroadcaster` instance.
-- **MySQL-backed tests are skipped without `OVEN_MYSQL_TEST_URL`.** If
-  you're testing against oven's MySQL adapters (jobs, audit log, realtime
-  broadcaster) and see them silently skip, that's expected in an
-  environment without a MySQL instance configured — set the environment
-  variable to point at a real database to run them.
 - **`stubBinding`'s functions are unconditional no-ops.** Every call
   resolves to `undefined` regardless of arguments — it's for satisfying a
   type signature the test path doesn't actually exercise, not for

@@ -26,8 +26,7 @@
  *
  * The list itself is a numbered, offset-based pagination (`?p=`, 0-based) over
  * `AdminModel#listPage`, with an arbitrary-column sort (`?o=<i>` ascending,
- * `?o=-<i>` descending, `i` indexing `columns` — a familiar admin-console
- * convention) instead of `paginate`'s cursor-only, primary-key-fixed order. Every
+ * `?o=-<i>` descending, `i` indexing `columns`) instead of `paginate`'s cursor-only, primary-key-fixed order. Every
  * link that changes sort or a filter resets back to page 0 (`buildListUrl`'s
  * `page` argument); only page links preserve the current page.
  */
@@ -255,9 +254,8 @@ const rowDisplayName = (row: Record<string, unknown>, columns: string[], id: str
  * column-{name}"`; the active column additionally gets `sorted
  * ascending`/`sorted descending"` and `aria-sort`) built from
  * `state`/`buildListUrl`: clicking an inactive column sorts it ascending,
- * clicking the active column toggles its direction — a single-column sort,
- * matching a familiar admin-console convention (multi-column sort is out of
- * scope here).
+ * clicking the active column toggles its direction — a single-column sort
+ * (multi-column sort is out of scope here).
  *
  * The table gets a visually-hidden `<caption>` (its accessible name, since
  * there is no visible heading directly above it) and every header cell a

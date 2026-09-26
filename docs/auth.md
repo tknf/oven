@@ -2,7 +2,7 @@
 
 ## What / Why
 
-`@tknf/oven/auth` covers three separate concerns, kept as separate classes
+`@tknf/oven/auth` covers four separate concerns, kept as separate classes
 rather than folded into a single "auth module":
 
 - **Authentication** — deciding *who* is making the request. `Guard`
@@ -32,16 +32,10 @@ rather than folded into a single "auth module":
   [Admin accounts](./admin-accounts.md)) is the primary consumer, but these
   are standalone primitives any app can use for its own 2FA.
 
-The primary way to exempt a path from `Guard` is still Hono's own routing —
-mount `require` only on the sub-app or path range that needs protection. But
-that guarantee lives entirely in registration order (e.g. mounting a public
-login handler before `app.use("/admin/*", guard.require)`), and a future
-reordering mistake becomes a silent authentication bypass with no error to
-catch it. For that reason `Guard` also accepts `except`, a list of exact
-request paths handled inside the Guard itself regardless of registration
-order — kept exact-match only (no glob/prefix matching) so `Guard` never
-grows a second, pattern-based routing responsibility. See the module JSDoc
-in `src/auth/guard.ts` for the full rationale.
+Apply `require` to the routes or sub-app that need protection. `Guard` also
+accepts `except`, a list of exact request paths it lets through itself, so a
+public path under a protected mount (e.g. `/admin/login`) does not depend on
+where it is registered. It is exact-match only (no glob/prefix matching).
 
 ```ts
 export const accountGuard = new Guard<AppEnv, "account">("account", {
@@ -60,13 +54,18 @@ reads the session, calls `provider`/`authenticate`, or `c.set`s the subject. Onl
 ## Minimal example
 
 ```ts
+// src/env.ts
+import type { Session } from "@tknf/oven/session";
+
+export type Account = { id: string; name: string };
+export type AppEnv = { Variables: { session: Session; account: Account } };
+```
+
+```ts
 // src/lib/auth.ts
 import { Guard } from "@tknf/oven/auth";
+import type { Account, AppEnv } from "../env.js";
 import { sessionAccessor } from "./session.js";
-import type { AppEnv as SessionEnv } from "./session.js";
-
-type Account = { id: string; name: string };
-type AppEnv = SessionEnv & { Variables: SessionEnv["Variables"] & { account: Account } };
 
 const accounts = new Map<string, Account>([["acc_1", { id: "acc_1", name: "Alice" }]]);
 
@@ -79,24 +78,35 @@ export const accountGuard = new Guard<AppEnv, "account">("account", {
 ```
 
 ```ts
+// src/domains/accounts/routes.ts
+import { Hono } from "hono";
+import type { AppEnv } from "../../env.js";
+import { accountGuard } from "../../lib/auth.js";
+import { sessionAccessor } from "../../lib/session.js";
+
+export const accountsRoutes = new Hono<AppEnv>()
+  .post("/login", (c) => {
+    const session = sessionAccessor.use(c);
+    session.set("accountId", "acc_1");
+    session.regenerate(); // a new session id for the new identity (session fixation)
+    return c.text("logged in");
+  })
+  .get("/dashboard", accountGuard.require, (c) => c.text(`hello, ${accountGuard.use(c).name}`));
+```
+
+```ts
 // src/main.ts
 import { Hono } from "hono";
+import type { AppEnv } from "./env.js";
+import { accountsRoutes } from "./domains/accounts/routes.js";
 import { sessionAccessor } from "./lib/session.js";
-import { accountGuard } from "./lib/auth.js";
 
-const app = new Hono();
-app.use(sessionAccessor.register);
-
-app.post("/login", (c) => {
-  sessionAccessor.use(c).set("accountId", "acc_1");
-  return c.text("logged in");
-});
-
-// Only routes registered after `accountGuard.require` are protected.
-app.get("/dashboard", accountGuard.require, (c) => c.text(`hello, ${accountGuard.use(c).name}`));
+const app = new Hono<AppEnv>().use(sessionAccessor.register).route("/", accountsRoutes);
 
 export default app;
 ```
+
+`sessionAccessor` is the `SessionAccessor` from the [session guide](./sessions.md).
 
 ## Common tasks
 
@@ -138,8 +148,9 @@ const accountGuard = new Guard<AppEnv, "account">("account", {
   onFailure: (c) => c.json({ error: "unauthorized" }, 401),
 });
 
-const app = new Hono<AppEnv>();
-app.get("/me", accountGuard.require, (c) => c.json(accountGuard.use(c)));
+export const meRoutes = new Hono<AppEnv>().get("/", accountGuard.require, (c) =>
+  c.json(accountGuard.use(c)),
+);
 ```
 
 `verifyAccessAssertion` above must return `Promise<AccessSubject | null>` and
@@ -165,7 +176,7 @@ optional `never` properties still accept explicit `undefined` at compile time,
 but Guard rejects their presence at runtime. `null`/`undefined` results do not register a subject or run the next
 handler. `use(c)` still throws when no subject was registered. Successful protected
 responses get `Cache-Control: no-store` by default; `cacheControl: false` disables
-that addition. Existing session-mode callers require no migration.
+that addition.
 
 ### Keep CSRF sessions independent of authentication
 
@@ -183,11 +194,11 @@ import { csrfStorage } from "./session.js";
 type FormEnv = AppEnv & { Variables: AppEnv["Variables"] & { csrfSession: Session } };
 const csrfSession = new SessionAccessor<FormEnv, "csrfSession">("csrfSession", csrfStorage);
 const csrf = new Csrf<FormEnv>({ session: csrfSession.use });
-const forms = new Hono<FormEnv>();
 
-forms.use(accountGuard.require, csrfSession.register, csrf.verify);
-forms.get("/token", (c) => c.text(csrf.csrfToken(c)));
-forms.post("/action", (c) => c.json({ accountId: accountGuard.use(c).id }));
+export const formsRoutes = new Hono<FormEnv>()
+  .use(accountGuard.require, csrfSession.register, csrf.verify)
+  .get("/token", (c) => c.text(csrf.csrfToken(c)))
+  .post("/action", (c) => c.json({ accountId: accountGuard.use(c).id }));
 ```
 
 `csrfStorage` is an application-owned `SessionStorage` configured as in the
@@ -199,19 +210,25 @@ exact public paths, which skip authentication and do not make `use(c)` available
 **Authorizing an action with `Policy`:**
 
 ```ts
+// src/domains/books/policy.ts
 import { Policy } from "@tknf/oven/auth";
+import type { Account } from "../../env.js";
 
-class BookPolicy extends Policy {
+export class BookPolicy extends Policy {
   readonly canUpdate = (user: Account, book: { ownerId: string }): boolean =>
     user.id === book.ownerId;
 }
+```
 
+```ts
+// src/domains/books/routes.ts
 const policy = new BookPolicy();
 
-app.put("/books/:id", accountGuard.require, async (c) => {
+export const booksRoutes = new Hono<AppEnv>().post("/:id/update", accountGuard.require, async (c) => {
   const book = await findBook(c.req.param("id"));
   await policy.authorize(policy.canUpdate(accountGuard.use(c), book)); // throws 404 if denied
   // ... update
+  return c.redirect(`/books/${encodeURIComponent(book.id)}`, 303);
 });
 ```
 
@@ -244,16 +261,20 @@ const accountGuard = new Guard<AppEnv, "account">("account", {
   remember: rememberToken, // tried only when the session has no identifier
 });
 
-app.post("/login", async (c) => {
-  sessionAccessor.use(c).set("accountId", "acc_1");
-  await rememberToken.issue(c, "acc_1"); // sets a rotating cookie
-  return c.redirect("/dashboard");
-});
-
-app.post("/logout", async (c) => {
-  await rememberToken.forget(c);
-  return c.redirect("/login");
-});
+export const accountsRoutes = new Hono<AppEnv>()
+  .post("/login", async (c) => {
+    const session = sessionAccessor.use(c);
+    session.set("accountId", "acc_1");
+    session.regenerate();
+    await rememberToken.issue(c, "acc_1"); // sets a rotating cookie
+    return c.redirect("/dashboard");
+  })
+  .post("/logout", async (c) => {
+    await rememberToken.forget(c);
+    const cookie = await sessionStorage.destroy(sessionAccessor.use(c)); // see the session guide
+    c.header("Set-Cookie", cookie, { append: true });
+    return c.redirect("/login");
+  });
 ```
 
 ### Reset passwords atomically
@@ -340,7 +361,7 @@ const passwordlessLogin = new PasswordlessLogin<Account>({
   provider: (identity) => accounts.get(identity),
   identityOf: (account) => account.id,
   fingerprintOf: (account) => account.loginNonce,
-  loginUrl: (token) => `https://example.com/login/${token}`,
+  loginUrl: (token) => `https://example.com/login/magic/${token}`,
   deliver: (account, url) => mailer.deliver(new MagicLinkMail(account.email, url)),
   rotateNonce: async (account, expectedNonce) => {
     const fresh = encodeBase64Url(crypto.getRandomValues(new Uint8Array(32)));
@@ -353,19 +374,34 @@ const passwordlessLogin = new PasswordlessLogin<Account>({
   },
 });
 
-app.post("/login/request", async (c) => {
-  const { email } = await c.req.parseBody();
-  await passwordlessLogin.request(String(email)); // enumeration-safe: same response either way
-  return c.redirect("/login/check-your-email");
-});
-
-app.get("/login/:token", async (c) => {
-  const account = await passwordlessLogin.login(c.req.param("token"));
-  if (!account) return c.redirect("/login?error=invalid_or_expired");
-  sessionAccessor.use(c).set("accountId", account.id); // session establishment stays app-side
-  return c.redirect("/dashboard");
-});
+export const passwordlessRoutes = new Hono<AppEnv>()
+  .post("/request", async (c) => {
+    const { email } = await c.req.parseBody();
+    await passwordlessLogin.request(String(email)); // enumeration-safe: same response either way
+    return c.redirect("/login/check-your-email");
+  })
+  // GET only checks the link and renders a confirmation form, so a mail client
+  // or link scanner that prefetches the URL cannot consume the single-use token.
+  .get("/:token", async (c) => {
+    const token = c.req.param("token");
+    if (!(await passwordlessLogin.verify(token))) return c.redirect("/login?error=invalid_or_expired");
+    return c.render(<ConfirmLoginPage token={token} csrfToken={csrf.csrfToken(c)} />, {
+      title: "Log in",
+    });
+  })
+  // The CSRF-protected POST consumes the token and establishes the session.
+  .post("/:token", async (c) => {
+    const account = await passwordlessLogin.login(c.req.param("token"));
+    if (!account) return c.redirect("/login?error=invalid_or_expired");
+    const session = sessionAccessor.use(c);
+    session.set("accountId", account.id); // session establishment stays app-side
+    session.regenerate();
+    return c.redirect("/dashboard");
+  });
 ```
+
+Mount it at `/login/magic` and point `loginUrl` there. `ConfirmLoginPage` is an
+application component whose form posts back to the same URL.
 
 **API token authentication for non-browser clients.** `ApiToken` only
 issues/verifies the token string — pulling it out of the
@@ -382,7 +418,7 @@ const apiToken = new ApiToken({ prefix: "oven_" });
 const issued = await apiToken.issue(); // { token, selector, validatorHash }
 // Persist `selector`/`validatorHash` in your own token table; hand `token` to the client once.
 
-app.use(
+export const apiRoutes = new Hono<AppEnv>().use(
   bearerAuth({
     verifyToken: async (token, c) => {
       const record = await apiToken.verify(token, (selector) =>
@@ -398,9 +434,9 @@ app.use(
 
 **Decoding an OAuth ID token — and verifying it when the trust chain
 requires it.** `OAuthClient.exchangeCode` returns `OAuthTokens.idToken` as
-a raw JWT string. `decodeIdToken` only base64url-decodes its payload for
-convenience; **it does not verify the signature** (see the class's own
-JSDoc in `src/auth/oauth.ts`). That's an acceptable shortcut only when the
+a raw JWT string. `decodeIdToken` (a function exported from
+`@tknf/oven/auth`) only base64url-decodes its payload for convenience; **it
+does not verify the signature** (see its JSDoc). That's an acceptable shortcut only when the
 token came straight back from the provider's token endpoint over TLS — the
 transport itself is what you're trusting, not the signature. Any other
 path (a token forwarded from a client-side redirect, a mobile app handing
@@ -412,7 +448,11 @@ verifier for this — use Hono's, from `hono/jwt`:
 import { verify } from "hono/jwt";
 
 // Symmetric example (an HMAC secret shared with the provider):
-const payload = await verify(idToken, provider.jwtSecret, "HS256");
+const payload = await verify(idToken, provider.jwtSecret, {
+  alg: "HS256",
+  iss: provider.issuer,
+  aud: clientId,
+});
 ```
 
 ```ts
@@ -423,18 +463,21 @@ import { verifyWithJwks } from "hono/jwt";
 const payload = await verifyWithJwks(idToken, {
   jwks_uri: "https://www.googleapis.com/oauth2/v3/certs",
   allowedAlgorithms: ["RS256"],
+  verification: { iss: "https://accounts.google.com", aud: clientId },
 });
 ```
 
-Both throw on a signature/claims mismatch and, on success, already return
-the decoded payload — once you've verified, `decodeIdToken` is redundant.
+Pass the expected issuer and audience as shown: Hono's `verify` checks them
+only when given. Also compare the OIDC `nonce` claim with the value you sent.
+On success both return the decoded payload, so `decodeIdToken` is redundant.
 
 **RFC 6238 TOTP two-factor codes.** `generateTotpSecret` returns a random
 Base32 secret; `buildOtpauthUrl` turns it into an `otpauth://totp/...`
 provisioning URL (the "Key URI Format" most authenticator apps and QR-code
 libraries understand — QR rendering itself is out of scope, bring your own
 library); `generateTotpCode`/`verifyTotpCode` generate/check codes against
-it. All four default to HMAC-SHA1, 6 digits, and a 30-second period (the
+it. `generateTotpSecret` takes only a `byteLength` (default 20); the other
+three default to HMAC-SHA1, 6 digits, and a 30-second period (the
 values every mainstream authenticator app assumes); `algorithm` also accepts
 `"SHA-256"`/`"SHA-512"` if your app controls both ends.
 
@@ -460,15 +503,21 @@ that same step — a code is otherwise valid for the whole `periodSeconds`
 window and anyone who observes it (over someone's shoulder, in a log, ...)
 could replay it until the window closes. Store the returned step (e.g. in a
 `lastUsedStep` column) and only accept a NEW verification whose step is
-strictly greater:
+strictly greater, in one conditional update so two concurrent submissions of
+the same code cannot both pass:
 
 ```ts
-const previousStep = await loadLastUsedStep(userId); // from your own storage
+import { and, eq, isNull, lt, or } from "drizzle-orm";
+
 const step = await verifyTotpCode({ secret, code: submittedCode });
-if (step === null || (previousStep !== null && step <= previousStep)) {
-  // reject — no match, or a replay of an already-used step
-}
-await saveLastUsedStep(userId, step);
+if (step === null) return reject(); // no step in the drift window matched
+
+const updated = await db
+  .update(users)
+  .set({ lastUsedStep: step })
+  .where(and(eq(users.id, userId), or(isNull(users.lastUsedStep), lt(users.lastUsedStep, step))))
+  .returning();
+if (updated.length === 0) return reject(); // a replay of an already-used step
 ```
 
 `@tknf/oven/admin`'s accounts services implement exactly this pattern as a
@@ -526,7 +575,7 @@ login second step) instead of wiring the primitives above by hand.
   hides whether the resource exists at all, matching oven's error-handling
   policy. Override `denyStatus` to `403` in a subclass only when revealing
   existence is acceptable.
-- **`OAuthClient.decodeIdToken` never checks the signature.** It's only
+- **`decodeIdToken` never checks the signature.** It's only
   safe to trust the payload it returns when the ID token was obtained
   directly from the provider's token endpoint over TLS — verify with
   `hono/jwt`'s `verify`/`verifyWithJwks` first for any ID token that
@@ -538,8 +587,8 @@ login second step) instead of wiring the primitives above by hand.
   is what actually prevents replay; do this even if you don't use the
   admin-accounts services, which already do it for you.
 - **A wider `driftSteps` trades security for clock-skew tolerance** —
-  each extra step doubles the number of codes that verify at any given
-  moment (a 30-second window per step on each side). The default (`1`, ±30s)
+  each extra step accepts two more codes at any given moment (one more
+  30-second step on each side). The default (`1`, ±30s)
   already covers ordinary clock drift; only widen it if you have a specific
   reason to expect more.
 

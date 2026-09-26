@@ -395,7 +395,7 @@ export abstract class SQLiteModel<
 	/**
 	 * Bulk-updates every row matching `where` and returns the number of rows actually
 	 * updated. Provides `WHERE status = 'unused'`-style optimistic locking as a
-	 * first-class method (`redeem` in `src/models/serial_codes.ts` was the prototype).
+	 * first-class method.
 	 * `updatedAt` is handled the same as `update`. `where` is typed `SQL | undefined`
 	 * (required, not optional) for the same reason as `retrieveBy`.
 	 *

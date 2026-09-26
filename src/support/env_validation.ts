@@ -14,9 +14,9 @@ import type { StandardSchemaV1 } from "@standard-schema/spec";
  * There is no dedicated middleware for wiring up "validate once at startup
  * and hand out the result"; the canonical pattern is to pass `validateEnv`
  * to `ScopedValueAccessor` (`scope: "app"`) in
- * `src/routing/context_accessor.ts` (since the `Promise` returned by
- * `create` is itself memoized, even a failed validation fails fast with the
- * same error on every call):
+ * `src/routing/context_accessor.ts`. A successful result is memoized for the
+ * process; a failed validation is not cached, so each later request retries
+ * it and fails with the same error until the environment is fixed:
  *
  * ```ts
  * // App-side wiring module. The canonical pattern is to distribute a validated, typed env.
@@ -24,7 +24,7 @@ import type { StandardSchemaV1 } from "@standard-schema/spec";
  * type AppEnv = { Bindings: AppBindings; Variables: { config?: AppConfig } };
  * const accessor = new ScopedValueAccessor<AppEnv, "config">("config", {
  *   create: (c) => validateEnv(configSchema, c.env),
- *   scope: "app", // Validated once on the first request (failure is memoized and fails fast every time)
+ *   scope: "app", // Validated on the first request; a failure is retried on the next request
  * });
  * export const registerConfig = accessor.register;
  * export const useConfig = accessor.use;

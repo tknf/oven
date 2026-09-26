@@ -125,8 +125,8 @@ const escapeLikePattern = (value: string): string =>
  * admin panel. Apps implement `key`/`label`/`model`/`table`/`primaryKey`, and
  * override `form` (view-only if unimplemented), `listColumns`, `exclude`, and
  * `searchColumns` as needed. Abstract getters and overridable hooks are prototype
- * methods (getters) for the same reason as `route_handler.ts`'s constraints
- * (subclasses implement them and they are not passed by reference).
+ * methods (getters) because subclasses implement them and they are not passed by
+ * reference.
  */
 export abstract class AdminResource {
 	/** URL slug (e.g. `"items"`). */

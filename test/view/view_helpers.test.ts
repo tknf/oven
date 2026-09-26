@@ -5,8 +5,7 @@
  * component-equivalent tree is built by calling `hono/jsx`'s `jsx()` function directly, mounted
  * as a plain `Hono` instance (not via `app.route`) under a real Hono app with `jsxRenderer`, and
  * the rendered result is verified with `app.request()`. `useRequestContext` only works inside the
- * renderer's context, so this integration-test style with a real app is required (same approach
- * as `route_handler.test.ts`).
+ * renderer's context, so this integration-test style with a real app is required.
  *
  * The type of `c.render(content, props)`'s second argument and of `content` depend on this test
  * file's own `ContextRenderer` module augmentation (below). `content` is declared with
@@ -44,8 +43,8 @@ declare module "hono" {
  * calls `.toString()` on the whole thing at the end. This call happens while the layout itself
  * is already being invoked under `RequestContext.Provider` (inside `jsxRenderer`'s rendering
  * pipeline), so nested child components can correctly obtain the `Context` even when calling
- * `useRequestContext()` (unlike `route_handler.test.ts`, which just returns a string directly —
- * that approach cannot verify child components that use `useRequestContext`, hence this shape).
+ * `useRequestContext()` (a layout that just returns a string directly cannot verify child
+ * components that use `useRequestContext`, hence this shape).
  */
 const testLayout: LayoutComponent = ({ title, children }) =>
 	raw(

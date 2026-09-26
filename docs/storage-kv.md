@@ -12,8 +12,10 @@ core stays deployable to any runtime.
 
 - **`Storage`** (`put`/`get`/`delete`) stores blobs under a string key.
   Adapters: `InMemoryStorage` (dev/test), `S3Storage` (any S3-compatible
-  API — AWS S3, R2, MinIO), `GoogleCloudStorage` (GCS JSON API), and
-  `R2Storage` (Cloudflare binding, under `@tknf/oven/cloudflare`). Issuing a
+  API — AWS S3, R2, MinIO), `GoogleCloudStorage` (GCS JSON API),
+  `R2Storage` (Cloudflare binding, under `@tknf/oven/cloudflare`), and
+  `FileStorage` (local filesystem for development or a single server, under
+  `@tknf/oven/node`). Issuing a
   time-limited download URL is a separate capability, `Presigner`
   (`presignGet`), implemented by `S3UrlSigner` (S3-compatible APIs, HMAC-SHA256
   via aws4fetch) and `GcsUrlSigner` (GCS, RSA-signed V4 URLs via a service
@@ -25,16 +27,20 @@ core stays deployable to any runtime.
 - **`KeyValueStore`** (`get`/`set` with an optional TTL/`delete`) stores a
   single string value under a string key. Adapters: `InMemoryKeyValueStore`
   (dev/test), `UpstashRedisStore`, `{Pg,SQLite,MySql}DatabaseKeyValueStore`
-  (your existing RDB as the store), and `CloudflareKVStore` (under
-  `@tknf/oven/cloudflare`). `FeatureFlags` is a thin, opinionated layer on
+  (your existing RDB as the store), `CloudflareKVStore` and
+  `CloudflareCacheStore` (a per-data-center cache only, both under
+  `@tknf/oven/cloudflare`), and `FileKeyValueStore` (local filesystem for
+  development or a single server, under `@tknf/oven/node`). `FeatureFlags` is
+  a thin, opinionated layer on
   top for global boolean flags.
 - **`Cache`** wraps a `KeyValueStore` with JSON (de)serialization and a
   `remember` helper (compute-and-store-if-missing, with optional
   stale-while-revalidate).
 
-All three are built on the same eventual-consistency contract: a `get`
-immediately after a `set` may return a stale value on some backends (e.g.
-Cloudflare KV), and TTL is a cleanup hint, not a precise expiry guarantee.
+`KeyValueStore` (and `Cache`/`FeatureFlags` on top of it) is built on an
+eventual-consistency contract: a `get` immediately after a `set` may return a
+stale value on some backends (e.g. Cloudflare KV), and TTL is a cleanup hint,
+not a precise expiry guarantee.
 Don't build logic on top of these abstractions that requires strong
 consistency or exact expiry timing.
 
@@ -65,28 +71,26 @@ export const storage: Storage = new InMemoryStorage();
 ```
 
 ```ts
-// src/main.ts
+// src/domains/uploads/routes.ts
 import { Hono } from "hono";
-import { storage } from "./lib/storage.js";
+import { storage } from "../../lib/storage.js";
 
-const app = new Hono();
-
-app.put("/uploads/:key", async (c) => {
-  const body = await c.req.arrayBuffer();
-  await storage.put(c.req.param("key"), body, c.req.header("content-type") ?? "application/octet-stream");
-  return c.body(null, 204);
-});
-
-app.get("/uploads/:key", async (c) => {
-  const object = await storage.get(c.req.param("key"));
-  if (!object) return c.notFound();
-  return new Response(object.body, {
-    headers: { "content-type": object.contentType ?? "application/octet-stream" },
+export const uploadsRoutes = new Hono()
+  .put("/:key", async (c) => {
+    const body = await c.req.arrayBuffer();
+    await storage.put(c.req.param("key"), body, c.req.header("content-type") ?? "application/octet-stream");
+    return c.body(null, 204);
+  })
+  .get("/:key", async (c) => {
+    const object = await storage.get(c.req.param("key"));
+    if (!object) return c.notFound();
+    return new Response(object.body, {
+      headers: { "content-type": object.contentType ?? "application/octet-stream" },
+    });
   });
-});
-
-export default app;
 ```
+
+Mount it from `src/main.ts` with `app.route("/uploads", uploadsRoutes)`.
 
 Swapping the backend for production is a one-line change at the
 composition root — no caller code above changes:
@@ -173,8 +177,9 @@ upload shape in mind:
   never triggers the large-object path.
 - **`R2Storage`** (under `@tknf/oven/cloudflare`) switches to R2's Multipart
   Upload API above 100 MiB for all three body types, including a
-  `ReadableStream` (chunked on the fly via a lookahead reader, so it need not
-  be buffered first the way `S3Storage`'s does).
+  `ReadableStream`, which is read in 100 MiB parts (holding up to two parts
+  in memory to choose between a single put and a multipart upload) rather
+  than buffered whole the way `S3Storage` does.
 
 None of this changes the call site — `storage.put(key, data, contentType)`
 looks the same either way.
@@ -313,11 +318,13 @@ const report = await cache.remember(
   lifecycle policy or explicit aborts.
 - **Sanitize user-supplied `Storage`/`KeyValueStore` keys yourself.**
   Neither abstraction rejects `..` or path separators in a key by default.
-  `S3Storage`/`S3UrlSigner`/`GcsUrlSigner` do reject `..` path segments
+  `S3Storage`/`S3UrlSigner`/`GcsUrlSigner` reject `..` path segments
   internally (to stop bucket-prefix traversal through their signing/URL
-  logic), but that is a backend-specific safety net, not a substitute for
-  validating input at the application boundary — apply the same discipline
-  to `KeyValueStore` keys, which have no such built-in check at all.
+  logic), `FileStorage` rejects keys that resolve outside its root, and
+  `FileKeyValueStore` encodes keys before using them as file names. These are
+  backend-specific safety nets, not a substitute for validating input at the
+  application boundary — apply the same discipline to every `KeyValueStore`
+  key.
 - **`Cache` values must be JSON-serializable, and `null`/`undefined` can't
   be cached.** `put` throws if `JSON.stringify` would produce `undefined`.
   `remember`'s `compute` returning `null`/`undefined` is not stored — the

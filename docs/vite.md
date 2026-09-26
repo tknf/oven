@@ -78,9 +78,10 @@ double slash, so `base: "/static/"` and an entry path starting with `/`
 compose cleanly. `parseViteManifest` takes the manifest as a **raw JSON
 string**, not an already-parsed object — it does the `JSON.parse` itself so
 it can validate the result's shape (a plain object of `ViteManifestChunk`s)
-before returning it, throwing `ViteManifestParseError` on anything else
-(fail-closed, per the project rule that `JSON.parse` output must never be
-passed through untyped).
+before returning it. Invalid JSON throws `JSON.parse`'s `SyntaxError`; a
+top level that isn't an object, or an entry without `file: string` or with a
+mistyped `css`/`imports`/`isEntry`, throws `ViteManifestParseError`
+(fail-closed, so `JSON.parse` output is never passed through untyped).
 
 ### Rendering scripts, stylesheets, and images
 
@@ -156,17 +157,16 @@ recovery in a real app — the fix is to correct the entry name or add it to
   immediately rather than on first use of `Script`/`Link`/`Img`/`asset` — a
   deliberate fail-fast choice so a missing manifest surfaces at startup, not
   on the first request that happens to hit a rendering path.
-- **`parseViteManifest` expects the exact Vite `manifest.json` shape** (an
-  object keyed by entry name, each value at least `{ file: string }`). Only
-  `file`/`css`/`imports`/`isEntry` are read — passing a hand-written or
-  differently-shaped JSON string will throw `ViteManifestParseError` rather
-  than silently producing a manifest with missing fields.
+- **`parseViteManifest` expects the Vite `manifest.json` shape** (an object
+  keyed by entry name, each value at least `{ file: string }`). It validates
+  `file`/`css`/`imports`/`isEntry` and ignores other fields; `ViteAssets`
+  reads `file`/`css`/`imports`. A missing or mistyped validated field throws
+  `ViteManifestParseError` rather than producing a manifest with missing
+  fields.
 
 ## See also
 
 - [Deployment](./deployment.md) — where the production manifest read fits
   into a Cloudflare Worker vs. Node deployment.
-- [View](./view.md) — how `assets.Script`/`assets.Link`/`assets.ViteClient`
-  fit into a `Layout`'s JSX output.
-- [Getting started](./getting-started.md) — the first layout that wires in
-  `ViteAssets`.
+- [Getting started](./getting-started.md#rendering-with-a-layout) — the
+  layout component these assets render into.

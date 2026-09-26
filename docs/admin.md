@@ -7,11 +7,12 @@ style: you mount it once, and each of its sections (resource CRUD, job
 operations, settings, audit log) only renders and gets routes when you
 inject the corresponding config. Nothing is auto-discovered.
 
-`AdminPanel` is a `RouteHandler` subclass, mounted like any other handler
-via `app.route("/admin", new AdminPanel({...}))`. It deliberately has no
-built-in notion of "who's an admin" — authorization is a required
-`authorize` callback you write yourself, typically by reusing your
-existing `Guard`/`Policy` (see [Auth](./auth.md)). There's no client-side
+`AdminPanel` is a `Hono` subclass, mounted like any other sub-app
+via `app.route("/admin", new AdminPanel({...}))`. Access needs either an
+`authorize` callback you write yourself, typically by reusing your existing
+`Guard`/`Policy` (see [Auth](./auth.md)), or the DB-backed `accounts` option
+(see [Admin accounts](./admin-accounts.md)); the constructor throws if both
+are missing. There's no client-side
 JavaScript: every write action is a native `<form method="post">` plus a
 303 redirect, and the panel's CSS is inlined server-side.
 
@@ -25,17 +26,23 @@ JavaScript: every write action is a native `<form method="post">` plus a
 // src/main.ts
 import { Hono } from "hono";
 import { AdminPanel } from "@tknf/oven/admin";
+import type { AppEnv } from "./env.js"; // Account here carries `role: "admin" | "member"`
 import { accountGuard } from "./lib/auth.js";
+import { sessionAccessor } from "./lib/session.js";
 
-const app = new Hono();
-
-app.route(
-  "/admin",
-  new AdminPanel({
-    authorize: (c) => accountGuard.use(c).role === "admin",
-  }),
-);
+const app = new Hono<AppEnv>()
+  .use(sessionAccessor.register)
+  .use("/admin/*", accountGuard.require)
+  .route(
+    "/admin",
+    new AdminPanel<AppEnv>({
+      authorize: (c) => accountGuard.use(c).role === "admin",
+    }),
+  );
 ```
+
+`accountGuard` and `sessionAccessor` are wired as in the [auth
+guide](./auth.md), with a `role` field added to `Account`.
 
 With only `authorize` supplied, the panel renders a dashboard at
 `GET /admin` and nothing else — every other section below is opt-in. The
@@ -45,9 +52,9 @@ do, it becomes a module list of every registered resource (with `Add`/
 (`#nav-sidebar`, a vertical link list built from the same `authorize`-gated
 nav) rather than a horizontal header nav, so it stays a single scrollable
 column regardless of how many resources you register — a header nav would
-grow sideways and eventually overflow. Every screen except the dashboard
-itself also renders a breadcrumb trail (e.g. `Home › Publisher › Add`)
-below the header.
+grow sideways and eventually overflow. Every screen also renders a
+breadcrumb trail below the header (e.g. `Home › Publisher › Add`; the
+dashboard's is just `Home`).
 
 ## Common tasks
 
@@ -59,13 +66,13 @@ etc.) from the Drizzle table's columns, so a simple form doesn't need to
 restate them by hand:
 
 ```ts
-// src/admin/publisher_resource.ts
+// src/domains/publishers/admin.ts
 import { z } from "zod";
 import { AdminResource, fieldsFromTable } from "@tknf/oven/admin";
+import type { AdminModel } from "@tknf/oven/admin";
 import { Form } from "@tknf/oven/form";
 import type { FieldDef } from "@tknf/oven/form";
-import { publishers } from "../db/schema.js";
-import { publisherModel } from "../lib/models.js";
+import { publishers } from "./schema.js";
 
 const publisherSchema = z.object({
   name: z.string().min(1),
@@ -82,6 +89,9 @@ class PublisherForm extends Form<typeof publisherSchema> {
 }
 
 export class PublisherResource extends AdminResource {
+  constructor(private readonly publisherModel: AdminModel) {
+    super();
+  }
   get key() {
     return "publishers";
   }
@@ -89,7 +99,7 @@ export class PublisherResource extends AdminResource {
     return "Publishers";
   }
   get model() {
-    return publisherModel;
+    return this.publisherModel;
   }
   get table() {
     return publishers;
@@ -104,14 +114,19 @@ export class PublisherResource extends AdminResource {
 ```
 
 ```ts
-new AdminPanel({
+// src/main.ts
+import { db } from "./db/client.js"; // a Drizzle db built once for the process
+import { PublisherResource } from "./domains/publishers/admin.js";
+import { PublisherModel } from "./domains/publishers/model.js";
+
+new AdminPanel<AppEnv>({
   authorize: (c) => accountGuard.use(c).role === "admin",
-  resources: [new PublisherResource()],
+  resources: [new PublisherResource(new PublisherModel(db))],
 });
 ```
 
-You can scaffold a resource skeleton with `oven generate admin-resource
-<Name>` (default output `src/admin/<name>_resource.ts`). The generated
+You can scaffold a resource skeleton with `oven generate admin <domain>
+[name]` (default output `src/domains/<domain>/admin.ts`). The generated
 class takes its `Model` instance and Drizzle table via the constructor —
 fill in the `key`/`label`/`primaryKey` TODOs and register it with
 `resources: [new BookResource(bookModel, book)]`. `--dialect` does not
@@ -134,15 +149,15 @@ it) — not `Model#paginate`'s cursor pagination, which has no way to jump
 to an arbitrary page. Every display column's header (`AdminResource#columns()`'s
 order) is a sort link: clicking an unsorted column sorts it ascending;
 clicking the active column toggles its direction. This is reflected in
-two query parameters, matching a familiar admin-console convention:
+two query parameters:
 
 - `?o=<i>` sorts the `i`-th display column ascending; `?o=-<i>` sorts it
   descending. An absent or out-of-range `o` falls back to primary key
-  descending (newest first) — the list screen's previous default.
+  descending (newest first).
 - `?p=<n>` selects the `n`-th page, 0-based. The page footer
   (`.paginator`) shows numbered links (eliding long runs down to the
-  first 2, the last 2, and a window around the current page) plus the
-  total row count.
+  first 2, the last 2, and 3 pages on either side of the current page)
+  plus the total row count.
 
 Changing the sort or a filter always resets back to page 0; only the
 paginator's own page links preserve the current sort/search/filters.
@@ -150,7 +165,7 @@ The page footer itself is rendered with `OffsetPaginationView` (see
 [Pagination](./pagination.md)) — the same component the accounts-user
 list screen uses for its own, sort/filter-free `?p=` pagination.
 
-
+### Deleting rows and save buttons
 
 Deleting a row is a two-step flow: every `Delete` link (on the list,
 show, and edit screens) navigates to a `GET
@@ -162,10 +177,9 @@ once that screen's `<form method="post">` — which embeds a hidden
 back to the list without deleting anything.
 
 Every create/edit form renders three submit buttons — `Save`, `Save and
-add another`, and `Save and continue editing` — matching the `_save`/
-`_addanother`/`_continue` submit button names of a familiar admin-console
-convention. Pressing `Save` (or posting without one of these three names,
-kept for backward compatibility) redirects to the resource's list;
+add another`, and `Save and continue editing` — submitted as `_save`/`_addanother`/
+`_continue`. Pressing `Save` (or posting without one of these three names)
+redirects to the resource's list;
 `Save and add another` redirects to the resource's own new-form URL; and
 `Save and continue editing` redirects to the just-saved row's edit URL.
 
@@ -178,9 +192,9 @@ link carries over the current `q`/filter/sort/date-hierarchy query state, so
 the exported rows always match what's on screen:
 
 ```ts
-new AdminPanel({
+new AdminPanel<AppEnv>({
   authorize: (c) => accountGuard.use(c).role === "admin",
-  resources: [new PublisherResource()],
+  resources: [new PublisherResource(publisherModel)],
 });
 // GET /admin/resources/publishers?status=active&o=1
 // -> "Export CSV" links to
@@ -239,9 +253,9 @@ screen after a resource create or update:
 ```ts
 import { sessionAccessor } from "./lib/session.js";
 
-new AdminPanel({
+new AdminPanel<AppEnv>({
   authorize: (c) => accountGuard.use(c).role === "admin",
-  resources: [new PublisherResource()],
+  resources: [new PublisherResource(publisherModel)],
   session: sessionAccessor.use,
 });
 ```
@@ -251,8 +265,8 @@ disappears after being shown, even if the redirect target changes based
 on which save button was pressed) and rendered as a `<ul class="messagelist">`
 between the breadcrumb trail and the screen body. The same banner
 ("The {label} was deleted successfully.") appears after a confirmed
-delete. Without `session` injected, no banner is ever shown (backward
-compatible, same opt-in pattern as `csrf`/`audit`).
+delete. Without `session` injected, no banner is shown (the same opt-in
+pattern as `csrf`/`audit`).
 
 ### Adding a filter sidebar to the list screen
 
@@ -327,11 +341,13 @@ kind of `Form` subclass a top-level resource uses):
 
 ```ts
 import { AdminResource, fieldsFromTable } from "@tknf/oven/admin";
-import type { AdminInline } from "@tknf/oven/admin";
+import type { AdminInline, AdminModel } from "@tknf/oven/admin";
 import { Form } from "@tknf/oven/form";
 import type { FieldDef } from "@tknf/oven/form";
-import { books, publishers } from "../db/schema.js";
-import { bookModel, publisherModel } from "../lib/models.js";
+import { z } from "zod";
+import { books } from "../books/schema.js";
+
+const bookSchema = z.object({ title: z.string().min(1) });
 
 class BookForm extends Form<typeof bookSchema> {
   protected schema() {
@@ -343,6 +359,12 @@ class BookForm extends Form<typeof bookSchema> {
 }
 
 export class PublisherResource extends AdminResource {
+  constructor(
+    private readonly publisherModel: AdminModel,
+    private readonly bookModel: AdminModel,
+  ) {
+    super();
+  }
   // ...key/label/model/table/primaryKey/form as above
 
   inlines(): AdminInline[] {
@@ -350,7 +372,7 @@ export class PublisherResource extends AdminResource {
       {
         key: "books",
         label: "Books",
-        model: bookModel,
+        model: this.bookModel,
         table: books,
         primaryKey: "id",
         foreignKey: "publisherId",
@@ -362,8 +384,8 @@ export class PublisherResource extends AdminResource {
 }
 ```
 
-The edit form renders one bound row per existing child (via
-`inline.model.listPage`, matched on `foreignKey`) plus `extra` blank rows;
+The edit form renders one bound row per existing child, up to the first 200
+(via `inline.model.listPage`, matched on `foreignKey`), plus `extra` blank rows;
 the new form (no parent row yet) renders only blank rows. Each rendered
 row's fields use the name prefix `${key}-${index}` (0-based), an existing
 row additionally carries a hidden `${key}-${index}-__pk` (the child's
@@ -409,9 +431,9 @@ hidden token input automatically:
 import { Csrf } from "@tknf/oven/security";
 import { sessionAccessor } from "./lib/session.js";
 
-const csrf = new Csrf({ session: sessionAccessor.use });
+const csrf = new Csrf<AppEnv>({ session: sessionAccessor.use });
 
-new AdminPanel({
+new AdminPanel<AppEnv>({
   authorize: (c) => accountGuard.use(c).role === "admin",
   csrf,
 });
@@ -422,10 +444,10 @@ new AdminPanel({
 Authentication is outside admin's scope, so the header's user-tools block
 (a greeting plus links such as "View site" or "Log out") is entirely
 opt-in: inject `userTools` to build it from `Context`, or omit it to
-render nothing:
+render nothing (unless `auth`/`accounts` login is wired — see below):
 
 ```ts
-new AdminPanel({
+new AdminPanel<AppEnv>({
   authorize: (c) => accountGuard.use(c).role === "admin",
   csrf,
   userTools: (c) => ({
@@ -459,18 +481,23 @@ otherwise — there is nowhere to hold the logged-in identity between
 requests):
 
 ```ts
-import { verifyPassword } from "@tknf/oven/auth";
+import { hashPassword, verifyPassword } from "@tknf/oven/auth";
 import { sessionAccessor } from "./lib/session.js";
-import { userModel } from "./lib/models.js";
+import { operators } from "./lib/operators.js"; // your own operator lookup
 
-new AdminPanel({
+// Verified when no operator matches, so a missing username costs the same
+// PBKDF2 work as a wrong password.
+const dummyHash = await hashPassword("dummy password for timing");
+
+new AdminPanel<AppEnv>({
   authorize: (c) => accountGuard.use(c).role === "admin",
   session: sessionAccessor.use,
   csrf,
   auth: {
     authenticate: async (c, { username, password }) => {
-      const user = await userModel.findByUsername(username);
-      if (!user || !(await verifyPassword(password, user.passwordHash))) return null;
+      const user = await operators.findByUsername(username);
+      const ok = await verifyPassword(password, user?.passwordHash ?? dummyHash);
+      if (!user || !ok) return null;
       return { id: user.id, label: user.name };
     },
   },
@@ -478,10 +505,9 @@ new AdminPanel({
 ```
 
 `authenticate` returns an `AdminIdentity` (`{ id, label? }`) on success or
-`null` on failure; `verifyPassword` (from `@tknf/oven/auth`) is the same
-constant-time PBKDF2 check `Guard`/`Policy` use elsewhere, but admin
-doesn't require it — any check that resolves to an identity or `null`
-works.
+`null` on failure. `verifyPassword` (from `@tknf/oven/auth`) is oven's
+PBKDF2 verifier; admin does not require it — any check that resolves to an
+identity or `null` works.
 
 If you'd rather not maintain your own operator user table,
 `@tknf/oven/admin` also ships an operator-accounts service
@@ -499,7 +525,7 @@ Once `auth` is injected:
   redirected to `/login?next=<original path>` (confined to the panel's
   own `basePath` — an unrecognized or external `next` falls back to
   `basePath` itself, an open-redirect guard). A logged-in request still
-  goes through `authorize` as before (when `accounts` is also injected,
+  goes through `authorize` (when `accounts` is also injected,
   it goes through the accounts permission gate too — both must allow), so
   `auth` narrows "is this operator who they say they are" while
   `authorize`/`accounts` decide "is this operator allowed in here".
@@ -513,11 +539,13 @@ Once `auth` is injected:
   defaults to a greeting built from the identity (`label` falling back to
   `id`) plus a working "Log out" link — so `auth` alone is enough to get a
   functioning login/logout flow without also wiring `userTools`. Injecting
-  `userTools` explicitly still takes priority, same as always.
+  `userTools` explicitly still takes priority.
+- `GET`/`POST "/login/totp"` are registered too; they serve the TOTP second
+  login step when `accounts` requires it for an operator (see
+  [Admin accounts](./admin-accounts.md#add-totp-two-factor-authentication)).
 
-Without `auth` injected, there are no login/logout routes and no redirect
-gate — every route is guarded by `authorize` alone, exactly as before
-(backward compatible).
+Without `auth` (or `accounts`) injected, there are no login/logout routes and
+no redirect gate — every route is guarded by `authorize` alone.
 
 ### Handing enforcement to the panel (`accounts`)
 
@@ -529,18 +557,18 @@ accounts service described in [Admin accounts](./admin-accounts.md):
 ```ts
 import { SQLiteAdminAccounts, SQLiteAdminGroups } from "@tknf/oven/admin";
 import { adminGroups, adminUserGroups, adminUsers } from "./db/schema.js";
-import { db } from "./lib/db.js";
-import { csrf } from "./lib/csrf.js";
+import { db } from "./db/client.js"; // a Drizzle db built once for the process
+import { csrf } from "./lib/security.js";
 import { sessionAccessor } from "./lib/session.js";
 
 const accounts = new SQLiteAdminAccounts(db, adminUsers);
 const groups = new SQLiteAdminGroups(db, { groups: adminGroups, userGroups: adminUserGroups });
 
-new AdminPanel({
+new AdminPanel<AppEnv>({
   session: sessionAccessor.use,
   csrf,
   accounts: { users: accounts, groups }, // `groups` is optional
-  resources: [new PublisherResource()],
+  resources: [new PublisherResource(publisherModel)],
 });
 ```
 
@@ -549,7 +577,7 @@ With `accounts` injected and no explicit `authorize`:
 - The built-in login/logout screens are derived from `accounts.users.authenticate`
   automatically (same as wiring `auth` yourself, so `auth` is optional too).
   Passing an explicit `auth` still wins over the derived one — an escape
-  hatch for e.g. wrapping the credential check in rate limiting — but its
+  hatch for e.g. a custom rate-limit budget — but its
   returned identity's `id` must then be one of `accounts.users`'s own user
   ids, since every request re-validates the logged-in operator by that id.
 - `authorize` becomes optional: a built-in permission gate takes over,
@@ -590,14 +618,14 @@ Each section activates independently by injecting its config; the nav
 only lists the sections you've wired:
 
 ```ts
-new AdminPanel({
+new AdminPanel<AppEnv>({
   authorize: (c) => accountGuard.use(c).role === "admin",
   jobs: { console: jobsConsole }, // e.g. an `SQLiteJobsConsole` — see the jobs guide
   settings: {
     featureFlags: { flags: featureFlags, names: ["new-checkout", "beta-search"] },
     maintenance: maintenanceMode, // from `@tknf/oven/security`
   },
-  audit: { log: auditLog, actor: (c) => accountGuard.use(c).email },
+  audit: { log: auditLog, actor: (c) => accountGuard.use(c).name },
 });
 ```
 
@@ -615,20 +643,18 @@ Pass `bodyLimitBytes` to bound how large a request the panel will accept,
 across every route:
 
 ```ts
-new AdminPanel({
+new AdminPanel<AppEnv>({
   authorize: (c) => accountGuard.use(c).role === "admin",
   csrf,
-  resources: [new PublisherResource()], // e.g. a resource with a File field
+  resources: [new PublisherResource(publisherModel)], // e.g. a resource with a File field
   bodyLimitBytes: 10 * 1024 * 1024, // 10 MB
 });
 ```
 
-This wires `hono/body-limit` (`bodyLimit({ maxSize: bodyLimitBytes })`) as
-the very first middleware — ahead of CSRF verification and any
-`c.req.parseBody()` call the panel itself makes — so an oversized request is
-rejected before it's buffered, not after. A request over the limit gets
-Hono's own default `413 Payload Too Large`; a request with no body (e.g.
-`GET`) is unaffected. This is unrelated to (and stricter than) `AdminResource`
+This wires `hono/body-limit` (`bodyLimit({ maxSize: bodyLimitBytes })`)
+before the auth/permission gate, CSRF verification, and any
+`c.req.parseBody()` call the panel itself makes, so an oversized request is
+rejected with `413` before it's buffered. This is unrelated to (and stricter than) `AdminResource`
 field-level `File` validation (`maxSizeBytes` via `validateUploadedFile` —
 see [Forms](./forms.md#validating-an-uploaded-files-size-and-mime-type)),
 which only rejects an already-fully-buffered file after the fact.
@@ -656,7 +682,7 @@ to add your own script or an image), or `false` to omit the header
 entirely:
 
 ```ts
-new AdminPanel({
+new AdminPanel<AppEnv>({
   authorize: (c) => accountGuard.use(c).role === "admin",
   contentSecurityPolicy: false, // or a custom policy string
 });
@@ -678,7 +704,7 @@ there's no separate admin-specific i18n API to call:
 import { languageDetector } from "hono/language";
 
 app.use(languageDetector({ supportedLanguages: ["en", "ja"], fallbackLanguage: "en" }));
-app.route("/admin", new AdminPanel({ authorize: (c) => accountGuard.use(c).role === "admin" }));
+app.route("/admin", new AdminPanel<AppEnv>({ authorize: (c) => accountGuard.use(c).role === "admin" }));
 ```
 
 Without `languageDetector` applied (or for an unsupported/undetected
@@ -692,8 +718,8 @@ example `app.route("/staff", new AdminPanel({ ...options, basePath: "/staff" }))
 Resource keys remain literal mount segments; record IDs are encoded as URL
 parameters, including in edit forms and their validation responses.
 
-Resource index, new, create, show, and edit routes use a nested `RouteHandler`
-and `resources()`. CSV export is registered before the member route. Updates
+Resource index, new, create, show, and edit routes are registered on a nested
+Hono sub-app per resource. CSV export is registered before the member route. Updates
 remain native `POST /resources/:key/:id`; deletion keeps its GET confirmation
 and `POST /resources/:key/:id/delete`. The panel's authorization, CSRF,
 read-only resource rules, and bulk-action handling apply to the mounted routes.
@@ -711,7 +737,8 @@ read-only resource rules, and bulk-action handling apply to the mounted routes.
   panel's write routes yourself, either via the `csrf` option shown above
   or by verifying upstream. Without it, the panel logs a one-time
   `console.warn` on the first unsafe-method request, but still serves it
-  — it does not fail closed on its own.
+  — it does not fail closed on its own. The `accounts` option requires
+  `csrf` (the constructor throws without it).
 - **Use `bodyLimitBytes` for an overall request body limit.** An injected
   `Csrf` independently limits form-token extraction, but header-token requests
   skip that read. Upload parsing still buffers files before
@@ -749,8 +776,7 @@ read-only resource rules, and bulk-action handling apply to the mounted routes.
 - **List sort/pagination is single-column and offset-based.** `?o=`
   supports sorting by exactly one display column at a time (clicking a
   different header replaces, not adds to, the active sort); `?p=` pages
-  via `listPage`'s `offset`, which does a full scan-and-discard for deep
-  pages on large tables (the same tradeoff `listPage` itself documents).
+  via `listPage`'s `offset`.
 - **CSV export is capped at 10,000 rows and is never paginated.** Unlike the
   list screen's `?p=` pagination, `GET /resources/<key>/export.csv` always
   fetches up to the cap in one `AdminModel#listPage` call and silently

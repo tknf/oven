@@ -5,22 +5,22 @@ For the design rationale behind the APIs used here, see [Concepts](./concepts.md
 
 ## Prerequisites
 
-- **ESM only.** `@tknf/oven`'s `package.json` `exports` map declares only the
-  `default` condition, so it cannot be loaded via CommonJS `require()`. Your
-  app must be an ESM project (`"type": "module"` or a bundler that resolves
-  the `default`/`types` conditions).
+- **ESM only.** `@tknf/oven` ships ES modules, and its `package.json`
+  `exports` map declares only the `default` condition. Use it from an ESM
+  project (`"type": "module"` or a bundler that resolves the
+  `default`/`types` conditions).
 - **A JavaScript runtime that supports Web-standard `Request`/`Response`**,
   such as Node.js or Cloudflare Workers. oven's core (`@tknf/oven`) is
   runtime-agnostic; platform-specific adapters live behind the
   `@tknf/oven/node` and `@tknf/oven/cloudflare` subpath exports.
-- **Peer dependencies.** oven is built on top of [Hono](https://hono.dev) and,
-  for the `model`/`database` modules, [Drizzle ORM](https://orm.drizzle.team).
+- **Peer dependencies.** oven is built on top of [Hono](https://hono.dev) and
+  [Drizzle ORM](https://orm.drizzle.team).
   At the time of writing the supported versions are:
 
   | Package | Version | Required? |
   | --- | --- | --- |
   | `hono` | `^4.12.27` | always |
-  | `drizzle-orm` | `^0.45.2` | if you use `@tknf/oven/model` or `@tknf/oven/database` |
+  | `drizzle-orm` | `^0.45.2` | always |
   | `@libsql/client` | `^0.17.4` | optional (SQLite/libSQL adapters) |
   | `@cloudflare/workers-types` | `^5.0.0` | optional (only for Cloudflare Workers projects) |
 
@@ -62,83 +62,158 @@ or custom addition is needed. Do not infer a missing API from unfamiliarity.
 See the [application skill](../skills/oven/SKILL.md#choose-oven-first) for the
 responsibility-to-API map.
 
+oven organizes an application by **domain**: everything one feature needs — its
+routes, tables, model, form, authorization policy, admin resource, views, and
+jobs — lives in one directory under `src/domains/`. Database tooling lives in
+the top-level `db/`, and tests mirror `src/` under `test/`.
+
+```
+db/
+  config.ts              # drizzle-kit configuration (passed with --config)
+  migrations/            # drizzle-kit output
+  seed.ts                # seed script
+src/
+  main.ts                # compose the app and mount each domain's routes
+  env.ts                 # bindings/context types and renderer augmentation
+  db/
+    client.ts            # driver creation and DatabaseAccessor wiring
+    schema.ts            # re-exports every domain's schema.ts
+  domains/
+    books/
+      routes.ts          # export const booksRoutes = new Hono<AppEnv>()...
+      schema.ts          # Drizzle tables and relations only
+      model.ts           # BookModel, importing its table from ./schema.js
+      form.ts            # BookForm
+      policy.ts          # BookPolicy
+      admin.ts           # BookResource for AdminPanel
+      views/
+        list.tsx         # BooksListView or a Hono/JSX page component
+        detail.tsx
+      jobs/
+        import_books.ts  # ImportBooksJob
+  layouts/               # layouts shared across domains
+  lib/                   # session, auth, CSRF, audit, and other services
+test/
+  domains/books/routes.test.ts
+  integration/           # flows that span domains or the assembled app
+  support/               # shared test setup
+```
+
 | Location | Responsibility | Generator behavior |
 | --- | --- | --- |
-| `src/main.ts` | Compose the Hono app, register middleware/services, mount handlers | App-owned |
+| `src/main.ts` | Compose the Hono app, register middleware/services, mount each domain's routes | App-owned |
 | `src/env.ts` | Application bindings/context types and renderer augmentation | App-owned |
-| `src/handlers/*_handler.ts` | `RouteHandler` subclasses | `oven generate handler books` |
-| `src/models/*_model.ts` | Dialect-specific model and its table definition | `oven generate model book`; the table is exported beside the class |
-| `src/db/schema.ts` | Schema entry point: table definitions or re-exports of model-owned tables | App-owned; no schema generator |
-| `src/forms/*_form.ts` | `Form` subclasses and validation schemas | `oven generate form book` |
-| `src/views/*_view.ts` | `View` subclasses | `oven generate view book`; change to `.tsx` when writing JSX |
-| `src/layouts/*.tsx` | Shared Hono/JSX layouts | App-owned; an inline layout is fine for a small page |
-| `src/lib/db.ts` | `DatabaseAccessor` and driver creation; export `register`/`use` wiring | App-owned |
+| `src/domains/<domain>/routes.ts` | A Hono sub-app written as one method chain | `oven generate routes books` |
+| `src/domains/<domain>/schema.ts` | Drizzle tables and relations, with no runtime initialization | `oven generate schema books book` |
+| `src/domains/<domain>/model.ts` | Dialect-specific `Model` subclasses | `oven generate model books book` |
+| `src/domains/<domain>/form.ts` | `Form` subclasses and validation schemas | `oven generate form books book` |
+| `src/domains/<domain>/policy.ts` | `Policy` subclasses | `oven generate policy books book` |
+| `src/domains/<domain>/admin.ts` | `AdminResource` subclasses | `oven generate admin books book` |
+| `src/domains/<domain>/views/*.tsx` | One `View` subclass or page component per screen | `oven generate view books list` |
+| `src/domains/<domain>/jobs/*.ts` | One `Job` subclass per file | `oven generate job books import_books` |
+| `src/db/client.ts` | `DatabaseAccessor` and driver creation; export `register`/`use` wiring | App-owned |
+| `src/db/schema.ts` | Re-exports every domain's tables for Drizzle, drizzle-kit, and `createTestDb` | App-owned |
+| `src/db/` | Other runtime database code, such as raw SQL for an SQLite FTS5 search | App-owned |
+| `src/layouts/*.tsx` | Hono/JSX layouts shared across domains | App-owned |
 | `src/lib/` | Session, auth, CSRF, audit, and other service composition | App-owned |
-| `src/jobs`, `src/policies`, `src/admin`, `src/seeds` | Jobs, authorization, admin resources, seed code | `job`, `policy`, `admin-resource`, `seed` generators |
-| `drizzle.config.ts` | Application migration configuration, including `schema` and `out` | App-owned |
-| `drizzle/` | Generated migrations when chosen as `out` | Generated by the app's migration script, never by `oven generate` |
-| `test/**/*.test.ts` | Tests using the oven test helpers and `app.request()` | App-owned |
+| `db/config.ts` | drizzle-kit configuration, including `schema` and `out` | App-owned |
+| `db/migrations/` | Generated migrations | Generated by the app's migration script, never by `oven generate` |
+| `db/seed.ts` | Seed script | App-owned |
+| `test/**` | Tests mirroring `src/`, plus `test/integration/` and `test/support/` | App-owned |
 
 Only create the files needed for the feature. Runtime-specific entry points such
 as `src/server.ts` or `src/worker.ts` may compose/import `src/main.ts` when needed.
-There is no file-based discovery; the app must import and wire generated classes.
-See [CLI](./cli.md) for all eight generator types and filename normalization.
+There is no file-based discovery or app registry: `src/main.ts` imports each
+domain's routes and mounts them explicitly. See [CLI](./cli.md) for every
+generator type.
 
-For CRUD with native HTML forms, remember that `FormView` defaults to POST
-(and accepts `get`/`post`/`dialog`), while `RouteHandler.resources()` registers
-update as PATCH/PUT and destroy as DELETE. For a no-JavaScript form workflow,
-add explicit POST update/delete routes in `register()` and retain auth, CSRF,
-validation, and audit checks. This uses oven's normal routing extension point;
-a hidden method field does not change the HTTP method by itself.
+**Naming.** File names are short because the directory already names the
+domain; exported symbols carry the full name (`BookModel`, `BooksListView`,
+`booksRoutes`) so that search and auto-import find them unambiguously. A domain
+may import another domain's model or schema directly.
 
-The model generator and [Models](./models.md) examples keep a table beside its
-model. To expose that table through the schema entry point without duplication:
+**Single file or directory.** Each role may stay a single file or become a
+directory once it grows: `view.tsx` or `views/*.tsx`, `job.ts` or `jobs/*.ts`,
+`model.ts` or `models/*.ts`, and so on. The generator writes views and jobs as
+one file per name because a domain usually has several of each.
+
+For CRUD with native HTML forms, remember that `FormView` defaults to POST (and
+accepts `get`/`post`/`dialog`). For a no-JavaScript form workflow, register
+explicit POST routes for update and delete (for example `/:id/update` and
+`/:id/delete`) and retain auth, CSRF, validation, and audit checks. A hidden
+method field does not change the HTTP method by itself.
+
+### Schema and database tooling
+
+Each domain's `schema.ts` holds only table and relation definitions, so
+drizzle-kit can load it without starting any runtime service. The app collects
+them in one module:
 
 ```ts
-// src/db/schema.ts, after `oven generate model book`
-export { book } from "../models/book_model.js";
+// src/db/schema.ts
+export * from "../domains/books/schema.js";
+export * from "../domains/users/schema.js";
 ```
 
-A project that already separates table definitions into `src/db/schema.ts` can
-keep that convention and import them from its models. Keep schema modules free
-of runtime service initialization and avoid schema/model import cycles. Adjust
-stubs, dialect/driver types, and imports before using generated files.
-
-Configure the app's [Drizzle configuration](https://orm.drizzle.team/docs/drizzle-config-file)
-with its actual schema entry point and migration output directory; `drizzle/` is
-a starting default, not an oven requirement. Generate migrations through the
-project's scripts after changing the schema, and point `createTestDb`'s
-`migrationsFolder` at the same generated output. Follow the actual configured
-paths in existing apps. See [Database](./database.md) and [Testing](./testing.md).
-
-## Your first route
-
-oven's routing convention is a single idiom: subclass `RouteHandler`
-(which itself extends `Hono`) and register your routes inside the
-`register()` method. Here's the smallest possible handler:
+Pass that same module to drizzle-kit, to `drizzle(client, { schema })`, and to
+`createTestDb`, so a table that is missing from it is missing everywhere rather
+than only at runtime. Keep the drizzle-kit configuration in `db/config.ts` and
+point every drizzle-kit script at it with `--config`. Write `schema` and `out`
+relative to the project root, where the scripts run:
 
 ```ts
-// src/handlers/books_handler.ts
-import { RouteHandler } from "@tknf/oven/routing";
+// db/config.ts
+import { defineConfig } from "drizzle-kit";
 
-export class BooksHandler extends RouteHandler {
-  protected register() {
-    this.get("/", (c) => c.text("books-index"));
+export default defineConfig({
+  dialect: "sqlite",
+  schema: "./src/db/schema.ts",
+  out: "./db/migrations",
+});
+```
+
+```json
+{
+  "scripts": {
+    "db:generate": "drizzle-kit generate --config db/config.ts",
+    "db:migrate": "drizzle-kit migrate --config db/config.ts"
   }
 }
 ```
 
-Mount it onto your app with the plain Hono `route()` method — `RouteHandler`
-instances are ordinary Hono apps, so there's no special mounting API to learn:
+Generate migrations through these scripts after changing a schema, and point
+`createTestDb`'s `migrationsFolder` at `db/migrations`. SQL that Drizzle cannot
+express as a table definition, such as an SQLite FTS5 virtual table, belongs in
+a migration created with `drizzle-kit generate --custom --config db/config.ts`;
+the queries that use it at runtime belong in `src/db/`. Add `db` to
+`tsconfig.json`'s `include` so the configuration and seed script are type
+checked. See [Database](./database.md) for seeding and [Testing](./testing.md).
+
+## Your first route
+
+A route module is a plain Hono app written as one method chain. Keeping the
+chain intact is what carries each route's path, parameters, and response type
+into the app's type, where Hono's `hc` client and `testClient` read it:
+
+```ts
+// src/domains/books/routes.ts
+import { Hono } from "hono";
+
+export const booksRoutes = new Hono()
+  .get("/", (c) => c.text("books-index"))
+  .get("/:id", (c) => c.json({ id: c.req.param("id") }));
+```
+
+Mount it onto your app with Hono's `route()` method, again as a chain:
 
 ```ts
 // src/main.ts
 import { Hono } from "hono";
-import { BooksHandler } from "./handlers/books_handler.js";
+import { booksRoutes } from "./domains/books/routes.js";
 
-const app = new Hono();
-app.route("/books", new BooksHandler());
+const app = new Hono().route("/books", booksRoutes);
 
+export type AppType = typeof app;
 export default app;
 ```
 
@@ -153,17 +228,13 @@ A request to `GET /books` now returns `books-index`.
 
 ## Rendering with a layout
 
-`RouteHandler` has two more hooks besides `register()`: `layout()` and
-`middleware()`. Both must be written as methods, not class fields — see
-[Concepts § Class-based idiom](./concepts.md#class-based-idiom) for why.
-
-`layout()` returns a component compatible with `hono/jsx-renderer`. When
-you return one, oven applies `jsxRenderer` for you, so `c.render(...)`
-becomes available inside `register()`:
+Apply Hono's `jsxRenderer` with a layout component at the start of the chain;
+`c.render(...)` is then available in every route after it:
 
 ```tsx
-// src/handlers/pages_handler.ts
-import { RouteHandler } from "@tknf/oven/routing";
+// src/domains/pages/routes.tsx
+import { Hono } from "hono";
+import { jsxRenderer } from "hono/jsx-renderer";
 import type { LayoutComponent } from "@tknf/oven/view";
 
 const PageLayout: LayoutComponent = ({ title, children }) => (
@@ -175,15 +246,9 @@ const PageLayout: LayoutComponent = ({ title, children }) => (
   </html>
 );
 
-export class PagesHandler extends RouteHandler {
-  protected layout() {
-    return PageLayout;
-  }
-
-  protected register() {
-    this.get("/", (c) => c.render(<p>hello</p>, { title: "Test Page" }));
-  }
-}
+export const pagesRoutes = new Hono()
+  .use(jsxRenderer(PageLayout))
+  .get("/", (c) => c.render(<p>hello</p>, { title: "Test Page" }));
 ```
 
 The second argument to `c.render` is typed through Hono's `ContextRenderer`
@@ -203,10 +268,9 @@ declare module "hono" {
 ```
 
 `LayoutProps` requires `title` and accepts an optional `head` slot for
-page-specific `<meta>`/`<link>` elements. Because oven doesn't hide layout
-inheritance behind a hook, deeper layouts (e.g. an `AdminLayout` wrapping a
-`BaseLayout`) are just function composition — see
-[Concepts](./concepts.md) for the reasoning.
+page-specific `<meta>`/`<link>` elements. Deeper layouts (e.g. an
+`AdminLayout` wrapping a `BaseLayout`) are function composition. A layout used
+by several domains belongs in `src/layouts/`.
 
 ## Development commands
 

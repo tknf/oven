@@ -23,12 +23,12 @@ value)` helper.
 
 `schema` is a plain [Standard Schema](https://standardschema.dev) value — pick
 whichever compliant library you already use (zod, valibot, ...); the package
-itself only depends on `@standard-schema/spec`.
+subpath only depends on the `@standard-schema/spec` types.
 
 ## Minimal example
 
 ```ts
-// src/datasources/users_source.ts
+// src/lib/users_source.ts
 import { z } from "zod";
 import { RestDatasource } from "@tknf/oven/datasource";
 
@@ -83,14 +83,16 @@ array. Override it when the API wraps the list in an envelope such as
 export class UsersSource extends RestDatasource<User> {
   // ...
   protected toArray(raw: unknown) {
-    return (raw as { data: unknown[] }).data;
+    if (typeof raw === "object" && raw !== null && "data" in raw && Array.isArray(raw.data)) {
+      return raw.data;
+    }
+    throw new Error("expected { data: [...] }");
   }
 }
 ```
 
 `toArray` is a lightweight fit for a list that's only thinly wrapped around
-a bare array — it discards the wrapper entirely, so a cast is unavoidable
-inside it. If the envelope also carries metadata you need (total count,
+a bare array — it discards the wrapper entirely. If the envelope also carries metadata you need (total count,
 pagination cursors, ...), don't fight `toArray`/`list` for it — use the
 schema-per-envelope approach in "Enveloped or metadata-carrying responses"
 below instead, which returns the envelope's inferred type with no cast.
@@ -103,8 +105,9 @@ await users.update(42, { name: "Ada Lovelace" }); // PATCH /users/42
 await users.delete(42); // DELETE /users/42
 ```
 
-`create`/`update` validate the response against `schema`; `delete` doesn't
-parse a response body at all.
+`create`/`update` validate the response against `schema`. `delete` doesn't
+validate the response: an empty or 204 body is fine, but a non-empty 2xx body
+that isn't JSON throws `DatasourceParseError`.
 
 ### Query parameters and per-call headers
 
@@ -199,7 +202,10 @@ above — write the method yourself instead of forcing it into `retrieve`/
 export class UsersSource extends RestDatasource<User> {
   // ...
   async activate(id: string) {
-    return this.request(`/users/${id}/activate`, { method: "POST", schema: this.schema });
+    return this.request(`/users/${encodeURIComponent(id)}/activate`, {
+      method: "POST",
+      schema: this.schema,
+    });
   }
 }
 ```
@@ -220,7 +226,7 @@ export class Cms extends Datasource {
   blogs = (query?: { offset?: number; limit?: number }) =>
     this.request("/blogs", { query, schema: blogListSchema });
 
-  blog = (id: string) => this.request(`/blogs/${id}`, { schema: blogSchema });
+  blog = (id: string) => this.request(`/blogs/${encodeURIComponent(id)}`, { schema: blogSchema });
 }
 ```
 
@@ -253,8 +259,8 @@ timeout by default.
 - **`list`'s default `toArray` assumes a bare JSON array.** Calling `list()`
   against an enveloped response without overriding `toArray` throws — see
   Common tasks above.
-- **Cloudflare Workers' `fetch` has no default timeout.** Set `timeoutMs` in
-  production so a slow or hanging upstream can't stall a request indefinitely.
+- **`Datasource` sets no timeout unless `timeoutMs` is given.** Set it in
+  production so a hanging upstream can't stall a request.
 - **Always pass a `schema`.** Response bodies are untrusted external data —
   skipping `schema` (calling `request` without it) returns the parsed JSON
   as-is with no shape guarantee.

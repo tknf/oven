@@ -30,7 +30,7 @@ and no trailing newline is added):
 ```ts
 import { csvDocument } from "@tknf/oven/helpers";
 
-app.get("/books.csv", (c) => {
+export const booksRoutes = new Hono().get("/export.csv", (c) => {
   const rows = [
     ["code", "title"],
     ["ABC-123", "Introduction"],
@@ -57,7 +57,7 @@ locale/currency rules):
 ```ts
 import { formatCurrency, formatDateTime } from "@tknf/oven/helpers";
 
-formatCurrency(1200, { currency: "JPY", locale: "ja-JP" }); // "¥1,200"
+formatCurrency(1200, { currency: "JPY", locale: "ja-JP" }); // "￥1,200"
 formatDateTime(Date.now(), { timeZone: "Asia/Tokyo", locale: "ja-JP" });
 ```
 
@@ -89,8 +89,8 @@ domId("book"); // "new_book" (new-record case)
   containing user input may be opened in a spreadsheet app. Never enable it
   for CSV meant for machine-readable consumption, since it mutates the
   actual value.
-- **`formatCurrency`/`formatDateTime` both require an explicit `currency`/
-  `timeZone`** — the framework has no notion of an app-wide default
+- **`formatCurrency`/`formatDateTime` require an explicit `locale` plus
+  `currency`/`timeZone`** — the framework has no notion of an app-wide default
   currency or timezone, so there's no implicit fallback to guess wrong in
   production.
 - **`formatWordedDurationJa` is hardcoded to Japanese** and intentionally

@@ -3,11 +3,11 @@
 ## What / Why
 
 `@tknf/oven/jobs` models one job as one class: subclass `Job<TPayload>`,
-give it a unique `name`, and implement `perform(payload)`. `TPayload` must
-be JSON-serializable — it is `JSON.stringify`d at enqueue time and
-`JSON.parse`d back on the consumer side, so it has to round-trip through
-that boundary unchanged (no functions, `Date`, `Map`/`Set`, circular
-references).
+give it a unique `name`, and implement `perform(payload)`. Keep `TPayload`
+JSON-serializable (no functions, `Date`, `Map`/`Set`, circular references):
+the DB-backed queues `JSON.stringify` it at enqueue and `JSON.parse` it in
+the worker, while `InlineJobQueue` passes it through unchanged, so a
+non-JSON payload can work in development and break in production.
 
 Three pieces stay deliberately separate:
 
@@ -46,7 +46,7 @@ flowchart LR
 ## Minimal example
 
 ```ts
-// src/jobs/greet_job.ts
+// src/domains/greetings/jobs/greet.ts
 import { Job } from "@tknf/oven/jobs";
 
 type GreetPayload = { name: string };
@@ -63,7 +63,7 @@ export class GreetJob extends Job<GreetPayload> {
 ```ts
 // src/lib/jobs.ts
 import { InlineJobQueue, JobRegistry } from "@tknf/oven/jobs";
-import { GreetJob } from "../jobs/greet_job.js";
+import { GreetJob } from "../domains/greetings/jobs/greet.js";
 
 export const jobRegistry = new JobRegistry();
 export const greetJob = new GreetJob();
@@ -75,19 +75,15 @@ export const jobQueue = new InlineJobQueue(jobRegistry);
 ```
 
 ```ts
-// src/main.ts
+// src/domains/greetings/routes.ts
 import { Hono } from "hono";
-import { jobQueue, greetJob } from "./lib/jobs.js";
+import { jobQueue, greetJob } from "../../lib/jobs.js";
 
-const app = new Hono();
-
-app.post("/signup", async (c) => {
+export const greetingsRoutes = new Hono().post("/", async (c) => {
   const { name } = await c.req.json<{ name: string }>();
   await jobQueue.enqueue(greetJob, { name });
   return c.body(null, 202);
 });
-
-export default app;
 ```
 
 ## Common tasks
@@ -162,9 +158,9 @@ into an admin endpoint is your app's job.
 
 **Pruning expired rows from a DB-backed `KeyValueStore`/`SessionStorage`**
 (`{Pg,SQLite,MySql}PruneExpiredRecordsJob`): the DB-backed `KeyValueStore`
-(`@tknf/oven/kv`) and `SessionStorage` (`@tknf/oven/session`) adapters only
-delete an expired row incidentally, the next time a `get` happens to hit it
-— nothing actively sweeps rows nobody reads again (see
+(`@tknf/oven/kv`) deletes an expired row only when a `get` hits it, and the
+DB-backed `SessionStorage` (`@tknf/oven/session`) never deletes expired rows
+(it treats them as empty) — nothing actively sweeps rows nobody reads again (see
 [Storage, Key-Value, and Cache](./storage-kv.md) and [Sessions](./sessions.md)).
 This job fills that gap: give it one or more `targets` (a table plus its
 primary key column and expiry column), and it batch-deletes every row whose
@@ -177,7 +173,7 @@ import {
 } from "@tknf/oven/jobs";
 import { sqliteKeyValueTable } from "@tknf/oven/kv";
 import { sqliteSessionsTable } from "@tknf/oven/session";
-import { db } from "./db.js";
+import { db } from "../db/client.js"; // a Drizzle db built once for the process
 
 const kvTable = sqliteKeyValueTable();
 const sessionsTable = sqliteSessionsTable();
@@ -194,7 +190,10 @@ const schedule = new Schedule([
 
 // Node long-running process:
 const controller = new AbortController();
-await schedule.run({ signal: controller.signal });
+await schedule.run({
+  signal: controller.signal,
+  onError: (name, error) => console.error(`scheduled entry ${name} failed`, error),
+});
 
 // Or, driven from a Cloudflare `scheduled` handler via `ScheduledDispatcher`
 // (see Deployment): `run: () => pruneJob.perform({})` inside the matching entry.
@@ -210,8 +209,9 @@ does per target — see the Gotchas note below.
 Each `perform()` call visits targets in order. A failure stops work on that target,
 but subsequent targets are still pruned. After the sweep, any failures are thrown
 as an `AggregateError`; its `errors` array retains the original errors in target
-order. Successful deletions are not rolled back. Let the scheduler or queue report
-the failure and retry normally; already-pruned rows need no special handling.
+order. Successful deletions are not rolled back. `Schedule` passes the error to
+`onError` and runs the entry again at its next matching time; already-pruned rows
+need no special handling.
 
 **Deploying to Cloudflare Queues:** see [Deployment](./deployment.md)
 for wiring `CloudflareJobQueue` (producer) and `QueueConsumer` (consumer,
@@ -252,9 +252,8 @@ handler.
   is responsible for not doing that (e.g. don't call it from both a
   1-second poll loop and a cron trigger for the same schedule).
 - **Payloads must be JSON-serializable**, and this is not enforced by the
-  type system — passing something that doesn't round-trip through
-  `JSON.stringify`/`JSON.parse` (functions, `Date`, circular references)
-  will silently corrupt the payload the consumer sees.
+  type system. On the DB-backed queues a `Date` becomes a string, functions
+  are dropped, and circular references throw at enqueue.
 - **`{Pg,SQLite,MySql}PruneExpiredRecordsJob` is meant to be invoked
   directly** (`pruneJob.perform({})` from a `Schedule` entry or a
   `scheduled` handler), not enqueued through a persistent `JobQueue` — it
