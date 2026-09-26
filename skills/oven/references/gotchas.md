@@ -1,16 +1,17 @@
 # Gotchas and security defaults
 
-- **Hooks are methods, not class fields.** `layout = MyLayout` is `undefined` at
-  construction time — write `protected layout() { return MyLayout; }`.
-- **Reserved names.** A `RouteHandler` subclass must not reuse names Hono holds
-  (`get`, `post`, `use`, `route`, `routes`, `fetch`, `onError`, ...). Shadowing
-  `routes` breaks the instance.
-- **`app.route("/", handler)` leaks `layout()`/`middleware()` to the whole
-  app.** Both compile to a path-less `this.use(...)`, registered under Hono's
-  internal `"*"`; mounting merges that to `"<path>/*"` via `mergePath`, which
-  for `path === "/"` is `"/*"` — every route on the parent app. Mount on a
-  dedicated base path instead, or, if the handler must sit at the root, leave
-  `layout()`/`middleware()` unset and apply them per route inside `register()`.
+- **Route types survive only through the method chain.** A route registered as a
+  separate statement (`app.get(...);`) still serves requests but is missing from
+  `hc` and `testClient`. Write route modules and `app.route()` mounting as chains.
+- **A path-less `.use()` runs only for routes registered after it.** Put
+  `.use(jsxRenderer(Layout))` and guards at the start of the chain; a route placed
+  before them skips them.
+- **`app.route("/", subApp)` leaks the sub-app's path-less middleware to the
+  whole app.** A path-less `.use(...)` registers under Hono's internal `"*"`;
+  mounting merges that to `"<path>/*"` via `mergePath`, which for
+  `path === "/"` is `"/*"` — every route on the parent app. Mount on a
+  dedicated base path instead, or, if the sub-app must sit at the root, apply
+  the layout and middleware per route.
 - **`secure` cookie attribute is OFF by default** (session cookie, remember
   token). Set `secure: true` explicitly in production via the cookie options.
 - **`storage.destroy(session)` always wins over `SessionAccessor`'s auto-commit.**

@@ -2,7 +2,7 @@
 
 This page goes deeper than the [README](../README.md)'s four design
 principles — it explains *why* each choice was made, how requests flow
-through a `RouteHandler`, and how dependency injection works without a
+through an app's route modules, and how dependency injection works without a
 provider container. If you just want to write your first route, start with
 [Getting started](./getting-started.md).
 
@@ -27,21 +27,24 @@ surface — routing, rendering, middleware — is Hono, unmodified. This keeps
 the framework's surface area small and means Hono's own documentation and
 ecosystem apply directly to an oven app.
 
-### 2. One idiom: the class
+### 2. Classes for behavior, plain Hono apps for routes
 
-Every stateful concept in oven — `RouteHandler`, `Model`, `Session`,
-`Storage`, `Mailer`, `ContextAccessor` — is expressed the same way: an
-abstract base class that wires up shared behavior in its constructor or
-shared methods, plus a concrete subclass that only implements the
-few methods specific to it. There is exactly one idiom to learn, and it
-composes with plain OOP inheritance (a `BooksHandler` can extend an
-`AdminHandler` that extends `RouteHandler`, layering shared `layout()`/
-`middleware()` along the way — see [Request lifecycle](#request-lifecycle)
-below). This was chosen over alternatives such as file-based routing,
-`defineHandler()` + glob discovery, or a hook/lifecycle-callback system,
-specifically because those approaches introduce a second implicit
-vocabulary (directory conventions, discovery order, hook names) on top of
-what the language already gives you for free through classes.
+Every stateful concept in oven — `Model`, `Session`, `Storage`, `Mailer`,
+`ContextAccessor` — is expressed the same way: an abstract base class that
+wires up shared behavior in its constructor or shared methods, plus a
+concrete subclass that only implements the few methods specific to it.
+
+Routes are the exception, deliberately: a route module is a plain Hono app
+written as one method chain. Hono carries each route's path, parameters,
+validator input, and response type through the value each chained call
+returns; a subclass that registers routes as statements inside a method
+loses that type, and with it the typed `hc` client and `testClient`. A plain
+chain also has none of the constraints a `Hono` subclass imposes (reserved
+member names, hooks that run before subclass fields are initialized), and it
+is the form Hono's own documentation uses, so it reads the same to anyone
+who knows Hono. oven's own mountable sub-apps (`AdminPanel`,
+`MailPreviewHandler`) remain classes because their routes are not part of an
+application's typed API.
 
 ### 3. Backend-agnostic
 
@@ -63,7 +66,7 @@ oven deliberately has no file-based routing, no `defineHandler()` + glob
 auto-discovery, no two-phase named-slot templating, no
 provider/DI container, and no lifecycle-hook system (`onMount`,
 `beforeRender`, etc.). Every route, every middleware, and every wired-up
-service is an explicit line of code: a `register()` method, an
+service is an explicit line of code: a chained route, an
 `app.route()` call, an `app.use(someAccessor.register)` call. This is a
 direct consequence of principle 2 — once classes and constructors are the
 one idiom, "magic" wiring mechanisms are actively redundant, and their
@@ -71,50 +74,39 @@ absence means `grep`-ing for a symbol always finds every place it's used.
 
 ## Request lifecycle
 
-A `RouteHandler` subclass wires itself up inside its own constructor, in a
-fixed order: `layout()` → `middleware()` → `register()`. Because this
-happens in the base class's constructor, the three hooks must be written as
-methods (or getters), not class fields — a class field on a subclass is only
-assigned *after* `super()` returns, which is too late for the base
-constructor to see it.
+An application is assembled in `src/main.ts` from explicit calls. Hono runs
+path-less middleware registered on an app, in registration order, before the
+routes it matches, and a parent app's middleware before a mounted sub-app's:
 
 ```mermaid
 sequenceDiagram
-    participant App as main.ts
-    participant RH as RouteHandler (constructor)
-    participant Sub as Subclass hooks
+    participant Client
+    participant App as main.ts app
+    participant Domain as domain routes (sub-app)
+    participant Route as route handler
 
-    App->>RH: new BooksHandler()
-    RH->>Sub: layout()
-    Sub-->>RH: LayoutComponent | null
-    alt layout returned
-        RH->>RH: use(jsxRenderer(layout))
-    end
-    RH->>Sub: middleware()
-    Sub-->>RH: MiddlewareHandler[]
-    RH->>RH: use(...middleware) in array order
-    RH->>Sub: register()
-    Sub-->>RH: this.get/post/resources(...) calls
-    App->>App: app.route("/books", handlerInstance)
+    Client->>App: request
+    App->>App: app.use(...) middleware (session, CSRF, DB accessors)
+    App->>Domain: app.route("/books", booksRoutes)
+    Domain->>Domain: .use(jsxRenderer(layout)), .use(guards)
+    Domain->>Route: matched .get/.post handler
+    Route-->>Client: c.render(...) / c.json(...) / c.redirect(...)
 ```
 
-A few consequences fall out of this fixed order:
+A few consequences fall out of this order:
 
-- Middleware registered in `middleware()` always runs *after* the renderer
-  from `layout()` is applied, so it can assume `c.render` is already
-  available.
-- Because `register()` runs last, routes declared there can rely on
-  anything set up by earlier middleware (session, CSRF token, auth guard,
-  etc.).
-- Inheriting a namespace-level base class (e.g. an `AdminHandler` that
-  implements `layout()`/`middleware()` once) and calling
-  `super.middleware()` from a subclass composes the middleware chains in
-  declaration order — this is the mechanism intended for grouping routes
-  under a shared layout/auth policy without introducing a separate grouping
-  API.
-- `app.route(prefix, handlerInstance)` is plain Hono; `RouteHandler` adds no
-  mounting API of its own; the mounting line in `main.ts` is the only place
-  route trees get assembled.
+- Middleware registered on `main.ts`'s app (session, CSRF, database
+  accessors) runs before every domain's routes, so handlers can call
+  `useDatabase(c)` or `sessionAccessor.use(c)` directly.
+- A sub-app's `.use(jsxRenderer(layout))` makes `c.render` available to
+  the routes registered after it on that sub-app, so put `.use()` calls at
+  the start of the chain. A route registered before a middleware never
+  passes through it.
+- Sharing a layout or guard across several domains means applying it on an
+  intermediate app and mounting those domains under it; there is no separate
+  grouping API.
+- `app.route(prefix, subApp)` is plain Hono. The mounting lines in `main.ts`
+  are the only place route trees get assembled.
 
 ## Dependency injection
 
@@ -143,11 +135,11 @@ anything derived from per-request state such as bindings or credentials
 handed to each invocation; `scope: "app"` memoizes the first result for the
 process's lifetime, right for values that are safe and expensive to build
 once, such as a connection pool). The convention is for the app's own
-wiring module (e.g. `src/lib/db.ts`) to construct one `ScopedValueAccessor`
+wiring module (e.g. `src/db/client.ts`) to construct one `ScopedValueAccessor`
 instance privately and export only the `register`/`use` pair:
 
 ```ts
-// src/lib/db.ts
+// src/db/client.ts
 import { ScopedValueAccessor } from "@tknf/oven/routing";
 import { drizzle } from "drizzle-orm/libsql";
 
@@ -168,8 +160,8 @@ app.use(registerDatabase);
 ```
 
 ```ts
-// inside a handler's register()
-this.get("/", (c) => {
+// src/domains/books/routes.ts
+export const booksRoutes = new Hono<AppEnv>().get("/", (c) => {
   const db = useDatabase(c);
   // ...
 });
@@ -206,7 +198,7 @@ deliberately excluded from it and must be imported from their own subpath.
 | `@tknf/oven/model` | `SQLiteModel`, `PgModel`, `MySqlModel`, `StaleRecordError` — a thin base over Drizzle |
 | `@tknf/oven/pagination` | Pagination helpers for query results |
 | `@tknf/oven/realtime` | `Broadcaster`, backend adapters, `WebSocketHandler`, `ChannelAuthorizer` |
-| `@tknf/oven/routing` | `RouteHandler`, `ContextAccessor`, `ValueAccessor`, `ScopedValueAccessor` |
+| `@tknf/oven/routing` | `ContextAccessor`, `ValueAccessor`, `ScopedValueAccessor`, `NamedRoutes`, `ErrorPages`, `healthCheck` |
 | `@tknf/oven/security` | `Csrf`, `SecureHeaders`, `RateLimiter`, `TrustedHost`, `Encrypter`, `UrlSigner`, `MaintenanceMode` |
 | `@tknf/oven/session` | `Session`, `SessionStorage`, `CookieSessionStorage`, `KeyValueSessionStorage`, and backend adapters |
 | `@tknf/oven/storage` | `Storage` abstraction, `S3Storage`, `GoogleCloudStorage`, `InMemoryStorage`, `S3UrlSigner` |
@@ -219,33 +211,19 @@ deliberately excluded from it and must be imported from their own subpath.
 
 ## Class-based idiom
 
-A handful of constraints fall directly out of subclassing `Hono` and
-building the register/use pattern on class fields. They're worth knowing
-before you hit them:
+A couple of constraints fall directly out of building the register/use
+pattern on class fields. They're worth knowing before you hit them:
 
-- **Reserved names.** `RouteHandler` extends `Hono` directly, so any name
-  Hono itself uses as an instance field or method (`get`, `post`, `put`,
-  `delete`, `patch`, `options`, `all`, `on`, `use`, `router`, `getPath`,
-  `routes`, `fetch`, `request`, `route`, `basePath`, `mount`, `notFound`,
-  `onError`, etc.) cannot be reused as a subclass hook or field name.
-  `routes` in particular is Hono's own route registry field
-  (`routes = []`); shadowing it with a same-named subclass method produces
-  `this.routes is not a function` once `super()` runs.
-- **Hooks must be methods, not class fields.** `layout()`, `middleware()`,
-  and `ContextAccessor#handle()` are all invoked from code that runs inside
-  the *base* class's constructor. A subclass's own class-field
-  initializers run only *after* `super()` returns, so a class field like
-  `layout = MyLayout` would still be `undefined` at the point the base
-  constructor reads it. Write these as ordinary methods
-  (`protected layout() { return MyLayout; }`) instead.
-- **`register`/`use` are the deliberate exception.** Unlike the hooks above,
+- **Accessor hooks must be methods, not class fields.**
+  `ContextAccessor#handle()` is invoked through `register`, which the base
+  class builds while its constructor runs. Write overrides as ordinary
+  methods (`protected async handle(c, next) { ... }`) instead of class
+  fields.
+- **`register`/`use` are the deliberate exception.** Unlike `handle()`,
   `ContextAccessor#register` and `#use` *are* class fields (arrow
   functions) — because they're meant to be detached from their instance and
   passed by reference (`app.use(accessor.register)`). A prototype method
   extracted the same way (`const fn = accessor.register`) would lose its
   `this` binding; an arrow-function field captures it permanently at
   construction time.
-- **The Hono RPC client (`hc`) type chain is not preserved** across
-  `RouteHandler` subclassing. This is an accepted tradeoff — oven targets
-  server-rendered apps (Hono/JSX SSR + Turbo/Stimulus), where the `hc`
-  client isn't part of the workflow to begin with.
+

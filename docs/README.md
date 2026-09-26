@@ -7,14 +7,14 @@ subpath export (`@tknf/oven/<name>`).
 ## Start here
 
 - [Getting started](./getting-started.md) — install oven and write your
-  first `RouteHandler`, layout, and route; follow the
+  first route module and layout; follow the
   [application structure](./getting-started.md#application-structure) and feature-selection conventions.
 - [Concepts](./concepts.md) — the design principles, the request lifecycle,
   dependency injection, and the full subpath export map.
 
 ## Core layers
 
-- [Routing](./routing.md) — `RouteHandler`, `ContextAccessor`,
+- [Routing](./routing.md) — typed route modules on plain Hono, `ContextAccessor`,
   `NamedRoutes`, `ErrorPages`, health checks (`@tknf/oven/routing`).
 - [View](./view.md) — `View` multi-format responses, snippets for
   htmx/Turbo, `ViewHelpers`, fragment caching (`@tknf/oven/view`).

@@ -21,7 +21,7 @@ functions for that axis.
 ## Minimal example
 
 ```ts
-// src/forms/redeem_code_form.ts
+// src/domains/redeem/form.ts
 import { z } from "zod";
 import { Form } from "@tknf/oven/form";
 import type { FieldDef } from "@tknf/oven/form";
@@ -43,8 +43,8 @@ export class RedeemCodeForm extends Form<typeof redeemCodeSchema, "code"> {
 ```
 
 ```ts
-// inside a handler's register()
-this.post("/redeem", async (c) => {
+// src/domains/redeem/routes.tsx
+export const redeemRoutes = new Hono<AppEnv>().post("/", async (c) => {
   const form = new RedeemCodeForm();
   const result = await form.validate(await c.req.parseBody());
 

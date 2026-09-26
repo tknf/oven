@@ -25,9 +25,8 @@ stays a thin DB layer that trusts already-normalized input.
 ## Minimal example
 
 ```ts
-// src/models/item_model.ts
+// src/domains/items/schema.ts
 import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
-import { SQLiteModel } from "@tknf/oven/model";
 
 export const items = sqliteTable("items", {
   id: text("id").primaryKey(),
@@ -37,6 +36,12 @@ export const items = sqliteTable("items", {
   updatedAt: integer("updated_at").notNull(),
   deletedAt: integer("deleted_at"),
 });
+```
+
+```ts
+// src/domains/items/model.ts
+import { SQLiteModel } from "@tknf/oven/model";
+import { items } from "./schema.js";
 
 const schema = { items };
 
@@ -53,7 +58,8 @@ export class ItemModel extends SQLiteModel<typeof items, typeof items.id, typeof
 ```ts
 import { drizzle } from "drizzle-orm/libsql";
 import { createClient } from "@libsql/client";
-import { ItemModel } from "./src/models/item_model.js";
+import { ItemModel } from "./src/domains/items/model.js";
+import { items } from "./src/domains/items/schema.js";
 
 const db = drizzle(createClient({ url: "file:./data.sqlite" }), { schema: { items } });
 const model = new ItemModel(db);
@@ -202,13 +208,13 @@ operands, so it reads correctly whether a caller passes a `where` or not),
 and override every method that could otherwise leak across tenants.
 
 ```ts
-// src/models/tenant_item_model.ts
+// src/domains/items/tenant_model.ts
 import { and, eq } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import type { BaseSQLiteDatabase } from "drizzle-orm/sqlite-core";
 import { SQLiteModel } from "@tknf/oven/model";
 import type { IdGenerator } from "@tknf/oven/support";
-import { items } from "../db/schema.js"; // has an `accountId` column
+import { items } from "./schema.js"; // has an `accountId` column
 
 const schema = { items };
 
@@ -459,8 +465,7 @@ test("SQLiteModel's public surface hasn't grown past what TenantItemModel scopes
 
 ## See also
 
-- [Concepts](./concepts.md) — why oven has one idiom per stateful concept
-  (`Model` is one instance of the same class-based pattern as
-  `RouteHandler`), and the backend-agnostic design principle.
+- [Concepts](./concepts.md) — why oven expresses stateful concepts such as
+  `Model` as abstract base classes, and the backend-agnostic design principle.
 - [Forms](./forms.md) — where input validation belongs; models trust
   already-normalized input.

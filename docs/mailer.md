@@ -17,7 +17,7 @@ template base that composes a subject/HTML/text body from typed `props` and
 sends through an injected `Mailer`; and `DeliverMailJob`, a ready-made `Job`
 (`@tknf/oven/jobs`) that puts a `Mailer#send` call on the job queue, so mail
 delivery doesn't block the request that triggered it. `MailPreviewHandler`
-rounds this out with a `RouteHandler` you mount in development to browse
+rounds this out with a Hono sub-app you mount in development to browse
 composed `MailMessage`s in the browser without actually sending them.
 
 ## Minimal example

@@ -20,7 +20,7 @@ back through `use(c)`.
 ## Minimal example
 
 ```ts
-// src/lib/db.ts
+// src/db/client.ts
 import { DatabaseAccessor } from "@tknf/oven/database";
 import { drizzle } from "drizzle-orm/libsql";
 
@@ -41,8 +41,8 @@ app.use(registerDatabase);
 ```
 
 ```ts
-// inside a handler's register()
-this.get("/", (c) => {
+// src/domains/books/routes.ts
+export const booksRoutes = new Hono<AppEnv>().get("/", (c) => {
   const db = useDatabase(c);
   // ...
 });
@@ -53,7 +53,7 @@ this.get("/", (c) => {
 **Exporting only the `register`/`use` pair, keeping the accessor
 private.** This is the same wiring convention as every other
 `ContextAccessor`-based service in oven (`SessionAccessor`, `Guard`,
-etc.) — the app's own `src/lib/db.ts` module owns the instance, and
+etc.) — the app's own `src/db/client.ts` module owns the instance, and
 callers never see `DatabaseAccessor` itself:
 
 ```ts
@@ -81,12 +81,38 @@ connection, hand it straight to a `Model` subclass's constructor (see
 [Models](./models.md)) the same way you'd pass any other Drizzle `db`:
 
 ```ts
-this.get("/books", async (c) => {
+export const booksRoutes = new Hono<AppEnv>().get("/", async (c) => {
   const db = useDatabase(c);
   const books = await new BookModel(db).paginate({ limit: 20 });
   return c.json(books);
 });
 ```
+
+**Seeding the database.** oven has no seed runtime. Write `db/seed.ts` as a
+plain script against the same schema module the app uses. Drizzle's
+[`drizzle-seed`](https://orm.drizzle.team/docs/seed-overview) package fills
+tables with deterministic generated data (the same `seed` number always
+produces the same rows) and `reset` clears them; rows that must have exact
+values, such as a first administrator or reference data, are inserted
+explicitly:
+
+```ts
+// db/seed.ts
+import { createClient } from "@libsql/client";
+import { drizzle } from "drizzle-orm/libsql";
+import { reset, seed } from "drizzle-seed";
+import * as schema from "../src/db/schema.js";
+
+const db = drizzle(createClient({ url: "file:./dev.sqlite" }), { schema });
+
+await reset(db, schema);
+await seed(db, schema, { count: 20, seed: 1 });
+await db.insert(schema.categories).values([{ id: "general", name: "General" }]);
+```
+
+Run it through a package script with a TypeScript runner of your choice (for
+example `"db:seed": "tsx db/seed.ts"`). `drizzle-seed` is an application
+dependency; oven does not depend on it.
 
 ## Gotchas / Security notes
 

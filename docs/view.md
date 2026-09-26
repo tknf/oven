@@ -2,16 +2,19 @@
 
 ## What / Why
 
-`@tknf/oven/view` covers what happens after `RouteHandler` (see
-[Getting started](./getting-started.md)) has matched a route and needs to
+`@tknf/oven/view` covers what happens after a route (see
+[Getting started](./getting-started.md)) has matched a request and needs to
 produce a `Response`. It's not one API but four small, independent pieces
 that solve different rendering problems, all sharing the same backend-agnostic
 principle (they only depend on `hono/jsx`, `Context`, and framework-internal
 accessors — never on a specific frontend stack or platform binding):
 
-- **`View`** — one class represents one resource, in as many wire formats
+- **`View`** — one class represents one screen or representation of a
+  resource (a list, a detail page), in as many wire formats
   (HTML/JSON/CSV/XML) as it implements; `respond` picks a format via
-  `Accept` content negotiation.
+  `Accept` content negotiation. A domain keeps one per screen under
+  `views/` (e.g. `views/list.tsx`, `views/detail.tsx`), or in a single
+  `view.tsx` while it has only a few.
 - **`renderSnippet` / `renderSnippetStream`** — return a bare JSX fragment
   as a `Response`, without going through a layout. For partial-page
   updates (htmx, Turbo Frames/Streams).
@@ -30,10 +33,10 @@ everything that renders *within* it, or bypasses it entirely.
 
 ```mermaid
 flowchart LR
-    Request --> RouteHandler
-    RouteHandler -->|"full page (uses layout)"| View
-    RouteHandler -->|"fragment (no layout)"| renderSnippet
-    RouteHandler -->|"fragment, streamed"| renderSnippetStream
+    Request --> Route["Route handler"]
+    Route -->|"full page (uses layout)"| View
+    Route -->|"fragment (no layout)"| renderSnippet
+    Route -->|"fragment, streamed"| renderSnippetStream
     View -->|"respond() negotiates Accept"| Response
     JSXComponent["JSX component (inside a layout)"] -->|useRequestContext| ViewHelpers
     JSXComponent -->|"skip re-render on hit"| cacheFragment
@@ -44,18 +47,18 @@ flowchart LR
 A resource that renders as either HTML or JSON depending on the `Accept`
 header:
 
-```ts
-// src/views/book_view.ts
+```tsx
+// src/domains/books/views/detail.tsx
 import type { Context, Env } from "hono";
 import { View } from "@tknf/oven/view";
 
-export class BookView<E extends Env> extends View<E> {
+export class BookDetailView<E extends Env> extends View<E> {
   constructor(private readonly book: { id: string; title: string }) {
     super();
   }
 
   html(c: Context<E>) {
-    return c.html(`<h1>${this.book.title}</h1>`);
+    return c.html(<h1>{this.book.title}</h1>);
   }
 
   json(c: Context<E>) {
@@ -65,15 +68,13 @@ export class BookView<E extends Env> extends View<E> {
 ```
 
 ```ts
-// src/handlers/books_handler.ts
-import { RouteHandler } from "@tknf/oven/routing";
-import { BookView } from "../views/book_view.js";
+// src/domains/books/routes.ts
+import { Hono } from "hono";
+import { BookDetailView } from "./views/detail.js";
 
-export class BooksHandler extends RouteHandler {
-  protected register() {
-    this.get("/:id", (c) => new BookView({ id: c.req.param("id"), title: "..." }).respond(c));
-  }
-}
+export const booksRoutes = new Hono().get("/:id", (c) =>
+  new BookDetailView({ id: c.req.param("id"), title: "..." }).respond(c),
+);
 ```
 
 A request with `Accept: application/json` gets the JSON representation; any
@@ -135,8 +136,8 @@ with no layout wrapping it:
 import { renderSnippet } from "@tknf/oven/view";
 import { jsx } from "hono/jsx";
 
-this.get("/items/:id/edit-form", (c) =>
-  renderSnippet(c, jsx("div", { id: "item" }, "..."))
+export const itemsRoutes = new Hono().get("/:id/edit-form", (c) =>
+  renderSnippet(c, jsx("div", { id: "item" }, "...")),
 );
 ```
 
@@ -150,12 +151,12 @@ current user — you pass in existing accessors, and it exposes them as
 zero-argument functions callable from inside a JSX component:
 
 ```ts
-// src/views/helpers.ts
+// src/lib/view_helpers.ts
 import { ViewHelpers } from "@tknf/oven/view";
-import { csrf } from "../security.js";
-import { sessionAccessor } from "../session.js";
-import { accountGuard } from "../auth.js";
-import { t } from "../i18n.js";
+import { csrf } from "./security.js";
+import { sessionAccessor } from "./session.js";
+import { accountGuard } from "./auth.js";
+import { t } from "./i18n.js";
 
 export const helpers = new ViewHelpers({
   csrfToken: csrf.csrfToken,

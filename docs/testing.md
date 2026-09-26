@@ -39,6 +39,39 @@ flowchart LR
 
 ## Common tasks
 
+### Mirror `src/` under `test/`
+
+Application tests live under `test/`, mirroring `src/`: a domain's tests go in
+`test/domains/<domain>/` (for example `test/domains/books/routes.test.ts`), and
+tests for `src/lib/` or `src/db/` go in `test/lib/` and `test/db/`. Tests that
+exercise several domains or the assembled app from `src/main.ts` go in
+`test/integration/`, and shared setup (a `createTestDb` wrapper, factories used
+by several domains) goes in `test/support/`. Keeping every test out of `src/`
+means the build never has to exclude test files.
+
+### Call routes with typed arguments through `testClient`
+
+A route module written as a Hono method chain keeps its route types, so
+`testClient` from `hono/testing` catches a wrong path, parameter, or payload
+at type-check time:
+
+```ts
+// test/domains/books/routes.test.ts
+import { testClient } from "hono/testing";
+import { describe, expect, test } from "vite-plus/test";
+import { booksRoutes } from "../../../src/domains/books/routes.js";
+
+describe("booksRoutes", () => {
+  test("returns the requested book id", async () => {
+    const res = await testClient(booksRoutes)[":id"].$get({ param: { id: "42" } });
+    expect(await res.json()).toEqual({ id: "42" });
+  });
+});
+```
+
+`app.request()` remains the tool for raw requests, such as a form post with
+custom headers or a cookie.
+
 ### Test model code against a real (temporary) database
 
 `createTestDb` takes your full Drizzle schema module and the folder your
@@ -48,9 +81,10 @@ production behavior. Clean up the temp directory in `afterEach` via
 `client.close()`:
 
 ```ts
+// test/domains/books/model.test.ts
 import { afterEach, describe, expect, test } from "vite-plus/test";
 import { createTestDb } from "@tknf/oven/test";
-import * as schema from "./schema.js";
+import * as schema from "../../../src/db/schema.js";
 
 describe("BookModel", () => {
   let cleanup: (() => void) | undefined;
@@ -63,7 +97,7 @@ describe("BookModel", () => {
   test("insert then select round-trips", async () => {
     const { client, db } = await createTestDb({
       schema,
-      migrationsFolder: new URL("./migrations", import.meta.url).pathname,
+      migrationsFolder: new URL("../../../db/migrations", import.meta.url).pathname,
     });
     cleanup = () => client.close();
 

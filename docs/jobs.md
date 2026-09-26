@@ -46,7 +46,7 @@ flowchart LR
 ## Minimal example
 
 ```ts
-// src/jobs/greet_job.ts
+// src/domains/greetings/jobs/greet.ts
 import { Job } from "@tknf/oven/jobs";
 
 type GreetPayload = { name: string };

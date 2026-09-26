@@ -7,21 +7,25 @@ oven delivers a convention-driven development experience on the Hono + Hono/JSX 
 ## 30-second example
 
 ```ts
+// src/domains/books/routes.ts
 import { Hono } from "hono";
-import { RouteHandler } from "@tknf/oven/routing";
 
-class BooksHandler extends RouteHandler {
-	protected register() {
-		this.get("/", (c) => c.text("books-index"));
-	}
-}
+export const booksRoutes = new Hono()
+	.get("/", (c) => c.text("books-index"))
+	.get("/:id", (c) => c.json({ id: c.req.param("id") }));
+```
 
-const app = new Hono();
-app.route("/books", new BooksHandler());
+```ts
+// src/main.ts
+import { Hono } from "hono";
+import { booksRoutes } from "./domains/books/routes.js";
+
+const app = new Hono().route("/books", booksRoutes);
+export type AppType = typeof app;
 export default app;
 ```
 
-`RouteHandler` is an abstract base class that extends Hono. Override the `register()` (and optionally `layout()` / `middleware()`) methods, then mount an instance with the same `app.route()` you already use.
+Routes are plain Hono apps written as method chains, so Hono's `hc` client and `testClient` stay fully typed. Each feature lives in its own domain directory (`src/domains/books/`) beside its schema, model, form, policy, and views.
 
 ## Installation
 
@@ -33,8 +37,8 @@ Peer dependencies: `hono@^4.12.27` and `drizzle-orm@^0.45.2` are required. Add `
 
 ## Documentation
 
-- [Getting started](docs/getting-started.md) — installation, project layout, and your first `RouteHandler`.
-- [Concepts](docs/concepts.md) — the class-based idiom shared across RouteHandler, Model, Session, Storage, and the rest.
+- [Getting started](docs/getting-started.md) — installation, the domain-based project layout, and your first route.
+- [Concepts](docs/concepts.md) — why routes are plain Hono chains while Model, Session, Storage, and the rest share one class-based idiom.
 - [Documentation index](docs/README.md) — a guide per subpath export: routing, view, models, forms, sessions, auth, security, storage/kv/cache, jobs, realtime, mailer, i18n, admin, pagination, audit, database, datasource, logging, helpers, support, vite, deployment, and testing.
 
 ## Codex skill
@@ -60,13 +64,13 @@ oven targets Web-standard `Request`/`Response` and runs anywhere Hono does, incl
 ## Design principles
 
 1. **Stay a thin wrapper over Hono** — lean on Hono's built-ins (jsx-renderer, cookie helpers, languageDetector, etc.) as much as possible. The one intentional replacement is CSRF (Origin checking → token-based).
-2. **One idiom: the class** — from Session / Storage / Mailer / Model / RouteHandler down to the wiring layer (`ContextAccessor` and friends), everything uses the same vocabulary of an abstract base class plus inheritance.
+2. **Classes for behavior, plain Hono for routes** — Session / Storage / Mailer / Model and the wiring layer (`ContextAccessor` and friends) share the vocabulary of an abstract base class plus inheritance; routes stay plain Hono method chains so their types reach `hc` and `testClient`.
 3. **Backend-agnostic** — the core depends only on abstractions such as `KeyValueStore` and `Storage`. Cloudflare KV / R2 are just one adapter.
-4. **No magic** — no file-based routing, no lifecycle hooks, no auto-discovery. Explicit declaration and inheritance only.
+4. **No magic** — no file-based routing, no lifecycle hooks, no auto-discovery or app registry. Explicit declaration only.
 
 ## What it provides
 
-RouteHandler (extends Hono), Model (a thin base over Drizzle), Form (Standard Schema), Session (server-side + flash), CSRF, Guard (authentication), Storage (R2/S3 adapters with presigning split out), KeyValueStore, Mailer (with a template layer), RateLimiter, DI (typed context `register`/`use`), Layout, i18n catalogs, Queue/Scheduled, assorted helpers, and a test harness (`@tknf/oven/test`).
+A domain-based project layout and generator, Model (a thin base over Drizzle), Form (Standard Schema), Session (server-side + flash), CSRF, Guard (authentication), Storage (R2/S3 adapters with presigning split out), KeyValueStore, Mailer (with a template layer), RateLimiter, DI (typed context `register`/`use`), Layout, i18n catalogs, Queue/Scheduled, assorted helpers, and a test harness (`@tknf/oven/test`).
 
 ## Development
 

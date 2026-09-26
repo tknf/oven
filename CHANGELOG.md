@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** `AdminPanel` and `MailPreviewHandler` now extend `Hono` directly instead of `RouteHandler`. Mounting them with `app.route()` is unchanged, and mounting them inside a method chain keeps the route types of the app's other routes.
+- **Breaking:** `oven generate` now takes `<type> <domain> [name]` and writes into `src/domains/<domain>/`: `routes`, `schema`, `model`, `form`, `policy`, and `admin` become `<type>.ts`, `view` becomes `views/<name>.tsx`, and `job` becomes `jobs/<name>.ts`. The `admin-resource` type is renamed `admin`, the model template imports its table from the new `schema` template, and `--dialect` applies to both `schema` and `model`.
+- The documented application layout now groups each feature in a domain directory (`src/domains/<domain>/`), keeps database tooling in `db/` (`db/config.ts`, `db/migrations/`, `db/seed.ts`) and runtime database code in `src/db/`, and mirrors `src/` under `test/`.
+
+### Removed
+
+- **Breaking:** Removed `RouteHandler` and `ResourceActions` from `@tknf/oven/routing`, including `resources()`. Write each route module as a plain Hono app built with one method chain and mount it with `app.route()`; apply layouts with `.use(jsxRenderer(layout))` and middleware with `.use()` at the start of the chain. Route types now reach Hono's `hc` client and `testClient`.
+- **Breaking:** Removed the `handler` and `seed` generator types. Write a seed script in `db/seed.ts` instead, for example with `drizzle-seed`.
+
 ## [2.0.0] - 2026-09-08
 
 ### Added

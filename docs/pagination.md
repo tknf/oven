@@ -30,30 +30,26 @@ None of this replaces `Model#paginate`; it exists to sit on either side of it.
 ## Minimal example
 
 ```ts
-// src/handlers/items_handler.ts
-import { RouteHandler } from "@tknf/oven/routing";
+// src/domains/items/routes.ts
+import { Hono } from "hono";
 import { decodeCursor, encodeCursor, parsePaginationQuery } from "@tknf/oven/pagination";
-import { items } from "./items_model.js"; // your Model subclass
+import { items } from "./model.js"; // an instance of your Model subclass
 
-export class ItemsHandler extends RouteHandler {
-  protected register() {
-    this.get("/", async (c) => {
-      const { cursor, limit } = parsePaginationQuery(c, {
-        defaultLimit: 20,
-        maxLimit: 100,
-        decodeCursor,
-      });
+export const itemsRoutes = new Hono().get("/", async (c) => {
+  const { cursor, limit } = parsePaginationQuery(c, {
+    defaultLimit: 20,
+    maxLimit: 100,
+    decodeCursor,
+  });
 
-      const page = await items.paginate({ cursor, limit });
+  const page = await items.paginate({ cursor, limit });
 
-      return c.json({
-        rows: page.rows,
-        hasMore: page.hasMore,
-        nextCursor: page.nextCursor === null ? null : encodeCursor(page.nextCursor),
-      });
-    });
-  }
-}
+  return c.json({
+    rows: page.rows,
+    hasMore: page.hasMore,
+    nextCursor: page.nextCursor === null ? null : encodeCursor(page.nextCursor),
+  });
+});
 ```
 
 ## Common tasks

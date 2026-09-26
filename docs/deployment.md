@@ -80,7 +80,7 @@ flowchart LR
 ```
 
 **HTTP requests** are handled by plain Hono — oven adds no wrapping here.
-`RouteHandler` instances are ordinary Hono apps, so the Worker's `fetch`
+An oven app is an ordinary Hono app, so the Worker's `fetch`
 handler is just `app.fetch` (or `export default app` directly, since Hono
 apps already implement `ExportedHandler["fetch"]`).
 

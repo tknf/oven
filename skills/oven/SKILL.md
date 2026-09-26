@@ -1,6 +1,6 @@
 ---
 name: oven
-description: Build or modify SSR full-stack applications that import `@tknf/oven` or its subpaths. Use for oven APIs, class-based extension points, `register`/`use` wiring, runtime adapters, testing, and security defaults.
+description: Build or modify SSR full-stack applications that import `@tknf/oven` or its subpaths. Use for oven APIs, the domain-based project layout, typed Hono route modules, class-based extension points, `register`/`use` wiring, runtime adapters, testing, and security defaults.
 ---
 
 # Building with oven (`@tknf/oven`)
@@ -16,8 +16,8 @@ API shapes against the installed package rather than guessing.
 For each application responsibility, use **oven → Hono → application-specific
 implementation**: first check oven's standard capabilities and documented
 extension points; use Hono for only the requirements they cannot meet; add a
-custom mechanism only for the remaining gap. Ordinary domain logic inside an
-oven handler, model method, schema, policy, or injected callback is an intended
+custom mechanism only for the remaining gap. Ordinary domain logic inside a
+route handler, model method, schema, policy, or injected callback is an intended
 extension, not a reason to replace the surrounding oven layer.
 
 Explicit user instructions take precedence over existing project conventions;
@@ -41,34 +41,48 @@ exception justification. The priority rule does not ban them.
 
 | Responsibility | Start with oven                                                                              | Intended extension                                                                                                           |
 | -------------- | -------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| Routing        | `RouteHandler`, `NamedRoutes`; `resources()` for matching CRUD actions                       | `register()`, `middleware()`, `layout()`; mount with Hono `app.route()`                                                      |
+| Routing        | A Hono sub-app per domain (`routes.ts`), `NamedRoutes`, `ErrorPages`                         | Chain routes with `.get()`/`.post()`; `.use()` for layout and middleware; mount with Hono `app.route()`                      |
 | Forms          | `Form`, `FormBinding`, `FormView`                                                            | `schema()` with Standard Schema, `fields()`, `validate()`/`bind()`; render bound fields with Hono/JSX when needed            |
 | Persistence    | `SQLiteModel` / `PgModel` / `MySqlModel`                                                     | `table` / `primaryKey` getters; domain methods using the protected Drizzle `db`                                              |
-| Views/layouts  | `View`, `LayoutComponent` / `LayoutProps`, snippet helpers                                   | Representation methods and `formats()`; compose Hono/JSX through `RouteHandler.layout()` and `c.render()`                    |
+| Views/layouts  | `View`, `LayoutComponent` / `LayoutProps`, snippet helpers                                   | Representation methods and `formats()`; compose Hono/JSX through `.use(jsxRenderer(layout))` and `c.render()`                |
 | Authentication | `Guard`, `Policy`, `SessionAccessor`; built-in flows when appropriate                        | Request `authenticate` or identity/provider/session callbacks and policy methods; admin operators use admin account services |
 | CSRF           | `Csrf` with token issuance and verification middleware                                       | Inject the session; wire `verify`, retrieve `csrfToken(c)`, and pass it to `FormView` or `X-CSRF-Token`                      |
 | Audit          | `SQLiteAuditLog` / `PgAuditLog` / `MySqlAuditLog`                                            | Explicit `record()` calls, or `AdminPanel` audit wiring; choose safe domain action/changes data                              |
-| Testing        | `createTestDb`, `defineFactory`, `actingAs`, `TestJobQueue`, `TestMailer`, `TestBroadcaster` | Exercise the Hono app with `app.request()`; use runtime integration tests for backend behavior                               |
+| Testing        | `createTestDb`, `defineFactory`, `actingAs`, `TestJobQueue`, `TestMailer`, `TestBroadcaster` | Call routes through Hono's `testClient` or `app.request()`; use runtime integration tests for backend behavior               |
 
 For native HTML CRUD forms, match the transport to the routes: `FormView`
-accepts `get`/`post`/`dialog` and defaults to `post`, while `resources()` maps
-update to `PATCH`/`PUT` and destroy to `DELETE`. For a no-JavaScript workflow,
-register explicit POST update/delete routes (for example `/:id/update` and
-`/:id/delete`) in `RouteHandler.register()`, keeping auth, CSRF, validation,
-and audit checks. This is an intended oven extension; neither a replacement
-router nor a custom form framework is needed. Do not assume a hidden method
-field changes the request method automatically.
+accepts `get`/`post`/`dialog` and defaults to `post`, and a browser form can
+only send `GET` or `POST`. For a no-JavaScript workflow, register explicit POST
+update/delete routes (for example `/:id/update` and `/:id/delete`), keeping
+auth, CSRF, validation, and audit checks. Do not assume a hidden method field
+changes the request method automatically.
 
-The canonical application layout is in the repository's
+## Application layout
+
+The canonical layout is in the repository's
 [`docs/getting-started.md` Application structure section](https://github.com/tknf/oven/blob/main/docs/getting-started.md#application-structure).
-Generator defaults are `src/handlers`, `models`, `forms`, `views`, `jobs`,
-`policies`, `admin`, and `seeds` (all under `src/`). Compose in `src/main.ts`;
-keep DB/service wiring in `src/lib/`, schema exports in `src/db/schema.ts`, and
-shared JSX layouts in `src/layouts/`. The model generator intentionally exports
-its table beside its class: re-export that table from the schema entry point
-rather than defining it twice. Migration configuration and output belong to the
-application; use its scripts and actual configured paths. These are defaults,
-not file discovery rules or a requirement to create unused directories.
+Each feature is a domain directory, `src/domains/<domain>/`, holding
+`routes.ts`, `schema.ts`, `model.ts`, `form.ts`, `policy.ts`, `admin.ts`,
+`views/*.tsx`, and `jobs/*.ts` as needed. File names are short; exported
+symbols carry the full name (`booksRoutes`, `BookModel`, `BooksListView`). A
+role may stay one file or become a directory as it grows. Domains may import
+each other's models and schemas; there is no app registry or discovery, so
+`src/main.ts` imports and mounts every domain's routes explicitly.
+
+- `src/db/client.ts` — driver creation and `DatabaseAccessor` wiring;
+  `src/db/schema.ts` re-exports every domain's `schema.ts`; other runtime SQL
+  (such as SQLite FTS5 queries) also lives in `src/db/`.
+- `db/config.ts` (drizzle-kit, passed with `--config`), `db/migrations/`, and
+  `db/seed.ts` hold database tooling. Use the app's scripts to generate
+  migrations; never write migration files by hand.
+- `src/layouts/` holds layouts shared across domains; `src/lib/` holds session,
+  auth, CSRF, audit, and other service composition.
+- Tests mirror `src/` under `test/` (`test/domains/<domain>/`), with
+  `test/integration/` for cross-domain flows and `test/support/` for shared
+  setup.
+
+`oven generate <type> <domain> [name]` writes into this layout; see
+[`references/subpaths.md`](references/subpaths.md).
 
 ## Design principles (internalize these)
 
@@ -76,14 +90,16 @@ not file discovery rules or a requirement to create unused directories.
    and Hono primitives at their documented integration boundaries. The deliberate
    CSRF replacement is token-based instead of Origin-only. Hono's documentation
    applies to the Hono APIs used by those boundaries.
-2. **One idiom: the class.** Everything — RouteHandler, Model, Session, Storage,
-   Mailer, ContextAccessor — is an abstract base class plus a concrete subclass
-   that implements a few methods. No second vocabulary to learn.
+2. **Classes for behavior, plain Hono for routes.** Model, Session, Storage,
+   Mailer, ContextAccessor, and the rest are an abstract base class plus a
+   concrete subclass that implements a few methods. Routes are plain Hono apps
+   written as one method chain, so their types reach `hc` and `testClient`.
 3. **Backend-agnostic.** The core depends on abstractions (`KeyValueStore`,
    `Storage`, `JobQueue`, `Broadcaster`). Cloudflare KV/R2/Queues and Node
    filesystem stores are just adapters — swap them at the composition root.
-4. **No magic.** No file-based routing, no auto-discovery, no lifecycle hooks.
-   Every route, middleware, and wired service is an explicit line of code.
+4. **No magic.** No file-based routing, no auto-discovery, no app registry, no
+   lifecycle hooks. Every route, middleware, and wired service is an explicit
+   line of code.
 
 ## Rule: verify signatures, don't guess
 
@@ -95,41 +111,35 @@ confirm against their installed types too.
 
 ## Your first route
 
-`RouteHandler` extends `Hono`. Subclass it, implement `register()`, and mount an
-instance with plain `app.route()`:
+A route module is a plain Hono app written as one method chain. Keep the chain
+intact — routes registered as separate statements work at runtime but drop out
+of the app's type:
 
 ```ts
-// src/handlers/books_handler.ts
-import { RouteHandler } from "@tknf/oven/routing";
+// src/domains/books/routes.ts
+import { Hono } from "hono";
 
-export class BooksHandler extends RouteHandler {
-	protected register() {
-		this.get("/", (c) => c.text("books-index"));
-	}
-}
+export const booksRoutes = new Hono()
+	.get("/", (c) => c.text("books-index"))
+	.get("/:id", (c) => c.json({ id: c.req.param("id") }));
 ```
 
 ```ts
 // src/main.ts
 import { Hono } from "hono";
-import { BooksHandler } from "./handlers/books_handler.js";
+import { booksRoutes } from "./domains/books/routes.js";
 
-const app = new Hono();
-app.route("/books", new BooksHandler());
+const app = new Hono().route("/books", booksRoutes);
+export type AppType = typeof app;
 export default app; // Cloudflare Workers; on Node pass app.fetch to your server
 ```
 
-Three hooks, **all written as methods (never class fields)** because they run
-inside the base constructor in a fixed order — `layout()` → `middleware()` →
-`register()`:
-
-- `protected layout(): LayoutComponent | null` — return a `hono/jsx-renderer`
-  component to enable `c.render(...)`.
-- `protected middleware(): MiddlewareHandler[]` — middleware applied after the
-  renderer.
-- `protected register(): void` — declare routes with `this.get/post/...`.
-- `protected resources(actions)` — register RESTful routes (index/new/create/
-  show/edit/update/destroy); only the actions you pass are created.
+- Apply a layout with `.use(jsxRenderer(Layout))` and middleware with `.use(mw)`
+  at the **start** of the chain: a path-less middleware only runs for routes
+  registered after it.
+- Share a layout or guard across domains by applying it on an intermediate app
+  and mounting the domains' routes under it.
+- Register static paths (`/new`) before parameterized ones (`/:id`).
 
 For layouts, the app declares the `ContextRenderer` augmentation once (typically
 `src/env.ts`) so `c.render(page, props)` is typed with `LayoutProps`
@@ -151,7 +161,7 @@ Instead of a DI container, oven uses a `register`/`use` function pair from a
 module and exports only the pair:
 
 ```ts
-// src/lib/db.ts
+// src/db/client.ts
 import { ScopedValueAccessor } from "@tknf/oven/routing";
 import { drizzle } from "drizzle-orm/libsql";
 

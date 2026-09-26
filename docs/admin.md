@@ -7,7 +7,7 @@ style: you mount it once, and each of its sections (resource CRUD, job
 operations, settings, audit log) only renders and gets routes when you
 inject the corresponding config. Nothing is auto-discovered.
 
-`AdminPanel` is a `RouteHandler` subclass, mounted like any other handler
+`AdminPanel` is a `Hono` subclass, mounted like any other sub-app
 via `app.route("/admin", new AdminPanel({...}))`. It deliberately has no
 built-in notion of "who's an admin" — authorization is a required
 `authorize` callback you write yourself, typically by reusing your
@@ -59,13 +59,13 @@ etc.) from the Drizzle table's columns, so a simple form doesn't need to
 restate them by hand:
 
 ```ts
-// src/admin/publisher_resource.ts
+// src/domains/publishers/admin.ts
 import { z } from "zod";
 import { AdminResource, fieldsFromTable } from "@tknf/oven/admin";
 import { Form } from "@tknf/oven/form";
 import type { FieldDef } from "@tknf/oven/form";
-import { publishers } from "../db/schema.js";
-import { publisherModel } from "../lib/models.js";
+import { publishers } from "./schema.js";
+import { publisherModel } from "../../lib/models.js";
 
 const publisherSchema = z.object({
   name: z.string().min(1),
@@ -110,8 +110,8 @@ new AdminPanel({
 });
 ```
 
-You can scaffold a resource skeleton with `oven generate admin-resource
-<Name>` (default output `src/admin/<name>_resource.ts`). The generated
+You can scaffold a resource skeleton with `oven generate admin <domain>
+<name>` (default output `src/domains/<domain>/admin.ts`). The generated
 class takes its `Model` instance and Drizzle table via the constructor —
 fill in the `key`/`label`/`primaryKey` TODOs and register it with
 `resources: [new BookResource(bookModel, book)]`. `--dialect` does not
@@ -689,8 +689,8 @@ example `app.route("/staff", new AdminPanel({ ...options, basePath: "/staff" }))
 Resource keys remain literal mount segments; record IDs are encoded as URL
 parameters, including in edit forms and their validation responses.
 
-Resource index, new, create, show, and edit routes use a nested `RouteHandler`
-and `resources()`. CSV export is registered before the member route. Updates
+Resource index, new, create, show, and edit routes are registered on a nested
+Hono sub-app per resource. CSV export is registered before the member route. Updates
 remain native `POST /resources/:key/:id`; deletion keeps its GET confirmation
 and `POST /resources/:key/:id/delete`. The panel's authorization, CSRF,
 read-only resource rules, and bulk-action handling apply to the mounted routes.
