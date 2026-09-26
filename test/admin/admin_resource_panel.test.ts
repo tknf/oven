@@ -1935,6 +1935,178 @@ describe("AdminPanel resource CRUD inline relations (submission: create/update/d
 		const books = await ctx.db.select().from(schema.books);
 		expect(books).toHaveLength(0);
 	});
+
+	describe("child ownership", () => {
+		type BookWithPublisherInput = { title: string; publisherId?: string };
+
+		/** Child form whose schema also accepts `publisherId`, to check that updates pin it. */
+		class BookFormAcceptingForeignKey extends Form<
+			StandardSchemaV1<unknown, BookWithPublisherInput>,
+			string
+		> {
+			protected schema() {
+				return defineStubSchema<BookWithPublisherInput>((value) => {
+					const record = value as Record<string, unknown>;
+					if (typeof record.title !== "string" || record.title === "") {
+						return { issues: [{ message: "Title is required", path: ["title"] }] };
+					}
+					return {
+						value: {
+							title: record.title,
+							...(typeof record.publisherId === "string"
+								? { publisherId: record.publisherId }
+								: {}),
+						},
+					};
+				});
+			}
+			protected fields(): Record<string, FieldDef> {
+				return fieldsFromTable(schema.books);
+			}
+		}
+
+		class PublisherResourceWithForeignKeyInline extends PublisherResourceWithInlines {
+			constructor(
+				publisherModel: PublisherModel,
+				private readonly booksModel: BookModel,
+			) {
+				super(publisherModel, booksModel);
+			}
+			inlines(): AdminInline[] {
+				return [
+					{
+						key: "books",
+						label: "Books",
+						model: this.booksModel,
+						table: schema.books,
+						primaryKey: "id",
+						foreignKey: "publisherId",
+						form: () => new BookFormAcceptingForeignKey(),
+					},
+				];
+			}
+		}
+
+		const buildApp = (resource: AdminResource) => {
+			const app = new Hono();
+			app.route("/admin", new AdminPanel({ authorize: () => true, resources: [resource] }));
+			return app;
+		};
+
+		const post = (app: Hono, path: string, fields: [string, string][]) =>
+			app.request(path, {
+				method: "POST",
+				headers: { "content-type": "application/x-www-form-urlencoded" },
+				body: new URLSearchParams(fields).toString(),
+			});
+
+		test("edit: rejects updating another parent's child and writes nothing", async () => {
+			await insertPublisher(ctx.db, { id: "pub-1", name: "TKNF Books" });
+			await insertPublisher(ctx.db, { id: "pub-2", name: "Other Press" });
+			await insertBook(ctx.db, { id: "book-2", publisherId: "pub-2", title: "Other Book" });
+			const app = buildApp(
+				new PublisherResourceWithInlines(new PublisherModel(ctx.db), new BookModel(ctx.db)),
+			);
+
+			const res = await post(app, "/admin/resources/publishers/pub-1", [
+				...parentFields({ name: "Renamed" }),
+				["books-__total", "1"],
+				["books-0-__pk", "book-2"],
+				["books-0-title", "Hijacked"],
+			]);
+
+			expect(res.status).toBe(404);
+			const [book] = await ctx.db.select().from(schema.books).where(eq(schema.books.id, "book-2"));
+			expect(book).toMatchObject({ title: "Other Book", publisherId: "pub-2" });
+			const [publisher] = await ctx.db
+				.select()
+				.from(schema.publishers)
+				.where(eq(schema.publishers.id, "pub-1"));
+			expect(publisher?.name).toBe("TKNF Books");
+		});
+
+		test("edit: rejects deleting another parent's child", async () => {
+			await insertPublisher(ctx.db, { id: "pub-1", name: "TKNF Books" });
+			await insertPublisher(ctx.db, { id: "pub-2", name: "Other Press" });
+			await insertBook(ctx.db, { id: "book-2", publisherId: "pub-2", title: "Other Book" });
+			const app = buildApp(
+				new PublisherResourceWithInlines(new PublisherModel(ctx.db), new BookModel(ctx.db)),
+			);
+
+			const res = await post(app, "/admin/resources/publishers/pub-1", [
+				...parentFields(),
+				["books-__total", "1"],
+				["books-0-__pk", "book-2"],
+				["books-0-__delete", "on"],
+			]);
+
+			expect(res.status).toBe(404);
+			const books = await ctx.db.select().from(schema.books).where(eq(schema.books.id, "book-2"));
+			expect(books).toHaveLength(1);
+		});
+
+		test("edit: rejects a __pk that matches no child row", async () => {
+			await insertPublisher(ctx.db, { id: "pub-1", name: "TKNF Books" });
+			const app = buildApp(
+				new PublisherResourceWithInlines(new PublisherModel(ctx.db), new BookModel(ctx.db)),
+			);
+
+			const res = await post(app, "/admin/resources/publishers/pub-1", [
+				...parentFields(),
+				["books-__total", "1"],
+				["books-0-__pk", "missing-book"],
+				["books-0-title", "Ghost"],
+			]);
+
+			expect(res.status).toBe(404);
+			expect(await ctx.db.select().from(schema.books)).toHaveLength(0);
+		});
+
+		test("create: rejects any submitted __pk and creates nothing", async () => {
+			await insertPublisher(ctx.db, { id: "pub-2", name: "Other Press" });
+			await insertBook(ctx.db, { id: "book-2", publisherId: "pub-2", title: "Other Book" });
+			const app = buildApp(
+				new PublisherResourceWithInlines(new PublisherModel(ctx.db), new BookModel(ctx.db)),
+			);
+
+			const res = await post(app, "/admin/resources/publishers", [
+				...parentFields({ name: "New Press" }),
+				["books-__total", "1"],
+				["books-0-__pk", "book-2"],
+				["books-0-title", "Hijacked"],
+			]);
+
+			expect(res.status).toBe(404);
+			const publishers = await ctx.db.select().from(schema.publishers);
+			expect(publishers).toHaveLength(1);
+			const [book] = await ctx.db.select().from(schema.books).where(eq(schema.books.id, "book-2"));
+			expect(book?.title).toBe("Other Book");
+		});
+
+		test("edit: keeps an updated child on its parent even when the child schema accepts the foreign key", async () => {
+			await insertPublisher(ctx.db, { id: "pub-1", name: "TKNF Books" });
+			await insertPublisher(ctx.db, { id: "pub-2", name: "Other Press" });
+			await insertBook(ctx.db, { id: "book-1", publisherId: "pub-1", title: "First Book" });
+			const app = buildApp(
+				new PublisherResourceWithForeignKeyInline(
+					new PublisherModel(ctx.db),
+					new BookModel(ctx.db),
+				),
+			);
+
+			const res = await post(app, "/admin/resources/publishers/pub-1", [
+				...parentFields(),
+				["books-__total", "1"],
+				["books-0-__pk", "book-1"],
+				["books-0-title", "Moved?"],
+				["books-0-publisherId", "pub-2"],
+			]);
+
+			expect(res.status).toBe(303);
+			const [book] = await ctx.db.select().from(schema.books).where(eq(schema.books.id, "book-1"));
+			expect(book).toMatchObject({ title: "Moved?", publisherId: "pub-1" });
+		});
+	});
 });
 
 describe("AdminPanel resource CRUD list: date hierarchy drilldown", () => {
