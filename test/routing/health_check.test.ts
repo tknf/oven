@@ -4,7 +4,6 @@
 import { Hono } from "hono";
 import { describe, expect, test } from "vite-plus/test";
 import { healthCheck } from "../../src/routing/health_check.js";
-import { RouteHandler } from "../../src/routing/route_handler.js";
 
 describe("healthCheck", () => {
 	test("returns 200, ok, and no-store when wired on a plain Hono via app.get('/up', healthCheck)", async () => {
@@ -18,15 +17,10 @@ describe("healthCheck", () => {
 		expect(res.headers.get("cache-control")).toBe("no-store");
 	});
 
-	test("can also be wired via a RouteHandler subclass", async () => {
-		class SystemHandler extends RouteHandler {
-			protected register() {
-				this.get("/up", healthCheck);
-			}
-		}
+	test("can also be wired on a mounted Hono sub-app", async () => {
+		const system = new Hono().get("/up", healthCheck);
 
-		const app = new Hono();
-		app.route("/", new SystemHandler());
+		const app = new Hono().route("/", system);
 
 		const res = await app.request("/up");
 

@@ -1,6 +1,6 @@
 /**
  * Development mail preview.
- * A `RouteHandler` subclass that takes an explicit table of "preview name →
+ * A `Hono` subclass that takes an explicit table of "preview name →
  * factory returning a `MailMessage`" and exposes routes for listing and
  * viewing individual previews in the browser.
  *
@@ -22,7 +22,7 @@
  * particular mail implementation (`Mailer`/`MailTemplate`), so `deliver`
  * (actual sending) never happens here.
  */
-import { RouteHandler } from "../routing/route_handler.js";
+import { Hono } from "hono";
 import type { MailMessage } from "./mailer.js";
 import { normalizeMailAddresses } from "./mailer.js";
 
@@ -54,26 +54,19 @@ const htmlMetaBlock = (message: MailMessage): string =>
 const textMetaBlock = (message: MailMessage): string =>
 	`Subject: ${message.subject}\nTo: ${formatAddresses(message.to)}\n\n`;
 
-/** `RouteHandler` that exposes a listing and detail view for developer mail previews. */
-export class MailPreviewHandler extends RouteHandler {
-	/**
-	 * Table of preview name → factory. `RouteHandler`'s wiring (the `register()`
-	 * call) runs during the base constructor (`super()`), so subclass field
-	 * initialization (which happens after `super()`) hasn't completed yet at
-	 * that point (see constraint 2 in `src/routing/route_handler.ts`). Because
-	 * of this, `register()` only registers the paths, and `this.previews` is
-	 * always dereferenced at request time (inside the handler closure).
-	 */
-	private previews: Record<string, MailPreviewFactory> | undefined;
+/** `Hono` sub-app that exposes a listing and detail view for developer mail previews. */
+export class MailPreviewHandler extends Hono {
+	private readonly previews: Record<string, MailPreviewFactory>;
 
 	constructor(options: MailPreviewHandlerOptions) {
 		super();
 		this.previews = options.previews;
+		this.register();
 	}
 
-	protected register(): void {
+	private register(): void {
 		this.get("/", (c) => {
-			const names = Object.keys(this.previews ?? {});
+			const names = Object.keys(this.previews);
 			const items = names
 				.map((name) => `<li><a href="${encodeURIComponent(name)}">${escapeHtmlText(name)}</a></li>`)
 				.join("");
@@ -85,7 +78,7 @@ export class MailPreviewHandler extends RouteHandler {
 		});
 
 		this.get("/:name", async (c) => {
-			const previews = this.previews ?? {};
+			const previews = this.previews;
 			const name = c.req.param("name");
 			if (!Object.hasOwn(previews, name)) return c.notFound();
 			const factory = previews[name];

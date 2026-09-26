@@ -1,7 +1,6 @@
 /**
  * Tests for `MailPreviewHandler` (the development mail preview). Follows the
- * `RouteHandler` testing convention (`app.route()` + `app.request()`); see
- * `test/routing/route_handler.test.ts`.
+ * sub-app testing convention (`app.route()` + `app.request()`).
  */
 import { Hono } from "hono";
 import { describe, expect, test } from "vite-plus/test";

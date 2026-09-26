@@ -71,8 +71,7 @@ export abstract class ContextAccessor<E extends Env, K extends keyof E["Variable
 	 * The per-request work. Since it is invoked from `register` (an arrow-function field
 	 * built while the base constructor runs), subclass overrides must be written as
 	 * **prototype methods** (class fields are initialized after `super()` completes, so
-	 * they would not be ready in time — the same reasoning as constraint 2 in
-	 * `route_handler.ts`).
+	 * they would not be ready in time).
 	 */
 	protected abstract handle(c: Context<E>, next: Next): Promise<Response | void>;
 

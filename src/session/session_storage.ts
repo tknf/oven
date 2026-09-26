@@ -2,8 +2,8 @@
  * The abstract base class for `SessionStorage`.
  *
  * **Abstract base class vs. interface**: the method contract is "interface-like" in
- * nature, but following oven's single idiom (Session/Storage/Mailer/Model/
- * RouteHandler are all unified as abstract base class + inheritance), this is an
+ * nature, but following oven's single idiom (Session/Storage/Mailer/Model are all
+ * unified as abstract base class + inheritance), this is an
  * **abstract base class**. Two reasons:
  * 1. Because "sliding TTL is an optional feature provided by the base class", the
  *    base class needs to hold behavior (cookie name, resolving default cookie

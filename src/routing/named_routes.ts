@@ -4,9 +4,9 @@
  * Treats the "route name → path template" table passed to the constructor as the single
  * source of truth, and builds relative paths (`pathFor`) and absolute URLs (`urlFor` —
  * used for things like generating links in email bodies) in a type-safe way. There is no
- * automatic route discovery, and no automatic consistency check against what is
- * registered in `RouteHandler` (in keeping with the design principle of avoiding magic).
- * Restoring `hc` (Hono's RPC client) is out of scope.
+ * automatic route discovery, and no automatic consistency check against the routes
+ * registered on a Hono app (in keeping with the design principle of avoiding magic).
+ * Typed RPC calls are Hono's `hc` client's job; this table builds link and redirect URLs.
  *
  * Path templates follow Hono's path syntax (`:id`, `:id?`, `:id{[0-9]+}`). Whether a
  * parameter is required or optional, and its type, are derived via template literal

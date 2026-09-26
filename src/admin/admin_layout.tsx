@@ -7,7 +7,7 @@
  * Takes the self-contained approach of passing directly to the response, as in
  * `c.html(<AdminLayout .../>)` (analogous to how `MailPreviewHandler` assembles an
  * HTML document from a raw string, except this one assembles it via JSX).
- * `RouteHandler#layout()` (the `ContextRenderer` via `jsxRenderer`) presupposes
+ * An app-level `jsxRenderer` layout (the `ContextRenderer`) presupposes
  * app-side wiring, so it is not used for this layout, which is meant to be
  * self-contained within admin.
  */
