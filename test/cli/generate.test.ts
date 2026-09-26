@@ -100,8 +100,9 @@ describe("planGeneration: model", () => {
 		expect(plan.filePath).toBe("src/domains/books/model.ts");
 		expect(plan.content).toContain('import { SQLiteModel } from "@tknf/oven/model";');
 		expect(plan.content).toContain('import { book } from "./schema.js";');
+		expect(plan.content).toContain('import type * as schema from "./schema.js";');
 		expect(plan.content).toContain(
-			"export class BookModel extends SQLiteModel<typeof book, typeof book.id>",
+			"export class BookModel extends SQLiteModel<\n\ttypeof book,\n\ttypeof book.id,\n\ttypeof schema\n> {",
 		);
 		expect(plan.content).not.toContain("sqliteTable");
 	});

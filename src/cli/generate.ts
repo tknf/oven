@@ -181,6 +181,7 @@ const modelTemplate = (className: string, base: string, dialect: ModelDialect): 
 		return `import type { PostgresJsQueryResultHKT } from "drizzle-orm/postgres-js";
 import { PgModel } from "@tknf/oven/model";
 import { ${tableVar} } from "./schema.js";
+import type * as schema from "./schema.js";
 
 /**
  * TODO: Describe ${className}.
@@ -190,7 +191,8 @@ import { ${tableVar} } from "./schema.js";
 export class ${className} extends PgModel<
 	typeof ${tableVar},
 	typeof ${tableVar}.id,
-	PostgresJsQueryResultHKT
+	PostgresJsQueryResultHKT,
+	typeof schema
 > {
 	protected get table() {
 		return ${tableVar};
@@ -206,6 +208,7 @@ export class ${className} extends PgModel<
 		return `import type { MySql2PreparedQueryHKT, MySql2QueryResultHKT } from "drizzle-orm/mysql2";
 import { MySqlModel } from "@tknf/oven/model";
 import { ${tableVar} } from "./schema.js";
+import type * as schema from "./schema.js";
 
 /**
  * TODO: Describe ${className}.
@@ -216,7 +219,8 @@ export class ${className} extends MySqlModel<
 	typeof ${tableVar},
 	typeof ${tableVar}.id,
 	MySql2QueryResultHKT,
-	MySql2PreparedQueryHKT
+	MySql2PreparedQueryHKT,
+	typeof schema
 > {
 	protected get table() {
 		return ${tableVar};
@@ -230,11 +234,16 @@ export class ${className} extends MySqlModel<
 
 	return `import { SQLiteModel } from "@tknf/oven/model";
 import { ${tableVar} } from "./schema.js";
+import type * as schema from "./schema.js";
 
 /**
  * TODO: Describe ${className}.
  */
-export class ${className} extends SQLiteModel<typeof ${tableVar}, typeof ${tableVar}.id> {
+export class ${className} extends SQLiteModel<
+	typeof ${tableVar},
+	typeof ${tableVar}.id,
+	typeof schema
+> {
 	protected get table() {
 		return ${tableVar};
 	}

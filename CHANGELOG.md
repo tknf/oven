@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Changed
 
 - **Breaking:** `AdminPanel` and `MailPreviewHandler` now extend `Hono` directly instead of `RouteHandler`. Mounting them with `app.route()` is unchanged, and mounting them inside a method chain keeps the route types of the app's other routes.
-- **Breaking:** `oven generate` now takes `<type> <domain> [name]` and writes into `src/domains/<domain>/`: `routes`, `schema`, `model`, `form`, `policy`, and `admin` become `<type>.ts`, `view` becomes `views/<name>.tsx`, and `job` becomes `jobs/<name>.ts`. The `admin-resource` type is renamed `admin`, the model template imports its table from the new `schema` template, and `--dialect` applies to both `schema` and `model`.
+- **Breaking:** `oven generate` now takes `<type> <domain> [name]` and writes into `src/domains/<domain>/`: `routes`, `schema`, `model`, `form`, `policy`, and `admin` become `<type>.ts`, `view` becomes `views/<name>.tsx`, and `job` becomes `jobs/<name>.ts`. The `admin-resource` type is renamed `admin`, the model template imports its table from the new `schema` template and passes that schema as the `Model`'s schema type argument (so a `db` created with `drizzle(..., { schema })` is accepted), and `--dialect` applies to both `schema` and `model`.
 - The documented application layout now groups each feature in a domain directory (`src/domains/<domain>/`), keeps database tooling in `db/` (`db/config.ts`, `db/migrations/`, `db/seed.ts`) and runtime database code in `src/db/`, and mirrors `src/` under `test/`.
 
 ### Removed
