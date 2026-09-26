@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Removed
 
 - **Breaking:** Removed `RouteHandler` and `ResourceActions` from `@tknf/oven/routing`, including `resources()`. Write each route module as a plain Hono app built with one method chain and mount it with `app.route()`; apply layouts with `.use(jsxRenderer(layout))` and middleware with `.use()` at the start of the chain. Route types now reach Hono's `hc` client and `testClient`.
+- **Breaking:** Removed the deprecated `SignedCookieAccessor` and `SignedCookieDefinition` from `@tknf/oven/support`. Call Hono's `getSignedCookie`/`setSignedCookie` directly.
 - **Breaking:** Removed the `handler` and `seed` generator types. Write a seed script in `db/seed.ts` instead, for example with `drizzle-seed`.
 
 ## [2.0.0] - 2026-09-08

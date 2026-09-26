@@ -62,18 +62,10 @@ const value = await getSignedCookie(c, secret, "cart_id"); // string | undefined
 Use the plain `CookieAccessor` instead when the value doesn't need
 integrity protection (e.g. the `visitor_id` in the minimal example above).
 
-> **Legacy: `SignedCookieAccessor`/`SignedCookieDefinition`.** These used to
-> wrap the call above in a typed accessor matching `CookieAccessor`'s shape.
-> They are now `@deprecated` and scheduled for removal in the next major —
-> use `getSignedCookie`/`setSignedCookie` directly as shown above, or
-> `CookieAccessor` combined with your own explicit signing (the pattern
-> `UrlSigner`/`CookieSessionStorage` use internally) if you need to reuse the
-> signing logic across several cookies.
-
 **Validating `c.env` once at startup, then distributing a typed config**
 (via `ScopedValueAccessor` from `@tknf/oven/routing`, with `scope: "app"`
-so the validated `Promise` is memoized and every request after the first
-one reuses it):
+so a successful validation is memoized and every later request reuses it;
+a failed validation is retried on the next request):
 
 ```ts
 import { validateEnv } from "@tknf/oven/support";
@@ -111,8 +103,8 @@ const isValid = constantTimeEqual(submittedBytes, expectedBytes);
 ## Gotchas / Security notes
 
 - **A signed cookie's `secret` must be a high-entropy random value equivalent
-  to ~32 bytes** — whether signed via `getSignedCookie`/`setSignedCookie`
-  directly or the legacy `SignedCookieAccessor`. `warnWeakSecrets` (used
+  to ~32 bytes** when signed via `getSignedCookie`/`setSignedCookie`.
+  `warnWeakSecrets` (used
   internally by classes such as `Encrypter`/`UrlSigner`/`CookieSessionStorage`,
   not by Hono's own signed cookie functions) only issues a `console.warn`
   once per context at construction time — it never throws, so it must not be

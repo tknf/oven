@@ -18,7 +18,7 @@
  * encryptions under the same key (not reachable in normal usage).
  *
  * **`decrypt` fails soft**: malformed input, tampering, or key mismatch all result in `null`
- * being returned rather than an exception. This mirrors how `SignedCookieAccessor` returns
+ * being returned rather than an exception. This mirrors how Hono's `getSignedCookie` returns
  * `false` rather than throwing on tampering detection, so that callers passed broken input can
  * handle decryption failure naturally via a branch.
  */
