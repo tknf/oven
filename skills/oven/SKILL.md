@@ -93,72 +93,6 @@ installed package. Before writing a non-trivial example, check the real types in
 that appear in the project's own tests. Hono / Drizzle / Standard Schema APIs:
 confirm against their installed types too.
 
-## Request authentication
-
-`Guard` supports either `session` + `identityKey` + `provider` (optional `remember`)
-or `authenticate(c)` without those properties. Both use `onFailure`, exact `except`
-paths, `require`/`register`/`use`, and default `Cache-Control: no-store`. Return a
-verified subject or null/undefined; callback errors propagate. For an external
-assertion, read its header in `authenticate` and call an application-owned verifier
-that validates the signature, issuer, audience, expiry, and claim types. Never
-trust a decoded payload alone or cache subjects across requests. A separate
-`SessionAccessor` + `Csrf` may protect browser writes without storing auth identity.
-See the auth guide's [request example](https://github.com/tknf/oven/blob/main/docs/auth.md#authenticate-each-request-without-a-session).
-
-## Atomic password reset
-
-`PasswordReset.updatePassword(user, passwordHash, expectedFingerprint)` must
-atomically update only when the stored fingerprint matches the exact verified
-value and return `boolean | Promise<boolean>`. Only `true` completes `reset()`;
-a lost race returns `null`. This replaces the old void-returning callback with
-no unsafe fallback. Prefer the full stored hash as `fingerprintOf`, keep the
-comparison and update in one database statement, and change the fingerprint on
-every success. `verify()` is display-only; custom hashing must use fresh salts.
-See the auth guide's migration recipe before upgrading existing callers.
-
-## Expired-record pruning
-
-`{SQLite,Pg,MySql}PruneExpiredRecordsJob.perform()` attempts every target in order,
-then throws an `AggregateError` containing the original failures if any occurred.
-Successful deletions remain applied; report failures and retry normally.
-
-## CSRF form body limit
-
-`Csrf` accepts `maxFormBodyBytes` (positive safe integer, default 65,536).
-Form fallback stops reading when the total body size exceeds that cap;
-oversized or malformed data returns 403. Place verification before body-consuming middleware.
-For larger uploads, send `X-CSRF-Token` or explicitly increase the form cap;
-putting the hidden token first is insufficient. Keep a separate request size
-limit for handlers that parse uploads, including requests with header tokens.
-
-## S3 upload size limits
-
-Set `S3Storage`'s `maxBytes` when accepting untrusted streams. It rejects and
-cancels reading when the running byte count crosses the cap, before signing
-or sending. Accepted streams are still fully buffered; the cap is not a hard
-process-memory limit because producer chunks and copies also occupy memory.
-
-## S3 automatic multipart cleanup
-
-`S3Storage.put()` escapes ETags in completion XML. If best-effort abort fails
-(HTTP other than 404, or transport error), it warns without request details and
-rethrows the original upload error. Monitor warnings and configure bucket cleanup.
-The UploadId reader supports the canonical unprefixed, attribute-free element.
-
-## Client-driven multipart uploads
-
-Use `MultipartUploader` from `@tknf/oven/storage` for uploads spanning requests:
-`createMultipartUpload(key, contentType)` returns `{ key, uploadId }`;
-`uploadPart(upload, partNumber, body)` returns `{ partNumber, etag }`;
-`completeMultipartUpload(upload, parts)` returns `MultipartUploadResult`:
-`{ size }`, the backend-confirmed final stored object size in bytes, not a client
-declaration. Size comparisons happen after publication; the application handles
-mismatches and cleanup. `abortMultipartUpload(upload)` returns void.
-`R2Storage` implements it; inject `InMemoryStorage` for unit tests. Keep the
-reference and current part metadata between requests, sort completion parts by
-number, and authorize each step. Backend limits apply; errors propagate without
-automatic abort. `Storage` and automatic multipart in `put()` are unchanged.
-
 ## Your first route
 
 `RouteHandler` extends `Hono`. Subclass it, implement `register()`, and mount an
@@ -232,24 +166,14 @@ per request (per-request state, e.g. bindings); `scope: "app"` memoizes once
 (expensive shared state, e.g. connection pools).
 `SessionAccessor`, `Guard`, and `DatabaseAccessor` are all `ContextAccessor`s.
 
-For failure-only verification throttling, call `RateLimiter.isLimited(key,
-limit, windowSeconds)` before verification and `consume` only after a failed
-verification. Do not reset or consume after success. This sequence is
-non-atomic, can observe stale data with an eventually-consistent store, and has
-a wider race window than consuming before every attempt.
-
-AdminPanel uses `NamedRoutes` for URL generation and `resources()` for compatible
-CRUD routes; its native POST update/delete routes remain explicit. Resource IDs
-are encoded once in links and form actions; keep `basePath` equal to the mount.
-
 ## Read detailed references as needed
 
 Load only the reference relevant to the work:
 
 - Before choosing imports, checking an export, or using the `oven` generator, read
   [`references/subpaths.md`](references/subpaths.md).
-- Before implementing behavior with security, persistence, concurrency, upload,
-  session, admin, datasource, or runtime implications, read
+- Before implementing behavior with authentication, security, persistence,
+  concurrency, upload, session, admin, datasource, or runtime implications, read
   [`references/gotchas.md`](references/gotchas.md). Search it for the public symbol
   or subpath involved.
 - When writing or reviewing tests, read

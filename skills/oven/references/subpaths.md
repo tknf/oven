@@ -3,7 +3,7 @@
 Use this map to check oven capabilities before reaching for Hono or custom
 replacements; apply the selection order and exception rules in `../SKILL.md`.
 Import from the specific subpath. The root `@tknf/oven` re-exports everything
-except `cloudflare`, `node`, `test`, and `vite` (the last is opt-in because
+except `admin`, `cloudflare`, `node`, `test`, and `vite` (`vite` is opt-in because
 it's specific to apps that bundle client-side assets with Vite, not because
 it depends on the `vite` package itself — it has no hard dependency on it).
 
