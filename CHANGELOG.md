@@ -19,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **Breaking:** Removed the deprecated `SignedCookieAccessor` and `SignedCookieDefinition` from `@tknf/oven/support`. Call Hono's `getSignedCookie`/`setSignedCookie` directly.
 - **Breaking:** Removed the `handler` and `seed` generator types. Write a seed script in `db/seed.ts` instead, for example with `drizzle-seed`.
 
+### Fixed
+
+- **Security:** `AdminPanel` inline child rows are now checked against the parent being edited. A submitted `__pk` that does not name an existing child of that parent (or any `__pk` on create) returns 404 with nothing written, so an operator allowed to edit one parent can no longer update or delete another parent's children through its form. Updated child rows also keep `foreignKey` set to the parent's id.
+
 ## [2.0.0] - 2026-09-08
 
 ### Added

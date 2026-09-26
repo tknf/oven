@@ -401,7 +401,8 @@ child rows, one per rendered row:
   checked is **deleted** (`inline.model.delete`) — its own fields are not
   validated.
 - A row with a `${key}-${index}-__pk` and its fields filled in is
-  **updated** (`inline.model.update`) through the child `Form`.
+  **updated** (`inline.model.update`) through the child `Form`, with
+  `foreignKey` kept at the parent's row id.
 - A row with no `${key}-${index}-__pk` but at least one non-empty field is
   **created** (`inline.model.create`), with `foreignKey` set to the
   parent's row id.
@@ -411,8 +412,10 @@ child rows, one per rendered row:
 
 The parent form and every inline row are validated **before anything is
 written**: if the parent or any row fails validation, the whole request
-re-renders with `422` and nothing is written, parent or child. Once
-everything validates, the parent is written first, then each inline row
+re-renders with `422` and nothing is written, parent or child. Every
+submitted `${key}-${index}-__pk` must then name an existing child of this
+parent (on create, no `__pk` is accepted at all); otherwise the request gets
+`404` and nothing is written. Once everything passes, the parent is written first, then each inline row
 in declaration order — **this sequence is not a single transaction**
 (`AdminModel` has no cross-table transaction primitive), so a DB failure
 partway through child writes can leave the parent and some children
@@ -797,13 +800,15 @@ read-only resource rules, and bulk-action handling apply to the mounted routes.
   no cross-table transaction primitive. A failure partway through child
   writes can leave the parent and some children committed while others
   are not.
-- **An inline child `Form` must not accept the foreign key column.**
-  `AdminPanel` sets `foreignKey` itself when creating a new child row, but on
-  update it passes the validated row to `inline.model.update` unchanged. If
-  the child `Form#schema()` accepts that column, an operator can move an
-  existing child to another parent. Omit it from both `fields()`
-  (`fieldsFromTable(childTable, { omit: ["theForeignKey"] })`, as in the
-  example above) and `schema()`.
+- **An inline child `Form#fields()` should not declare the foreign key
+  column.** `AdminPanel` sets `foreignKey` to the parent's id on every
+  created and updated child row, so a value the form accepts is overwritten;
+  omit the column (`fieldsFromTable(childTable, { omit: ["theForeignKey"] })`,
+  as in the example above) so the form does not render a field that has no
+  effect.
+- **Inline rows can only reference the parent's own children.** A submitted
+  `__pk` that does not name an existing child of the parent being edited
+  (or any `__pk` on create) makes the request `404` with nothing written.
 
 ## See also
 

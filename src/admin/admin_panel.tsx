@@ -41,7 +41,9 @@
  * validate the parent form **before writing anything**: if the parent or any
  * row fails, the whole request re-renders as 422 with nothing written, parent
  * or child (`buildInlineGroupsFromBody` rebuilds the inline groups straight
- * from the submitted body, since the DB hasn't changed). Only once everything
+ * from the submitted body, since the DB hasn't changed). It then checks that
+ * every submitted `__pk` names a child of this parent (`inlineRowsBelongTo`),
+ * responding 404 with nothing written otherwise. Only once everything
  * validates does the handler write the parent, then each inline row
  * (`persistInlineRows`) in declaration order. **This sequence is not
  * transactional** — `AdminModel` exposes no cross-table transaction primitive,
@@ -810,12 +812,35 @@ const buildInlineGroupsFromBody = (
 };
 
 /**
+ * Whether every existing child row referenced in `plans` (a row carrying a
+ * `${key}-${index}-__pk`) belongs to `parentId`. The `__pk` values come from
+ * the request body, so without this check an operator allowed to edit one
+ * parent could update or delete another parent's children through it. On
+ * create there is no parent row yet (`parentId` is `undefined`), so any
+ * submitted `__pk` is rejected. Called before any write.
+ */
+const inlineRowsBelongTo = async (
+	target: AdminResource,
+	plans: Map<string, InlineRowPlan[]>,
+	parentId: string | undefined,
+): Promise<boolean> => {
+	for (const inline of target.inlines?.() ?? []) {
+		for (const row of plans.get(inline.key) ?? []) {
+			if (row.pk === "") continue;
+			if (parentId === undefined) return false;
+			const child = await inline.model.retrieve(row.pk);
+			if (!child || stringify(child[inline.foreignKey]) !== parentId) return false;
+		}
+	}
+	return true;
+};
+
+/**
  * Returns a shallow copy of `value` with `foreignKey` set to `parentId`, if
- * `value` is an object. Used to attach a newly-created inline child row to its
- * just-created-or-existing parent (the child `Form#schema()` never includes
- * the foreign key column itself, since `fieldsFromTable` derives fields from
- * non-primary-key columns but a foreign key is the app's own field list to
- * manage — see `AdminInline#form`'s JSDoc).
+ * `value` is an object. Applied to every created and updated inline child
+ * row, so a child `Form#schema()` that also accepts the foreign key column
+ * can neither attach a new row to, nor move an existing row to, another
+ * parent.
  */
 const withForeignKey = (value: unknown, foreignKey: string, parentId: string): unknown => {
 	if (typeof value !== "object" || value === null) return value;
@@ -846,7 +871,10 @@ const persistInlineRows = async (
 			if (!row.result || !row.result.ok) continue;
 
 			if (row.pk !== "") {
-				await inline.model.update(row.pk, row.result.value);
+				await inline.model.update(
+					row.pk,
+					withForeignKey(row.result.value, inline.foreignKey, parentId),
+				);
 			} else {
 				await inline.model.create(withForeignKey(row.result.value, inline.foreignKey, parentId));
 			}
@@ -3708,6 +3736,9 @@ export class AdminPanel<E extends Env = Env> extends Hono<E> {
 						);
 					}
 
+					/** A new parent has no children yet, so no submitted row may reference one. */
+					if (!(await inlineRowsBelongTo(target, inlinePlans, undefined))) return c.notFound();
+
 					const created = await target.model.create(parentResult.value);
 					const createdId = stringify(created[target.primaryKey]);
 					await persistInlineRows(target, inlinePlans, createdId);
@@ -3852,6 +3883,8 @@ export class AdminPanel<E extends Env = Env> extends Hono<E> {
 						 * is not done here (this stripping is not applied on create, since it would
 						 * break tables where admin inputs a natural key such as `code`).
 						 */
+						if (!(await inlineRowsBelongTo(target, inlinePlans, id))) return c.notFound();
+
 						await target.model.update(id, withoutKey(parentResult.value, target.primaryKey));
 						await persistInlineRows(target, inlinePlans, id);
 						await this.recordAudit(c, "resource.update", `${key}/${id}`);

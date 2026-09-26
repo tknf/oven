@@ -335,12 +335,13 @@ code)` (verifies against the pending secret, only then sets
   if any of them fails), then creates/updates/deletes each row via
   `inline.model` — a checked `__delete` on a row with `__pk` deletes it, a
   row with `__pk` and filled-in fields updates it, a row with no `__pk`
-  but at least one non-empty field creates it (with `foreignKey` set to
-  the parent's id), and an untouched blank row is skipped. The parent
-  write and the child writes are separate sequential calls, not one
-  transaction. The child `Form#fields()` and `Form#schema()` must omit the
-  foreign key column: `AdminPanel` sets it on create, but on update a value
-  the schema accepts is written as submitted.
+  but at least one non-empty field creates it, and an untouched blank row is
+  skipped. Every submitted `__pk` must name an existing child of the parent
+  being edited (none are accepted on create), or the request gets `404` with
+  nothing written; created and updated rows always get `foreignKey` set to
+  the parent's id. The parent write and the child writes are separate
+  sequential calls, not one transaction. The child `Form#fields()` should
+  omit the foreign key column.
 - **`AdminPanel` uses AAA-contrast (7:1) text colors** plus a skip link to `#content`,
   a `<nav>`/`<ol>` breadcrumb trail, sortable/labeled table headers
   (`scope`, `aria-sort`, per-link `aria-label`), no inert "select all"
