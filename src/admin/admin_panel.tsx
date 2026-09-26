@@ -338,7 +338,7 @@ const EXPORT_MAX_ROWS = 10_000;
 
 /**
  * Parses the list screen's `?o=` sort query into a display column index +
- * direction, matching a familiar admin-console convention (`?o=<i>` ascending,
+ * direction (`?o=<i>` ascending,
  * `?o=-<i>` descending; `i` indexes `AdminResource#columns()`, the same order
  * the list table's headers render in). Returns `null` for a missing,
  * non-numeric, or out-of-range value, so the caller falls back to its own

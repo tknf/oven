@@ -11,24 +11,29 @@
  * `registerHint` (the hint text shown when the value is missing). For the simplest case
  * of "just `c.set` a value as-is", use `ValueAccessor` below.
  *
- * The canonical pattern is for an application's wiring module (e.g. `src/lib/db.ts`) to
+ * The canonical pattern is for an application's wiring module (e.g. `src/lib/search.ts`) to
  * construct a `ScopedValueAccessor` instance, keep the instance itself private, and only
  * export the `register`/`use` function pair (callers specify the type parameter `E`
  * explicitly):
  *
  * ```ts
- * type AppBindings = { DATABASE_URL: string };
- * type AppEnv = { Bindings: AppBindings; Variables: { db?: Database } };
+ * type AppBindings = { SEARCH_API_KEY: string };
+ * type AppEnv = { Bindings: AppBindings; Variables: { search?: SearchClient } };
  *
- * // Wiring module on the app side (e.g. src/lib/db.ts). The instance stays private;
+ * // Wiring module on the app side (e.g. src/lib/search.ts). The instance stays private;
  * // only the function pair is exported.
- * const accessor = new ScopedValueAccessor<AppEnv, "db">("db", { create: (c) => drizzle(c.env.DATABASE_URL) });
- * export const registerDatabase = accessor.register;
- * export const useDatabase = accessor.use;
+ * const accessor = new ScopedValueAccessor<AppEnv, "search">("search", {
+ *   create: (c) => new SearchClient(c.env.SEARCH_API_KEY),
+ * });
+ * export const registerSearch = accessor.register;
+ * export const useSearch = accessor.use;
  *
- * // main.ts: app.use(registerDatabase);
- * // Inside a handler: const db = useDatabase(c);
+ * // src/main.ts: app.use(registerSearch);
+ * // Inside a handler: const search = useSearch(c);
  * ```
+ *
+ * A database connection uses `DatabaseAccessor` (`@tknf/oven/database`), which applies
+ * the same pattern with a database-specific error message.
  *
  * `register`/`use` are class-field arrow functions (rather than prototype methods)
  * precisely to support this detachment (passing them by reference apart from the
@@ -57,7 +62,7 @@ export abstract class ContextAccessor<E extends Env, K extends keyof E["Variable
 	 * both the set and get directions, so a `Context` for an extended env (e.g. `AdminEnv`
 	 * extending `AppEnv`) cannot simply be implicitly converted to `Context<AppEnv>`.
 	 * Accepting `E2 extends E` lets handlers with an extended env call `use(c)` directly
-	 * (the same solution used by `useDatabase` in `src/lib/db.ts`).
+	 * (the same solution `DatabaseAccessor`'s `use` relies on).
 	 */
 	readonly use = <E2 extends E>(c: Context<E2>): NonNullable<E["Variables"][K]> => {
 		const value = c.get(this.key);
@@ -67,12 +72,7 @@ export abstract class ContextAccessor<E extends Env, K extends keyof E["Variable
 		return value;
 	};
 
-	/**
-	 * The per-request work. Since it is invoked from `register` (an arrow-function field
-	 * built while the base constructor runs), subclass overrides must be written as
-	 * **prototype methods** (class fields are initialized after `super()` completes, so
-	 * they would not be ready in time).
-	 */
+	/** The per-request work, invoked by `register` on every request. */
 	protected abstract handle(c: Context<E>, next: Next): Promise<Response | void>;
 
 	/** Hint text describing "what to apply" for the not-registered error message in `use`. */

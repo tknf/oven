@@ -2,11 +2,11 @@
  * Ready-made `Job` that garbage-collects expired rows from one or more
  * Drizzle (sqlite-core) tables shaped like the DB-backed `KeyValueStore`
  * (`kv/sqlite_database_key_value_store.ts`) and `SessionStorage`
- * (`session/sqlite_database_session_storage.ts`) families. Those stores only
- * delete an expired row incidentally, on the next `get` that happens to hit
- * it (see their module JSDoc) — nothing actively sweeps rows nobody reads
- * again, so this job fills that gap without adding GC to the stores
- * themselves.
+ * (`session/sqlite_database_session_storage.ts`) families. The key-value
+ * store deletes an expired row only when a `get` hits it, and the session
+ * storage never deletes expired rows (it treats them as empty) — nothing
+ * actively sweeps rows nobody reads again, so this job fills that gap without
+ * adding GC to the stores themselves.
  *
  * **Parallel dialect implementation** (see `sqlite_model.ts`): the Postgres
  * version is implemented independently as `PgPruneExpiredRecordsJob` in

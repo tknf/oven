@@ -6,8 +6,7 @@
  * Deletion is a two-step flow: this screen is reached via a `deletelink` GET (from
  * the list/show/edit screens), summarizes the target row the same way
  * `AdminResourceShowView` does, and only performs the actual delete once its
- * `<form method="post">` (embedding the required `post=yes` field, mirroring a
- * familiar admin-console's delete-confirmation contract) is submitted. There is no
+ * `<form method="post">` (embedding the required `post=yes` field) is submitted. There is no
  * JS; the "No, take me back" control is a plain link back to the resource's list.
  */
 import { adminResourcePathFor } from "./admin_routes.js";
