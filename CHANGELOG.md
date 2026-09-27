@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-09-27
+
 ### Changed
 
 - **Breaking:** `AdminPanel` and `MailPreviewHandler` now extend `Hono` directly instead of `RouteHandler`. Mounting them with `app.route()` is unchanged, and mounting them inside a method chain keeps the route types of the app's other routes.
