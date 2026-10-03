@@ -97,7 +97,7 @@ describe("planGeneration: schema", () => {
 describe("planGeneration: model", () => {
 	test("extends SQLiteModel by default and imports the table from ./schema.js", () => {
 		const plan = planGeneration({ type: "model", domain: "books", name: "book" });
-		expect(plan.filePath).toBe("src/domains/books/model.ts");
+		expect(plan.filePath).toBe("src/domains/books/models.ts");
 		expect(plan.content).toContain('import { SQLiteModel } from "@tknf/oven/model";');
 		expect(plan.content).toContain('import { book } from "./schema.js";');
 		expect(plan.content).toContain('import type * as schema from "./schema.js";');
@@ -133,7 +133,7 @@ describe("planGeneration: model", () => {
 describe("planGeneration: form", () => {
 	test("returns a scaffold that extends Form and includes schema/fields TODOs", () => {
 		const plan = planGeneration({ type: "form", domain: "books", name: "book" });
-		expect(plan.filePath).toBe("src/domains/books/form.ts");
+		expect(plan.filePath).toBe("src/domains/books/forms.ts");
 		expect(plan.content).toContain('import { Form } from "@tknf/oven/form";');
 		expect(plan.content).toContain("export class BookForm extends Form<");
 		expect(plan.content).toContain("protected schema()");
@@ -144,16 +144,16 @@ describe("planGeneration: form", () => {
 describe("planGeneration: policy", () => {
 	test("returns a scaffold that extends Policy", () => {
 		const plan = planGeneration({ type: "policy", domain: "books", name: "book" });
-		expect(plan.filePath).toBe("src/domains/books/policy.ts");
+		expect(plan.filePath).toBe("src/domains/books/policies.ts");
 		expect(plan.content).toContain('import { Policy } from "@tknf/oven/auth";');
 		expect(plan.content).toContain("export class BookPolicy extends Policy {");
 	});
 });
 
 describe("planGeneration: view", () => {
-	test("writes views/<name>.tsx with a domain-prefixed View class", () => {
+	test("writes views.tsx with a domain-prefixed View class", () => {
 		const plan = planGeneration({ type: "view", domain: "books", name: "list" });
-		expect(plan.filePath).toBe("src/domains/books/views/list.tsx");
+		expect(plan.filePath).toBe("src/domains/books/views.tsx");
 		expect(plan.content).toContain('import { View } from "@tknf/oven/view";');
 		expect(plan.content).toContain("export class BooksListView extends View {");
 		expect(plan.content).toContain("html(c: Context)");
@@ -167,9 +167,9 @@ describe("planGeneration: view", () => {
 });
 
 describe("planGeneration: job", () => {
-	test("writes jobs/<name>.ts with a Job<TPayload> scaffold", () => {
+	test("writes jobs.ts with a Job<TPayload> scaffold", () => {
 		const plan = planGeneration({ type: "job", domain: "books", name: "ImportBooks" });
-		expect(plan.filePath).toBe("src/domains/books/jobs/import_books.ts");
+		expect(plan.filePath).toBe("src/domains/books/jobs.ts");
 		expect(plan.content).toContain('import { Job } from "@tknf/oven/jobs";');
 		expect(plan.content).toContain(
 			"export class ImportBooksJob extends Job<ImportBooksJobPayload>",
@@ -178,9 +178,10 @@ describe("planGeneration: job", () => {
 		expect(plan.content).toContain("async perform(payload: ImportBooksJobPayload): Promise<void>");
 	});
 
-	test("does not repeat the suffix in the file name", () => {
+	test("does not repeat the suffix in the class or job name", () => {
 		const plan = planGeneration({ type: "job", domain: "books", name: "ImportBooksJob" });
-		expect(plan.filePath).toBe("src/domains/books/jobs/import_books.ts");
+		expect(plan.content).toContain("export class ImportBooksJob extends Job<");
+		expect(plan.content).toContain('readonly name = "import_books";');
 	});
 
 	test("throws when no name is given", () => {
@@ -202,6 +203,7 @@ describe("planGeneration: admin", () => {
 			"private readonly bookModel: AdminModel,\n\t\tprivate readonly book: Table,",
 		);
 		expect(plan.content).toContain('// import { book } from "./schema.js";');
+		expect(plan.content).toContain('// import { BookModel } from "./models.js";');
 		expect(plan.content).toContain("get primaryKey(): string {");
 	});
 

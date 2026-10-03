@@ -29,7 +29,8 @@ oven --version / oven -v            # print the installed package version
 `job`, `admin`. `<domain>` names the directory under `src/domains/` and is
 normalized to snake_case (`BookReviews` → `src/domains/book_reviews/`).
 `[name]` is the entity name used for class and table names and defaults to
-`<domain>`; `view` and `job` require it, because it is also their file name.
+`<domain>`; `view` and `job` require it, because a domain usually has several
+of each.
 Names may be `PascalCase`, `snake_case`, `kebab-case`, or plain lowercase, and
 a name that already ends in the type's class suffix (e.g. `BookModel` for
 `model`) does not get it twice.
@@ -66,20 +67,20 @@ migrations, or seed scripts.
   dialect-specific column builders and nothing else. Re-export it from
   `src/db/schema.ts`. See [Models](./models.md).
 - **`model`** — `oven generate model books book --dialect pg` →
-  `src/domains/books/model.ts`: `BookModel extends PgModel<...>` (or
+  `src/domains/books/models.ts`: `BookModel extends PgModel<...>` (or
   `SQLiteModel`/`MySqlModel`), importing `book` from `./schema.js`. Generate
   the schema first with the same name and dialect. See [Models](./models.md).
-- **`form`** — `oven generate form books book` → `src/domains/books/form.ts`:
+- **`form`** — `oven generate form books book` → `src/domains/books/forms.ts`:
   a `BookForm extends Form<...>` with `schema()`/`fields()` TODO stubs. See
   [Forms](./forms.md).
 - **`policy`** — `oven generate policy books book` →
-  `src/domains/books/policy.ts`: a `BookPolicy extends Policy` with a
+  `src/domains/books/policies.ts`: a `BookPolicy extends Policy` with a
   commented example ability. See [Authentication](./auth.md).
 - **`view`** — `oven generate view books list` →
-  `src/domains/books/views/list.tsx`: a `BooksListView extends View` whose
+  `src/domains/books/views.tsx`: a `BooksListView extends View` whose
   `html(c: Context)` returns a JSX stub. See [View](./view.md).
 - **`job`** — `oven generate job books import_books` →
-  `src/domains/books/jobs/import_books.ts`: an `ImportBooksJobPayload` type,
+  `src/domains/books/jobs.ts`: an `ImportBooksJobPayload` type,
   `ImportBooksJob extends Job<ImportBooksJobPayload>`, and
   `readonly name = "import_books"`. See [Jobs](./jobs.md).
 - **`admin`** — `oven generate admin books book` → `src/domains/books/admin.ts`:
@@ -97,13 +98,15 @@ migrations, or seed scripts.
   `src/db/schema.ts`, a generated job isn't added to a `JobRegistry`, a
   generated resource isn't added to `AdminPanel`'s `resources` — you wire
   each one in yourself, the same as hand-written code.
-- **One generated entity per domain file.** `schema`, `model`, `form`,
-  `policy`, and `admin` always write the domain's single `<type>.ts`, so a
-  second entity for the same domain would target an existing file (refused
-  without `--force`; replaced with it). `--dir` changes only the directory,
-  not the file name. Add the second entity to the existing file by hand, or
-  split the role into a directory (e.g. `models/book.ts`, `models/author.ts`)
-  by hand.
+- **One generated entity per domain file.** Every type always writes the
+  domain's single file for that role (`routes.ts`, `schema.ts`, `models.ts`,
+  `forms.ts`, `policies.ts`, `admin.ts`, `views.tsx`, or `jobs.ts`), so a
+  second entity, view, or job for the same domain would target an existing
+  file (refused without `--force`; replaced with it). `--dir` changes only the
+  directory, not the file name. Add the second class to the existing file by
+  hand, or split the role into a directory of the same name (e.g.
+  `models/book.ts` and `models/author.ts`, or `views/list.tsx` and
+  `views/detail.tsx`) by hand.
 - **`--dialect` only applies to `schema` and `model`.** Every other type
   rejects it, including `admin` even though it also touches the database
   layer (its `AdminModel` contract is dialect-agnostic by design).

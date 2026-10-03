@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- `oven generate` now writes plural file names for roles that hold several classes: `model` writes `models.ts`, `form` writes `forms.ts`, `policy` writes `policies.ts`, `view` writes `views.tsx`, and `job` writes `jobs.ts`, all directly in `src/domains/<domain>/`. `routes.ts`, `schema.ts`, and `admin.ts` are unchanged. The documented layout starts each role as one file and splits it into a directory of the same name as it grows (for example `views/list.tsx`). Existing application files are not affected.
+
 ## [3.0.0] - 2026-09-27
 
 ### Changed

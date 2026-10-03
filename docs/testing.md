@@ -81,7 +81,7 @@ production behavior. Clean up the temp directory in `afterEach` via
 `client.close()`:
 
 ```ts
-// test/domains/books/model.test.ts
+// test/domains/books/models.test.ts
 import { afterEach, describe, expect, test } from "vite-plus/test";
 import { createTestDb } from "@tknf/oven/test";
 import * as schema from "../../../src/db/schema.js";

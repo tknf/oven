@@ -108,7 +108,7 @@ binding as a `JobQueue` for enqueuing; `QueueConsumer` wraps the same
 // src/lib/jobs.ts
 import { CloudflareJobQueue, QueueConsumer } from "@tknf/oven/cloudflare";
 import { JobRegistry } from "@tknf/oven/jobs";
-import { GreetJob } from "../domains/greetings/jobs/greet.js";
+import { GreetJob } from "../domains/greetings/jobs.js";
 
 export const jobRegistry = new JobRegistry();
 jobRegistry.register(new GreetJob());

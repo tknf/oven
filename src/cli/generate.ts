@@ -23,10 +23,7 @@ export type GenerateOptions = {
 	type: GenerateType;
 	/** Domain directory name under `src/domains/` (normalized to snake_case). */
 	domain: string;
-	/**
-	 * Entity name for class/table names (defaults to `domain`); required for `view`
-	 * and `job`, where it also becomes the file name.
-	 */
+	/** Entity name for class/table names (defaults to `domain`); required for `view` and `job`. */
 	name?: string;
 	/** Overrides the output directory. */
 	dir?: string;
@@ -54,11 +51,20 @@ export const GENERATE_TYPES: readonly GenerateType[] = [
 /** Types whose template depends on the Drizzle dialect. */
 const DIALECT_TYPES: readonly GenerateType[] = ["schema", "model"];
 
-/** Types that emit one file per name inside a domain subdirectory. */
-const NAMED_FILE_DIRS = {
-	view: "views",
-	job: "jobs",
-} as const satisfies Partial<Record<GenerateType, string>>;
+/**
+ * File name written for each type inside the domain directory. Roles that hold several
+ * classes are plural so that a file outgrowing itself becomes a directory of the same name.
+ */
+const FILE_NAMES = {
+	routes: "routes.ts",
+	schema: "schema.ts",
+	model: "models.ts",
+	form: "forms.ts",
+	policy: "policies.ts",
+	view: "views.tsx",
+	job: "jobs.ts",
+	admin: "admin.ts",
+} as const satisfies Record<GenerateType, string>;
 
 /** Class name suffix per class-producing type. */
 const TYPE_SUFFIXES = {
@@ -354,7 +360,7 @@ import { AdminResource } from "@tknf/oven/admin";
 
 // TODO: import the corresponding table and build the Model instance where the app wires it, e.g.:
 // import { ${tableVar} } from "./schema.js";
-// import { ${base}Model } from "./model.js";
+// import { ${base}Model } from "./models.js";
 
 /**
  * TODO: Describe ${className}.
@@ -425,65 +431,33 @@ export const planGeneration = (options: GenerateOptions): GenerationPlan => {
 	const entity = options.name ?? options.domain;
 	const domainDir = `src/domains/${domain}`;
 
-	const target = ((): { dir: string; fileName: string; content: string } => {
+	const content = ((): string => {
 		switch (type) {
 			case "routes":
-				return {
-					dir: domainDir,
-					fileName: "routes.ts",
-					content: routesTemplate(`${toCamelCase(pascalCase(entity))}Routes`, domain),
-				};
+				return routesTemplate(`${toCamelCase(pascalCase(entity))}Routes`, domain);
 			case "schema":
-				return {
-					dir: domainDir,
-					fileName: "schema.ts",
-					content: schemaTemplate(pascalCase(entity), dialect ?? "sqlite"),
-				};
+				return schemaTemplate(pascalCase(entity), dialect ?? "sqlite");
 			case "model": {
 				const className = classNameFor(type, entity);
 				const base = stripSuffix(type, className);
-				return {
-					dir: domainDir,
-					fileName: "model.ts",
-					content: modelTemplate(className, base, dialect ?? "sqlite"),
-				};
+				return modelTemplate(className, base, dialect ?? "sqlite");
 			}
 			case "form":
-				return {
-					dir: domainDir,
-					fileName: "form.ts",
-					content: formTemplate(classNameFor(type, entity)),
-				};
+				return formTemplate(classNameFor(type, entity));
 			case "policy":
-				return {
-					dir: domainDir,
-					fileName: "policy.ts",
-					content: policyTemplate(classNameFor(type, entity)),
-				};
+				return policyTemplate(classNameFor(type, entity));
 			case "view":
-				return {
-					dir: join(domainDir, NAMED_FILE_DIRS.view),
-					fileName: `${snakeCase(entity)}.tsx`,
-					content: viewTemplate(classNameForPlan(type, domain, entity)),
-				};
+				return viewTemplate(classNameForPlan(type, domain, entity));
 			case "job": {
 				const className = classNameFor(type, entity);
-				return {
-					dir: join(domainDir, NAMED_FILE_DIRS.job),
-					fileName: `${snakeCase(stripSuffix(type, className))}.ts`,
-					content: jobTemplate(className, stripSuffix(type, className)),
-				};
+				return jobTemplate(className, stripSuffix(type, className));
 			}
 			case "admin": {
 				const className = classNameFor(type, entity);
-				return {
-					dir: domainDir,
-					fileName: "admin.ts",
-					content: adminResourceTemplate(className, stripSuffix(type, className)),
-				};
+				return adminResourceTemplate(className, stripSuffix(type, className));
 			}
 		}
 	})();
 
-	return { filePath: join(options.dir ?? target.dir, target.fileName), content: target.content };
+	return { filePath: join(options.dir ?? domainDir, FILE_NAMES[type]), content };
 };

@@ -42,7 +42,7 @@ export const items = sqliteTable("items", {
 ```
 
 ```ts
-// src/domains/items/model.ts
+// src/domains/items/models.ts
 import { SQLiteModel } from "@tknf/oven/model";
 import { items } from "./schema.js";
 
@@ -61,7 +61,7 @@ export class ItemModel extends SQLiteModel<typeof items, typeof items.id, typeof
 ```ts
 import { drizzle } from "drizzle-orm/libsql";
 import { createClient } from "@libsql/client";
-import { ItemModel } from "./src/domains/items/model.js";
+import { ItemModel } from "./src/domains/items/models.js";
 import { items } from "./src/domains/items/schema.js";
 
 const db = drizzle(createClient({ url: "file:./data.sqlite" }), { schema: { items } });
@@ -214,7 +214,7 @@ operands, so it reads correctly whether a caller passes a `where` or not),
 and override every method that could otherwise leak across tenants.
 
 ```ts
-// src/domains/items/tenant_model.ts
+// src/domains/items/models.ts
 import { and, eq } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import type { BaseSQLiteDatabase } from "drizzle-orm/sqlite-core";

@@ -21,7 +21,7 @@ functions for that axis.
 ## Minimal example
 
 ```ts
-// src/domains/redeem/form.ts
+// src/domains/redeem/forms.ts
 import { z } from "zod";
 import { Form } from "@tknf/oven/form";
 import type { FieldDef } from "@tknf/oven/form";
@@ -47,8 +47,8 @@ export class RedeemCodeForm extends Form<typeof redeemCodeSchema> {
 import { Hono } from "hono";
 import type { AppEnv } from "../../env.js";
 import { csrf } from "../../lib/security.js";
-import { RedeemCodeForm } from "./form.js";
-import { RedeemCodePage } from "./views/redeem.js";
+import { RedeemCodeForm } from "./forms.js";
+import { RedeemCodePage } from "./views.js";
 
 export const redeemRoutes = new Hono<AppEnv>().post("/", async (c) => {
   const form = new RedeemCodeForm();
@@ -120,7 +120,7 @@ const binding = form.bind({ values: form.toInput(item) });
 — from a `FormBinding` alone, without hand-wiring each `<input>`:
 
 ```tsx
-// src/domains/redeem/views/redeem.tsx
+// src/domains/redeem/views.tsx
 import { FormView } from "@tknf/oven/form";
 import type { FormBinding } from "@tknf/oven/form";
 
@@ -178,7 +178,7 @@ A `widget: "file"` field declared with `multiple: true` submits several
 `validateUploadedFile`'s own: `{ ok: true; files: File[] }`, or
 `{ ok: false; results }` where `results` holds every input file's own
 validation result tagged with its original `index`. `toUploadedFileFormErrors`
-converts the failing entries straight into `form.ts`'s `FormError[]`
+converts the failing entries straight into `forms.ts`'s `FormError[]`
 vocabulary, addressed to the field's name (a multi-file input is one HTML
 `name`, so there's no way to address "just the third file" separately):
 
@@ -266,6 +266,6 @@ need to be hand-wired for the panel's own upload fields.
 ## See also
 
 - [Getting started](./getting-started.md#application-structure) — where a
-  domain's `form.ts` and its views live.
+  domain's `forms.ts` and its `views.tsx` live.
 - [Models](./models.md) — where validated form output typically ends up
   (models trust already-normalized input; they don't validate it themselves).

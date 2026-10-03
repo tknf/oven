@@ -61,10 +61,11 @@ validation, and audit checks.
 The canonical layout is in the repository's
 [`docs/getting-started.md` Application structure section](https://github.com/tknf/oven/blob/main/docs/getting-started.md#application-structure).
 Each feature is a domain directory, `src/domains/<domain>/`, holding
-`routes.ts`, `schema.ts`, `model.ts`, `form.ts`, `policy.ts`, `admin.ts`,
-`views/*.tsx`, and `jobs/*.ts` as needed. File names are short; exported
-symbols carry the full name (`booksRoutes`, `BookModel`, `BooksListView`). A
-role may stay one file or become a directory as it grows. Domains may import
+`routes.ts`, `schema.ts`, `models.ts`, `forms.ts`, `policies.ts`, `admin.ts`,
+`views.tsx`, and `jobs.ts` as needed. File names are short; exported symbols
+carry the full name (`booksRoutes`, `BookModel`, `BooksListView`). A role
+starts as one file and becomes a directory of the same name as it grows
+(`views.tsx` → `views/list.tsx`, `views/detail.tsx`). Domains may import
 each other's models and schemas; there is no app registry or discovery, so
 `src/main.ts` imports and mounts every domain's routes explicitly.
 
