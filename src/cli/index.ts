@@ -20,10 +20,10 @@ const USAGE = `Usage:
   <type>:   ${GENERATE_TYPES.join(" | ")}
   <domain>: directory under src/domains/ (e.g. books)
   [name]:   entity name for class/table names (defaults to <domain>);
-            required for view and job, where it is also the file name
+            required for view and job
 
 Options:
-  --dir <path>       Output directory (defaults to src/domains/<domain>, plus views/ or jobs/)
+  --dir <path>       Output directory (defaults to src/domains/<domain>)
   --dialect <name>   schema and model only (error for every other type). sqlite | pg | mysql (default: sqlite)
   --force            Overwrite an existing file
 

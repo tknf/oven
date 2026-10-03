@@ -82,15 +82,12 @@ src/
     books/
       routes.ts          # export const booksRoutes = new Hono<AppEnv>()...
       schema.ts          # Drizzle tables and relations only
-      model.ts           # BookModel, importing its table from ./schema.js
-      form.ts            # BookForm
-      policy.ts          # BookPolicy
+      models.ts          # BookModel, importing its table from ./schema.js
+      forms.ts           # BookForm
+      policies.ts        # BookPolicy
       admin.ts           # BookResource for AdminPanel
-      views/
-        list.tsx         # BooksListView or a Hono/JSX page component
-        detail.tsx
-      jobs/
-        import_books.ts  # ImportBooksJob
+      views.tsx          # BooksListView, BooksDetailView, or Hono/JSX page components
+      jobs.ts            # ImportBooksJob
   layouts/               # layouts shared across domains
   lib/                   # session, auth, CSRF, audit, and other services
 test/
@@ -105,12 +102,12 @@ test/
 | `src/env.ts` | Application bindings/context types and renderer augmentation | App-owned |
 | `src/domains/<domain>/routes.ts` | A Hono sub-app written as one method chain | `oven generate routes books` |
 | `src/domains/<domain>/schema.ts` | Drizzle tables and relations, with no runtime initialization | `oven generate schema books book` |
-| `src/domains/<domain>/model.ts` | Dialect-specific `Model` subclasses | `oven generate model books book` |
-| `src/domains/<domain>/form.ts` | `Form` subclasses and validation schemas | `oven generate form books book` |
-| `src/domains/<domain>/policy.ts` | `Policy` subclasses | `oven generate policy books book` |
+| `src/domains/<domain>/models.ts` | Dialect-specific `Model` subclasses | `oven generate model books book` |
+| `src/domains/<domain>/forms.ts` | `Form` subclasses and validation schemas | `oven generate form books book` |
+| `src/domains/<domain>/policies.ts` | `Policy` subclasses | `oven generate policy books book` |
 | `src/domains/<domain>/admin.ts` | `AdminResource` subclasses | `oven generate admin books book` |
-| `src/domains/<domain>/views/*.tsx` | One `View` subclass or page component per screen | `oven generate view books list` |
-| `src/domains/<domain>/jobs/*.ts` | One `Job` subclass per file | `oven generate job books import_books` |
+| `src/domains/<domain>/views.tsx` | `View` subclasses or page components, one per screen | `oven generate view books list` |
+| `src/domains/<domain>/jobs.ts` | `Job` subclasses | `oven generate job books import_books` |
 | `src/db/client.ts` | `DatabaseAccessor` and driver creation; export `register`/`use` wiring | App-owned |
 | `src/db/schema.ts` | Re-exports every domain's tables for Drizzle, drizzle-kit, and `createTestDb` | App-owned |
 | `src/db/` | Other runtime database code, such as raw SQL for an SQLite FTS5 search | App-owned |
@@ -132,10 +129,13 @@ domain; exported symbols carry the full name (`BookModel`, `BooksListView`,
 `booksRoutes`) so that search and auto-import find them unambiguously. A domain
 may import another domain's model or schema directly.
 
-**Single file or directory.** Each role may stay a single file or become a
-directory once it grows: `view.tsx` or `views/*.tsx`, `job.ts` or `jobs/*.ts`,
-`model.ts` or `models/*.ts`, and so on. The generator writes views and jobs as
-one file per name because a domain usually has several of each.
+**Single file or directory.** Roles that hold several classes use plural file
+names: `models.ts`, `forms.ts`, `policies.ts`, `views.tsx`, and `jobs.ts`. Each
+starts as a single file and becomes a directory of the same name once it grows,
+for example `views/list.tsx` and `views/detail.tsx` in place of `views.tsx`.
+`routes.ts`, `schema.ts`, and `admin.ts` keep their names. The generator always
+writes the single file and refuses to overwrite it without `--force`, so add
+further classes to an existing file by hand.
 
 For CRUD with native HTML forms, remember that `FormView` defaults to POST (and
 accepts `get`/`post`/`dialog`). For a no-JavaScript form workflow, register

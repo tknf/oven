@@ -38,9 +38,10 @@ it depends on the `vite` package itself — it has no hard dependency on it).
 
 Not a subpath export: the package also ships an `oven` bin (`oven generate
 <type> <domain> [name]`, aliased `oven g`) that scaffolds a starting-point file
-for 8 types — `routes`, `schema`, `model`, `form`, `policy`, `admin` (written to
-`src/domains/<domain>/<type>.ts`), `view` (`views/<name>.tsx`), and `job`
-(`jobs/<name>.ts`) — with `--dir`/`--dialect`/`--force` flags (`--dialect` only
+for 8 types into `src/domains/<domain>/` — `routes` (`routes.ts`), `schema`
+(`schema.ts`), `model` (`models.ts`), `form` (`forms.ts`), `policy`
+(`policies.ts`), `admin` (`admin.ts`), `view` (`views.tsx`), and `job`
+(`jobs.ts`) — with `--dir`/`--dialect`/`--force` flags (`--dialect` only
 for `schema` and `model`; `view` and `job` require `name`). The model template
 imports its table from the domain's `schema.ts`. See `docs/cli.md` for the full
 reference and `docs/getting-started.md#application-structure` for

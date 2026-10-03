@@ -12,9 +12,9 @@ accessors — never on a specific frontend stack or platform binding):
 - **`View`** — one class represents one screen or representation of a
   resource (a list, a detail page), in as many wire formats
   (HTML/JSON/CSV/XML) as it implements; `respond` picks a format via
-  `Accept` content negotiation. A domain keeps one per screen under
-  `views/` (e.g. `views/list.tsx`, `views/detail.tsx`), or in a single
-  `view.tsx` while it has only a few.
+  `Accept` content negotiation. A domain keeps its views in `views.tsx`,
+  one class per screen, and splits it into `views/` (e.g. `views/list.tsx`,
+  `views/detail.tsx`) once it grows.
 - **`renderSnippet` / `renderSnippetStream`** — return a bare JSX fragment
   as a `Response`, without going through a layout. For partial-page
   updates (htmx, Turbo Frames/Streams).
@@ -48,7 +48,7 @@ A resource that renders as either HTML or JSON depending on the `Accept`
 header:
 
 ```tsx
-// src/domains/books/views/detail.tsx
+// src/domains/books/views.tsx
 import type { Context, Env } from "hono";
 import { View } from "@tknf/oven/view";
 
@@ -70,7 +70,7 @@ export class BookDetailView<E extends Env> extends View<E> {
 ```ts
 // src/domains/books/routes.ts
 import { Hono } from "hono";
-import { BookDetailView } from "./views/detail.js";
+import { BookDetailView } from "./views.js";
 
 export const booksRoutes = new Hono().get("/:id", (c) =>
   new BookDetailView({ id: c.req.param("id"), title: "..." }).respond(c),

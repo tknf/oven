@@ -117,7 +117,7 @@ export class PublisherResource extends AdminResource {
 // src/main.ts
 import { db } from "./db/client.js"; // a Drizzle db built once for the process
 import { PublisherResource } from "./domains/publishers/admin.js";
-import { PublisherModel } from "./domains/publishers/model.js";
+import { PublisherModel } from "./domains/publishers/models.js";
 
 new AdminPanel<AppEnv>({
   authorize: (c) => accountGuard.use(c).role === "admin",

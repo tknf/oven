@@ -46,7 +46,7 @@ flowchart LR
 ## Minimal example
 
 ```ts
-// src/domains/greetings/jobs/greet.ts
+// src/domains/greetings/jobs.ts
 import { Job } from "@tknf/oven/jobs";
 
 type GreetPayload = { name: string };
@@ -63,7 +63,7 @@ export class GreetJob extends Job<GreetPayload> {
 ```ts
 // src/lib/jobs.ts
 import { InlineJobQueue, JobRegistry } from "@tknf/oven/jobs";
-import { GreetJob } from "../domains/greetings/jobs/greet.js";
+import { GreetJob } from "../domains/greetings/jobs.js";
 
 export const jobRegistry = new JobRegistry();
 export const greetJob = new GreetJob();

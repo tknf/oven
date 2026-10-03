@@ -35,7 +35,7 @@ import { Hono } from "hono";
 import { decodeCursor, encodeCursor, parsePaginationQuery } from "@tknf/oven/pagination";
 import type { AppEnv } from "../../env.js";
 import { useDatabase } from "../../db/client.js";
-import { ItemModel } from "./model.js";
+import { ItemModel } from "./models.js";
 
 export const itemsRoutes = new Hono<AppEnv>().get("/", async (c) => {
   const { cursor, limit } = parsePaginationQuery(c, {

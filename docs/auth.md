@@ -210,7 +210,7 @@ exact public paths, which skip authentication and do not make `use(c)` available
 **Authorizing an action with `Policy`:**
 
 ```ts
-// src/domains/books/policy.ts
+// src/domains/books/policies.ts
 import { Policy } from "@tknf/oven/auth";
 import type { Account } from "../../env.js";
 
